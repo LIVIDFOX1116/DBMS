@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" data-bg="none">
+<html lang="en" data-theme="dark" data-bg="topology">
 <head>
 <link
   href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
@@ -25,9 +25,8 @@
 /* ══════════════════════════════════════════
    DESIGN TOKENS — dark (default)
    Adapted from the "TIMELINE" personal project planner UI (same author) --
-   the layout shell, theming system, and component vocabulary carry over
-   directly; only the content (wallets/clusters/alerts/graph instead of
-   projects/tasks) and the data layer (a real backend, not localStorage) change.
+   the theming system and component vocabulary carry over; layout is now a
+   multi-page app shell (sidebar + routed pages) instead of one long scroll.
 ══════════════════════════════════════════ */
 .material-icons-outlined {
   font-size: 18px;
@@ -38,7 +37,7 @@
   user-select: none;
 }
 .nav-item .material-icons-outlined { font-size: 19px; }
-.hero-mob-menu .material-icons-outlined { font-size: 22px; }
+.topbar-mob-menu .material-icons-outlined { font-size: 22px; }
 .fab-main .material-icons-outlined { font-size: 26px; }
 :root {
   --bg-base:    #1a1f2e;
@@ -77,7 +76,7 @@ html[data-theme="light"] {
 html[data-theme="light"] body { background: var(--bg-base); }
 html[data-theme="light"] #vanta-bg { opacity: .35; }
 html[data-theme="light"] .sidebar  { background: rgba(255,255,255,.72); border-color: rgba(0,0,0,.1); }
-html[data-theme="light"] .hero     { background: rgba(255,255,255,.55); border-color: rgba(0,0,0,.1); }
+html[data-theme="light"] .topbar   { background: rgba(255,255,255,.55); border-color: rgba(0,0,0,.1); }
 html[data-theme="light"] .toast    { border-color: rgba(0,0,0,.15); }
 html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); }
 
@@ -124,8 +123,8 @@ body {
   padding: 16px 12px;
   background: var(--g0);
   border-right: 1px solid var(--gb);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   display: flex; flex-direction: column;
   transition: width .3s ease;
   overflow: hidden;
@@ -189,58 +188,49 @@ body {
 }
 
 /* ══════════════════════════════════════════
-   MAIN COLUMN
+   MAIN COLUMN + TOPBAR
 ══════════════════════════════════════════ */
 .main { min-height: 100vh; padding-bottom: 80px; }
 
-.hero {
-  text-align: center;
-  background: var(--g0); backdrop-filter: blur(8px);
+.topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  background: var(--g0); backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--gb);
-  padding: 36px 20px 26px;
-  position: relative; overflow: hidden;
-  animation: fadeDown .6s ease-out;
+  padding: 18px 26px;
+  position: sticky; top: 0; z-index: 60;
 }
-.hero::before {
-  content: ''; position: absolute; inset: 0;
-  background: radial-gradient(ellipse 700px 250px at 50% 0%, rgba(80,150,255,.1), transparent 65%);
-  pointer-events: none;
-}
-.hero h1 {
-  font-family: "Poppins"; font-size: clamp(32px,5.5vw,52px); font-weight: 800;
-  letter-spacing: 1px; text-shadow: 0 8px 30px rgba(0,0,0,.4); margin-bottom: 4px;
-}
-.hero .subtitle { opacity: .75; font-size: 14px; letter-spacing: .3px; }
-.hero-mob-menu {
-  position: absolute; left: 16px; top: 16px; display: none;
+.topbar-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.topbar h2 { font-family: "Poppins"; font-size: 21px; font-weight: 800; white-space: nowrap; }
+.topbar-sub { font-size: 12px; opacity: .6; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.topbar-mob-menu {
+  display: none; flex-shrink: 0;
   background: var(--g1); border: 1px solid var(--gb);
-  border-radius: 10px; padding: 8px 12px; cursor: pointer; color: var(--ink); font-size: 18px;
+  border-radius: 10px; padding: 8px 10px; cursor: pointer; color: var(--ink); font-size: 18px;
 }
-@media (max-width:900px) { .hero-mob-menu { display: flex; } }
+@media (max-width:900px) { .topbar-mob-menu { display: flex; } .topbar-sub { display:none; } }
+
+.health-pill { display: inline-flex; align-items: center; gap: 7px; }
+.health-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: rgba(255,255,255,.3); transition: background .3s; }
+.health-dot.ok      { background: #8cffa0; box-shadow: 0 0 0 3px rgba(140,255,160,.18); }
+.health-dot.err     { background: #ff6b6b; box-shadow: 0 0 0 3px rgba(255,107,107,.18); }
+.health-dot.pending { background: #ffc350; box-shadow: 0 0 0 3px rgba(255,195,80,.18); }
 
 .container { width: min(1300px,100%); margin: auto; padding: 20px 22px 0; }
 
 /* ══════════════════════════════════════════
-   STATUS BAR (was "welcome-dash")
+   PAGES — one visible at a time (router in script)
 ══════════════════════════════════════════ */
-.status-bar {
-  background: var(--g1); border: 1px solid var(--gb);
-  border-radius: var(--r); padding: 18px 22px;
-  backdrop-filter: blur(16px); box-shadow: var(--shadow);
-  display: grid; grid-template-columns: 1fr auto;
-  gap: 16px; align-items: center; margin-bottom: 20px;
-}
-@media (max-width:700px) { .status-bar { grid-template-columns: 1fr; } }
-.greet { font-size: 16px; margin-bottom: 10px; }
-.greet strong { font-family: "Poppins"; font-size: 18px; font-weight: 700; }
-.pills { display: flex; flex-wrap: wrap; gap: 7px; }
+.page { display: none; }
+.page.active { display: block; animation: pageIn .35s var(--ease); }
+@keyframes pageIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+
 .pill {
   padding: 5px 13px; border-radius: 999px;
   background: var(--g0); border: 1px solid var(--gb);
   font-size: 12.5px;
 }
 .pill strong { font-family: "Poppins"; }
-.quick-btns { display: flex; gap: 9px; flex-wrap: wrap; }
 
 .btn {
   background: var(--g1); padding: 9px 17px; border-radius: 10px;
@@ -257,13 +247,33 @@ body {
 .section-title { font-family: "Poppins"; font-size: 19px; font-weight: 700; margin-bottom: 12px; }
 
 /* ══════════════════════════════════════════
-   GENERIC PANEL (top-risk / latest-alerts / graph)
+   STAT CARDS (overview + graph pages)
 ══════════════════════════════════════════ */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr)); gap: 16px; margin-bottom: 22px; }
+.stat-card {
+  background: var(--g1); border: 1px solid var(--gb); border-radius: var(--r);
+  padding: 18px 20px; backdrop-filter: blur(12px); box-shadow: var(--shadow);
+  display: flex; align-items: center; gap: 14px; cursor: pointer;
+  transition: transform .3s var(--ease), box-shadow .3s var(--ease);
+}
+.stat-card:hover { transform: translateY(-3px); box-shadow: 0 16px 36px rgba(0,0,0,.38); }
+.stat-card:active { transform: translateY(-1px) scale(.99); transition-duration: .1s; }
+.stat-card.static { cursor: default; }
+.stat-card.static:hover { transform: none; box-shadow: var(--shadow); }
+.stat-icon { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 19px; flex-shrink: 0; }
+.stat-value { font-family: "Poppins"; font-size: 23px; font-weight: 800; line-height: 1.1; }
+.stat-label { font-size: 11.5px; opacity: .62; margin-top: 2px; }
+
+/* ══════════════════════════════════════════
+   TWO-COLUMN PANEL ROWS
+══════════════════════════════════════════ */
+.two-col { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; align-items: start; margin-bottom: 20px; }
+@media (max-width: 980px) { .two-col { grid-template-columns: 1fr; } }
+
 .panel {
   background: var(--g1); border: 1px solid var(--gb);
   border-radius: var(--r); padding: 20px 22px;
-  backdrop-filter: blur(16px); box-shadow: var(--shadow);
-  margin-bottom: 26px;
+  backdrop-filter: blur(12px); box-shadow: var(--shadow);
 }
 .panel-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
 .row-list { display: grid; gap: 9px; }
@@ -273,12 +283,41 @@ body {
   border-radius: 11px; padding: 10px 14px; gap: 12px; cursor: pointer;
   transition: background .2s;
 }
-.row-item:hover { background: var(--g1); }
+.row-item:hover { background: var(--g2); }
 .ri-left { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
 .ri-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .ri-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: "Roboto Mono", "Roboto", monospace; }
 .ri-sub { font-size: 11.5px; opacity: .6; flex-shrink: 0; }
 .empty-hint { opacity: .55; font-size: 14px; padding: 8px 0; }
+
+/* ══════════════════════════════════════════
+   DONUT CHART (pure CSS conic-gradient, no JS animation loop)
+══════════════════════════════════════════ */
+.donut-wrap { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.donut-ring { position: relative; width: 118px; height: 118px; flex-shrink: 0; }
+.donut-ring .dr-fill { width: 100%; height: 100%; display: block; }
+.donut-ring .dr-fill circle { transition: stroke-dasharray .5s var(--ease); }
+.donut-ring .dr-hole {
+  position: absolute; inset: 17px; border-radius: 50%; background: var(--g1);
+  display: flex; align-items: center; justify-content: center; flex-direction: column;
+}
+.donut-hole-value { font-family: "Poppins"; font-weight: 800; font-size: 21px; }
+.donut-hole-label { font-size: 9.5px; opacity: .6; text-transform: uppercase; letter-spacing: .3px; }
+.donut-legend { display: grid; gap: 8px; flex: 1; min-width: 140px; }
+.donut-legend-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.donut-legend-row strong { margin-left: auto; font-family: "Poppins"; }
+.donut-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+
+/* ══════════════════════════════════════════
+   HORIZONTAL BAR CHART
+══════════════════════════════════════════ */
+.bar-chart { display: grid; gap: 11px; }
+.bar-row { display: grid; grid-template-columns: 128px 1fr 46px; align-items: center; gap: 10px; }
+.bar-row.clickable { cursor: pointer; }
+.bar-label { font-size: 12px; font-family: "Roboto Mono", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .85; }
+.bar-track { height: 10px; border-radius: 999px; background: var(--g0); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; transition: width .5s var(--ease); }
+.bar-value { font-size: 11.5px; opacity: .65; text-align: right; }
 
 /* ══════════════════════════════════════════
    TOOLBARS (search / sort / filter — shared by wallets, clusters, alerts)
@@ -378,15 +417,42 @@ body {
 .alert-actions { display: flex; gap: 8px; }
 
 /* ══════════════════════════════════════════
-   GRAPH PANEL
+   GRAPH PAGE
 ══════════════════════════════════════════ */
-.graph-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.graph-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 18px; }
+.graph-layout { display: grid; grid-template-columns: 1.8fr 1fr; gap: 20px; align-items: start; margin-bottom: 20px; }
+@media (max-width: 1050px) { .graph-layout { grid-template-columns: 1fr; } }
 #graphCanvas {
-  height: 560px; border-radius: 12px; border: 1px solid var(--gb);
-  background: var(--g0); overflow: hidden;
+  height: 620px; border-radius: 12px; border: 1px solid var(--gb);
+  background:
+    radial-gradient(circle at 50% 38%, rgba(80,150,255,.10), transparent 62%),
+    radial-gradient(rgba(255,255,255,.05) 1px, transparent 1px) 0 0/22px 22px,
+    var(--g0);
+  box-shadow: inset 0 0 90px rgba(0,0,0,.35);
+  overflow: hidden; cursor: grab;
+}
+#graphCanvas:active { cursor: grabbing; }
+
+/* vis-network injects its own tooltip div outside our normal DOM tree --
+   restyle it to match the glass aesthetic instead of the browser-default
+   gray box, and switch on white-space so the \n line breaks in our tooltip
+   text actually render as line breaks instead of running together. */
+div.vis-tooltip {
+  background: rgba(18,24,38,.92) !important;
+  border: 1px solid var(--gb) !important;
+  border-radius: 10px !important;
+  padding: 9px 13px !important;
+  color: #fff !important;
+  font-family: "Roboto", sans-serif !important;
+  font-size: 12.5px !important;
+  line-height: 1.5 !important;
+  box-shadow: 0 16px 40px rgba(0,0,0,.5) !important;
+  white-space: pre-line !important;
+  max-width: 260px;
 }
 .graph-legend { display: flex; align-items: center; gap: 16px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; opacity: .75; }
 .legend-scale { display: inline-flex; height: 10px; width: 90px; border-radius: 999px; background: linear-gradient(90deg, hsl(120,70%,55%), hsl(60,70%,55%), hsl(0,70%,55%)); vertical-align: middle; }
+.graph-side-stack { display: grid; gap: 20px; }
 
 /* ══════════════════════════════════════════
    FAB
@@ -500,13 +566,12 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
 /* ══════════════════════════════════════════
    KEYFRAMES
 ══════════════════════════════════════════ */
-@keyframes fadeDown { from{opacity:0;transform:translateY(-20px)} to{opacity:1;transform:translateY(0)} }
-@keyframes popIn    { from{opacity:0;transform:scale(.93)} to{opacity:1;transform:scale(1)} }
+@keyframes popIn { from{opacity:0;transform:scale(.93)} to{opacity:1;transform:scale(1)} }
 
 /* ══════════════════════════════════════════
-   SCROLL REVEAL — sections fade/slide in as they enter
-   view (IntersectionObserver-driven, see script) instead of
-   all firing at once on load.
+   SCROLL REVEAL — panels fade/slide in as they enter view
+   (IntersectionObserver-driven, see script), including the first
+   time a page is opened.
 ══════════════════════════════════════════ */
 .reveal { opacity: 0; transform: translateY(22px); transition: opacity .6s var(--ease), transform .6s var(--ease); }
 .reveal.in { opacity: 1; transform: translateY(0); }
@@ -536,19 +601,19 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
     </div>
 
     <nav class="nav">
-      <a class="nav-item active" href="#overview" data-tip="Overview" onclick="setActive(this)">
+      <a class="nav-item active" href="#overview" data-page="overview" data-tip="Overview" onclick="go('overview');return false;">
         <span class="ni material-icons-outlined">home</span><span class="nl">Overview</span>
       </a>
-      <a class="nav-item" href="#wallets" data-tip="Wallets" onclick="setActive(this)">
+      <a class="nav-item" href="#wallets" data-page="wallets" data-tip="Wallets" onclick="go('wallets');return false;">
         <span class="ni material-icons-outlined">account_balance_wallet</span><span class="nl">Wallets</span>
       </a>
-      <a class="nav-item" href="#clusters" data-tip="Clusters" onclick="setActive(this)">
+      <a class="nav-item" href="#clusters" data-page="clusters" data-tip="Clusters" onclick="go('clusters');return false;">
         <span class="ni material-icons-outlined">hub</span><span class="nl">Clusters</span>
       </a>
-      <a class="nav-item" href="#alerts" data-tip="Alerts" onclick="setActive(this)">
+      <a class="nav-item" href="#alerts" data-page="alerts" data-tip="Alerts" onclick="go('alerts');return false;">
         <span class="ni material-icons-outlined">warning</span><span class="nl">Alerts</span>
       </a>
-      <a class="nav-item" href="#graph" data-tip="Graph" onclick="setActive(this)">
+      <a class="nav-item" href="#graph" data-page="graph" data-tip="Graph" onclick="go('graph');return false;">
         <span class="ni material-icons-outlined">scatter_plot</span><span class="nl">Graph</span>
       </a>
       <div class="nav-sep"></div>
@@ -575,45 +640,76 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
   <!-- ═══════════════ MAIN ═══════════════ -->
   <main class="main">
 
-    <header class="hero" id="overview">
-      <button class="hero-mob-menu" id="mobMenuBtn"><span class="material-icons-outlined">menu</span></button>
-      <h1>TXGRAPH</h1>
-      <div class="subtitle">GPU-accelerated Ethereum transaction-graph analyzer</div>
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="topbar-mob-menu" id="mobMenuBtn"><span class="material-icons-outlined">menu</span></button>
+        <div>
+          <h2 id="pageTitle">Overview</h2>
+          <div class="topbar-sub" id="pageSubtitle">GPU-accelerated Ethereum transaction-graph analyzer</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="pill health-pill"><span class="health-dot pending" id="healthDot"></span><span id="healthText">Connecting…</span></span>
+        <button class="btn primary" onclick="loadAll()"><span class="material-icons-outlined">refresh</span> Refresh</button>
+      </div>
     </header>
 
     <div class="container">
 
-      <!-- STATUS BAR -->
-      <section class="status-bar reveal" id="statusBar">
-        <div>
-          <div class="greet" id="greetTxt">Connecting…</div>
-          <div class="pills" id="statusPills"></div>
-        </div>
-        <div class="quick-btns">
-          <button class="btn primary" onclick="loadAll()"><span class="material-icons-outlined">refresh</span> Refresh</button>
-          <button class="btn" onclick="scrollToId('alerts')"><span class="material-icons-outlined">warning</span> Alerts</button>
-          <button class="btn" onclick="scrollToId('graph')"><span class="material-icons-outlined">scatter_plot</span> Graph</button>
-        </div>
-      </section>
+      <!-- ═══════════════ OVERVIEW PAGE ═══════════════ -->
+      <div class="page active" id="page-overview">
 
-      <!-- TOP RISK WALLETS -->
-      <section class="panel reveal" id="topRiskSection">
-        <div class="panel-hdr">
-          <div class="section-title" style="margin-bottom:0;">⚠ Top Risk Wallets</div>
+        <div class="stat-grid">
+          <div class="stat-card reveal" onclick="go('wallets')">
+            <div class="stat-icon" style="background:rgba(100,160,255,.25);">💼</div>
+            <div><div class="stat-value" id="statWallets"><span class="skel"></span></div><div class="stat-label">Wallets</div></div>
+          </div>
+          <div class="stat-card reveal" onclick="go('clusters')">
+            <div class="stat-icon" style="background:rgba(190,120,255,.25);">🕸</div>
+            <div><div class="stat-value" id="statClusters"><span class="skel"></span></div><div class="stat-label">Clusters</div></div>
+          </div>
+          <div class="stat-card reveal" onclick="go('alerts')">
+            <div class="stat-icon" style="background:rgba(255,195,80,.25);">🚨</div>
+            <div><div class="stat-value" id="statAlerts"><span class="skel"></span></div><div class="stat-label">Alerts (<span id="statAlertsNew">0</span> new)</div></div>
+          </div>
+          <div class="stat-card reveal" onclick="go('alerts')">
+            <div class="stat-icon" style="background:rgba(220,70,70,.25);">⚠</div>
+            <div><div class="stat-value" id="statHighSev"><span class="skel"></span></div><div class="stat-label">High severity</div></div>
+          </div>
         </div>
-        <div class="row-list" id="topRiskList"></div>
-      </section>
 
-      <!-- LATEST ALERTS -->
-      <section class="panel reveal" id="latestAlertsSection">
-        <div class="panel-hdr">
-          <div class="section-title" style="margin-bottom:0;">🚨 Latest Alerts</div>
+        <div class="two-col">
+          <div class="panel reveal">
+            <div class="panel-hdr"><div class="section-title" style="margin-bottom:0;">Risk Distribution</div></div>
+            <div class="donut-wrap">
+              <div class="donut-ring">
+                <svg class="dr-fill" id="riskDonut" viewBox="0 0 100 100"></svg>
+                <div class="dr-hole"><div class="donut-hole-value" id="riskDonutTotal">0</div><div class="donut-hole-label">wallets</div></div>
+              </div>
+              <div class="donut-legend" id="riskDonutLegend"></div>
+            </div>
+          </div>
+          <div class="panel reveal">
+            <div class="panel-hdr"><div class="section-title" style="margin-bottom:0;">⚠ Top Risk Wallets</div></div>
+            <div class="row-list" id="topRiskList"></div>
+          </div>
         </div>
-        <div class="row-list" id="latestAlertsList"></div>
-      </section>
 
-      <!-- WALLETS -->
-      <section id="wallets" class="reveal" style="margin-bottom:26px;">
+        <div class="two-col">
+          <div class="panel reveal">
+            <div class="panel-hdr"><div class="section-title" style="margin-bottom:0;">Alerts by Severity</div></div>
+            <div class="bar-chart" id="severityBars"></div>
+          </div>
+          <div class="panel reveal">
+            <div class="panel-hdr"><div class="section-title" style="margin-bottom:0;">🚨 Latest Alerts</div></div>
+            <div class="row-list" id="latestAlertsList"></div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ═══════════════ WALLETS PAGE ═══════════════ -->
+      <div class="page" id="page-wallets">
         <div class="sec-header">
           <div class="section-title" style="margin-bottom:0;">Wallets</div>
           <div class="sec-controls">
@@ -635,18 +731,18 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
           <button class="fbtn" data-f="high-risk">High risk</button>
         </div>
         <div class="card-grid" id="walletGrid"></div>
-      </section>
+      </div>
 
-      <!-- CLUSTERS -->
-      <section id="clusters" class="reveal" style="margin-bottom:26px;">
+      <!-- ═══════════════ CLUSTERS PAGE ═══════════════ -->
+      <div class="page" id="page-clusters">
         <div class="sec-header">
           <div class="section-title" style="margin-bottom:0;">Clusters</div>
         </div>
         <div class="card-grid" id="clusterGrid"></div>
-      </section>
+      </div>
 
-      <!-- ALERTS -->
-      <section id="alerts" class="reveal" style="margin-bottom:26px;">
+      <!-- ═══════════════ ALERTS PAGE ═══════════════ -->
+      <div class="page" id="page-alerts">
         <div class="sec-header">
           <div class="section-title" style="margin-bottom:0;">Alerts</div>
         </div>
@@ -657,26 +753,72 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
           <button class="fbtn" data-f="DISMISSED">Dismissed</button>
         </div>
         <div class="alert-list" id="alertList"></div>
-      </section>
+      </div>
 
-      <!-- GRAPH -->
-      <section class="panel reveal" id="graph">
-        <div class="panel-hdr">
-          <div class="section-title" style="margin-bottom:0;">🕸 Wallet Graph</div>
+      <!-- ═══════════════ GRAPH PAGE ═══════════════ -->
+      <div class="page" id="page-graph">
+
+        <div class="stat-grid">
+          <div class="stat-card static reveal">
+            <div class="stat-icon" style="background:rgba(100,160,255,.25);">⬤</div>
+            <div><div class="stat-value" id="gsNodes">–</div><div class="stat-label">Nodes</div></div>
+          </div>
+          <div class="stat-card static reveal">
+            <div class="stat-icon" style="background:rgba(140,255,160,.25);">↔</div>
+            <div><div class="stat-value" id="gsEdges">–</div><div class="stat-label">Edges</div></div>
+          </div>
+          <div class="stat-card static reveal">
+            <div class="stat-icon" style="background:rgba(190,120,255,.25);">◒</div>
+            <div><div class="stat-value" id="gsDensity">–</div><div class="stat-label">Density</div></div>
+          </div>
+          <div class="stat-card static reveal">
+            <div class="stat-icon" style="background:rgba(255,195,80,.25);">⭐</div>
+            <div><div class="stat-value" id="gsHub" style="font-size:15px;font-family:'Roboto Mono',monospace;">–</div><div class="stat-label">Top hub (by tx count)</div></div>
+          </div>
         </div>
-        <div class="graph-toolbar">
-          <select class="sort-sel" id="snapshotSelect"></select>
-          <input class="modal-input" style="margin:0;width:100px;" id="runIdInput" type="number" min="1" value="1" title="Run ID (for PageRank coloring in tooltips)"/>
-          <button class="btn" onclick="renderGraph()"><span class="material-icons-outlined">refresh</span> Redraw</button>
+
+        <div class="panel reveal">
+          <div class="graph-toolbar">
+            <select class="sort-sel" id="snapshotSelect"></select>
+            <input class="modal-input" style="margin:0;width:100px;" id="runIdInput" type="number" min="1" value="1" title="Run ID (for PageRank ranking below)"/>
+            <button class="btn" onclick="renderGraph()"><span class="material-icons-outlined">refresh</span> Redraw</button>
+          </div>
+
+          <div class="graph-layout">
+            <div>
+              <div id="graphCanvas"></div>
+              <div class="graph-legend">
+                <span>Node color = risk score:</span>
+                <span class="legend-scale"></span>
+                <span>low → high</span>
+                <span>Node size = tx count · Edge thickness = transfer volume</span>
+              </div>
+            </div>
+            <div class="graph-side-stack">
+              <div>
+                <div class="section-title" style="font-size:14px;">Risk in this view</div>
+                <div class="donut-wrap">
+                  <div class="donut-ring" style="width:96px;height:96px;">
+                    <svg class="dr-fill" id="graphRiskDonut" viewBox="0 0 100 100"></svg>
+                    <div class="dr-hole" style="inset:14px;"><div class="donut-hole-value" style="font-size:17px;" id="graphRiskDonutTotal">0</div></div>
+                  </div>
+                  <div class="donut-legend" id="graphRiskDonutLegend"></div>
+                </div>
+              </div>
+              <div>
+                <div class="section-title" style="font-size:14px;">Top by PageRank</div>
+                <div class="row-list" id="graphTopWallets"></div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div id="graphCanvas"></div>
-        <div class="graph-legend">
-          <span>Node color = risk score:</span>
-          <span class="legend-scale"></span>
-          <span>low → high</span>
-          <span>Node size = tx count · Edge thickness = transfer volume</span>
+
+        <div class="panel reveal">
+          <div class="panel-hdr"><div class="section-title" style="margin-bottom:0;">PageRank Ranking</div></div>
+          <div class="bar-chart" id="pagerankBars"></div>
         </div>
-      </section>
+
+      </div>
 
     </div>
   </main>
@@ -687,8 +829,8 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
   <div class="fab-main" onclick="toggleFab()">＋</div>
   <div class="fab-radial">
     <button class="rbtn" onclick="loadAll();closeFab()">🔄 Refresh data</button>
-    <button class="rbtn" onclick="scrollToId('alerts');closeFab()">🚨 Jump to Alerts</button>
-    <button class="rbtn" onclick="scrollToId('graph');closeFab()">🕸 Jump to Graph</button>
+    <button class="rbtn" onclick="go('alerts');closeFab()">🚨 Go to Alerts</button>
+    <button class="rbtn" onclick="go('graph');closeFab()">🕸 Go to Graph</button>
   </div>
 </div>
 
@@ -737,6 +879,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
   <div class="modal-box" style="width:min(560px,95%);">
     <h3>⌨️ Keyboard Shortcuts</h3>
     <div class="kbd-grid">
+      <div class="kbd-row"><span>Jump to page</span><span><kbd>1</kbd>–<kbd>5</kbd></span></div>
       <div class="kbd-row"><span>Refresh data</span><kbd>R</kbd></div>
       <div class="kbd-row"><span>Search wallets</span><kbd>/</kbd></div>
       <div class="kbd-row"><span>Shortcuts</span><kbd>?</kbd></div>
@@ -773,7 +916,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
       <div class="settings-section">
         <h4>Analysis run ID</h4>
         <input class="modal-input" id="s_runId" type="number" min="1" placeholder="1" />
-        <small style="opacity:.6;">Used for the PageRank rank/value shown in wallet details.</small>
+        <small style="opacity:.6;">Used for the PageRank rank/value shown in wallet details and on the Graph page.</small>
       </div>
     </div>
 
@@ -793,13 +936,13 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
 
       <div class="settings-section">
         <h4>Background effect</h4>
-        <small style="opacity:.55;display:block;margin-bottom:8px;">Off by default -- these run a continuous WebGL animation, which costs real CPU/GPU.</small>
+        <small style="opacity:.55;display:block;margin-bottom:8px;">A moving WebGL background behind the glass panels. "Net" is the lightest option; pick "None" if things ever feel sluggish on your machine.</small>
         <div class="bg-opts">
-          <div class="bg-opt" data-bg="topology" onclick="setBg('topology',this)"><span class="bg-icon">〰️</span>Topology</div>
+          <div class="bg-opt on" data-bg="topology" onclick="setBg('topology',this)"><span class="bg-icon">〰️</span>Topology</div>
           <div class="bg-opt" data-bg="waves" onclick="setBg('waves',this)"><span class="bg-icon">🌊</span>Waves</div>
           <div class="bg-opt" data-bg="fog" onclick="setBg('fog',this)"><span class="bg-icon">🌫️</span>Fog</div>
           <div class="bg-opt" data-bg="net" onclick="setBg('net',this)"><span class="bg-icon">🕸️</span>Net</div>
-          <div class="bg-opt on" data-bg="none" onclick="setBg('none',this)"><span class="bg-icon">⬛</span>None</div>
+          <div class="bg-opt" data-bg="none" onclick="setBg('none',this)"><span class="bg-icon">⬛</span>None</div>
         </div>
       </div>
 
@@ -824,7 +967,15 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
 
 <script>
 /* ════════════════════════════════════════
-   VANTA BACKGROUND MANAGER (unchanged from the source project)
+   VANTA BACKGROUND MANAGER
+   TOPOLOGY is the default -- it's the original aesthetic identity of this
+   theme and, unlike NET at a point count low enough to be cheap, it's
+   actually visible at any viewport size. It's now the ONLY continuous
+   animation loop on the page: vis-network's physics loop turns itself off
+   after the graph settles (see renderGraph()), which was the other half of
+   the original lag (two competing rAF loops, not one). A single Vanta loop
+   plus pausing on hidden tabs / skipping for reduced-motion and small
+   screens keeps this affordable.
 ════════════════════════════════════════ */
 let vantaEffect = null;
 
@@ -838,25 +989,29 @@ const VANTA_CONFIGS = {
   waves: () => VANTA.WAVES({
     el: "#vanta-bg",
     mouseControls: true, touchControls: true, minHeight: 200, minWidth: 200,
-    color: 0x1a3a6a, shininess: 40, waveHeight: 18, waveSpeed: 0.75, zoom: 0.9
+    color: 0x1a3a6a, shininess: 40, waveHeight: 18, waveSpeed: 0.75, zoom: 0.9,
+    scale: 0.85, scaleMobile: 0.6,
   }),
   fog: () => VANTA.FOG({
     el: "#vanta-bg",
     mouseControls: true, touchControls: true, minHeight: 200, minWidth: 200,
     highlightColor: 0x3a5a90, midtoneColor: 0x1a2e55,
     lowlightColor: 0x0a1020, baseColor: 0x0d1525,
-    blurFactor: 0.6, speed: 1.2, zoom: 1
+    blurFactor: 0.6, speed: 1.2, zoom: 1,
+    scale: 0.85, scaleMobile: 0.6,
   }),
   net: () => VANTA.NET({
     el: "#vanta-bg",
     mouseControls: true, touchControls: true, minHeight: 200, minWidth: 200,
     color: 0x4a80cf, backgroundColor: 0x0d1220,
-    points: 9, maxDistance: 22, spacing: 17
+    points: 10, maxDistance: 20, spacing: 18,
+    scale: 0.85, scaleMobile: 0.6,
   }),
   none: () => null,
 };
 
 const prefersReducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const isSmallScreen = () => matchMedia("(max-width: 700px)").matches;
 
 function startVanta(bgKey) {
   if (vantaEffect) {
@@ -864,9 +1019,10 @@ function startVanta(bgKey) {
     vantaEffect = null;
   }
   // A full-screen WebGL/canvas animation loop is real, continuous CPU/GPU
-  // cost -- skip it entirely for reduced-motion users rather than just
-  // slowing it down.
-  if (bgKey === "none" || prefersReducedMotion()) return;
+  // cost -- skip it entirely for reduced-motion users and small/mobile
+  // screens (smaller viewport still means real per-frame fill-rate cost on
+  // typically less powerful GPUs) rather than just slowing it down.
+  if (bgKey === "none" || prefersReducedMotion() || isSmallScreen()) return;
   const factory = VANTA_CONFIGS[bgKey];
   if (!factory) return;
   try {
@@ -924,7 +1080,6 @@ async function api(path, params = {}) {
 /* ════════════════════════════════════════
    UTILITIES
 ════════════════════════════════════════ */
-function scrollToId(id) { document.getElementById(id)?.scrollIntoView({behavior:"smooth",block:"start"}); }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
 function shortAddr(a) { return a && a.length > 12 ? `${a.slice(0,6)}…${a.slice(-4)}` : a; }
 function copyToClipboard(text) {
@@ -944,11 +1099,79 @@ function riskColor(score) {
   const hue = Math.max(0, Math.min(120, 120 * (1 - score / 100)));
   return `hsl(${hue},70%,55%)`;
 }
+// A brighter rim in the same hue instead of a flat white border -- gives
+// graph nodes a "glowing glass orb" edge instead of a plain outlined dot.
+function riskColorRim(score) {
+  if (score === null || score === undefined) return "rgba(255,255,255,.4)";
+  const hue = Math.max(0, Math.min(120, 120 * (1 - score / 100)));
+  return `hsl(${hue},85%,78%)`;
+}
 function typeBadgeClass(t) {
   return { SYBIL: "b-type-sybil", WASH_TRADE: "b-type-wash", MIXER: "b-type-mixer", PEEL_CHAIN: "b-type-peel" }[t] || "b-type-none";
 }
 function severityBadgeClass(s) { return `b-sev-${(s||"").toLowerCase()}`; }
 function statusBadgeClass(s) { return `b-status-${(s||"").toLowerCase()}`; }
+
+const TIER_COLORS = { low: "#8cffa0", med: "#ffc350", high: "#ff6b6b", unknown: "rgba(255,255,255,.3)" };
+const TIER_LABELS = { low: "Low risk", med: "Medium risk", high: "High risk", unknown: "Unknown" };
+
+/* SVG ring with rounded stroke caps and small gaps between segments --
+   static markup, no chart library and no JS animation loop, just computed
+   stroke-dasharray/offset values per <circle>. */
+function renderDonut(wallets, svgId, totalElId, legendElId) {
+  const tiers = { low: 0, med: 0, high: 0, unknown: 0 };
+  wallets.forEach(w => tiers[riskTier(w.risk_score)]++);
+  const total = wallets.length;
+  const svg = document.getElementById(svgId);
+  const R = 40, C = 2 * Math.PI * R, GAP = 5; // GAP in stroke-length units (SVG user units)
+
+  let track = `<circle cx="50" cy="50" r="${R}" fill="none" stroke="var(--g0)" stroke-width="11"/>`;
+  let acc = 0; const segs = [];
+  Object.entries(tiers).forEach(([k, v]) => {
+    if (!v) return;
+    const frac = v / (total || 1);
+    const len = Math.max(frac * C - GAP, 0);
+    segs.push(`<circle cx="50" cy="50" r="${R}" fill="none" stroke="${TIER_COLORS[k]}" stroke-width="11"
+      stroke-linecap="round" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-acc}"
+      transform="rotate(-90 50 50)"/>`);
+    acc += frac * C;
+  });
+  svg.innerHTML = track + segs.join("");
+  document.getElementById(totalElId).textContent = total;
+  document.getElementById(legendElId).innerHTML = Object.entries(tiers).filter(([,v]) => v).map(([k, v]) =>
+    `<div class="donut-legend-row"><span class="donut-swatch" style="background:${TIER_COLORS[k]}"></span>${TIER_LABELS[k]}<strong>${v}</strong></div>`
+  ).join("") || `<div class="empty-hint">No data</div>`;
+}
+
+/* ════════════════════════════════════════
+   ROUTER — one page visible at a time instead of one long scroll
+════════════════════════════════════════ */
+const PAGE_META = {
+  overview: { title: "Overview", sub: "GPU-accelerated Ethereum transaction-graph analyzer" },
+  wallets:  { title: "Wallets",  sub: "Every wallet seen in the case-study subgraph" },
+  clusters: { title: "Clusters", sub: "Louvain community-detection output" },
+  alerts:   { title: "Alerts",   sub: "Pattern-detection alerts across all runs" },
+  graph:    { title: "Wallet Graph", sub: "Force-directed view of the transaction graph" },
+};
+let currentPage = "overview";
+
+function go(name) {
+  if (!PAGE_META[name]) name = "overview";
+  currentPage = name;
+  document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === `page-${name}`));
+  document.querySelectorAll(".nav-item[data-page]").forEach(a => a.classList.toggle("active", a.dataset.page === name));
+  document.getElementById("pageTitle").textContent = PAGE_META[name].title;
+  document.getElementById("pageSubtitle").textContent = PAGE_META[name].sub;
+  history.replaceState(null, "", `#${name}`);
+  window.scrollTo({ top: 0 });
+  closeMobileSidebar();
+  // Only render immediately if data has already loaded -- on first page
+  // load (e.g. opening a bookmarked #graph link) loadAll() hasn't resolved
+  // yet, and rendering now would just fetch/build against an empty WALLETS
+  // array. renderAll() calls renderGraph() itself once loadAll() finishes.
+  if (name === "graph" && WALLETS.length) renderGraph();
+}
+window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
 
 /* ════════════════════════════════════════
    STATE
@@ -959,9 +1182,16 @@ let WALLET_CLUSTERS = {};   // wallet_id  -> [cluster_id, ...]
 let PAGERANK = {};          // wallet_id  -> {metric_value, rank_position}
 let HEALTHY = false;
 
+function setHealth(state, text) {
+  document.getElementById("healthDot").className = `health-dot ${state}`;
+  document.getElementById("healthText").textContent = text;
+}
+
 async function loadAll() {
-  document.getElementById("greetTxt").textContent = "Connecting…";
-  document.getElementById("statusPills").innerHTML = Array(4).fill('<span class="pill"><span class="skel"></span></span>').join("");
+  setHealth("pending", "Connecting…");
+  ["statWallets","statClusters","statAlerts","statHighSev"].forEach(id => {
+    document.getElementById(id).innerHTML = '<span class="skel"></span>';
+  });
   try {
     const health = await api("/health");
     HEALTHY = health.status === "ok";
@@ -986,46 +1216,56 @@ async function loadAll() {
     PAGERANK = {};
     pagerank.forEach(p => { PAGERANK[p.wallet_id] = p; });
 
-    document.getElementById("greetTxt").innerHTML = `<strong>🟢 API healthy</strong> — ${health.mode} mode`;
+    setHealth("ok", `API healthy — ${health.mode} mode`);
     renderAll();
   } catch (err) {
     HEALTHY = false;
-    document.getElementById("greetTxt").innerHTML = `<strong style="color:#ff8080">🔴 API unreachable</strong>`;
-    document.getElementById("statusPills").innerHTML = `<span class="pill">Check Settings → Connection (currently ${apiBase()})</span>`;
-    toast(`Could not reach the API: ${err.message}`, "error");
+    setHealth("err", "API unreachable");
+    toast(`Could not reach the API (${apiBase()}): ${err.message}`, "error");
   }
 }
 
 function renderAll() {
-  renderStatusPills();
+  renderStatCards();
+  renderDonut(WALLETS, "riskDonut", "riskDonutTotal", "riskDonutLegend");
   renderTopRisk();
+  renderSeverityBars();
   renderLatestAlerts();
   renderWallets();
   renderClusters();
   renderAlerts();
   renderSnapshotSelect();
-  renderGraph();
+  if (currentPage === "graph") renderGraph();
 }
 
 /* ════════════════════════════════════════
-   STATUS BAR
+   OVERVIEW: STAT CARDS + CHARTS
 ════════════════════════════════════════ */
-function renderStatusPills() {
+function renderStatCards() {
   const highSev = ALERTS.filter(a => a.severity === "HIGH").length;
   const newAlerts = ALERTS.filter(a => a.review_status === "NEW").length;
-  const pills = [
-    `<strong>${WALLETS.length}</strong> wallets`,
-    `<strong>${CLUSTERS.length}</strong> clusters`,
-    `<strong>${ALERTS.length}</strong> alerts`,
-    `<strong>${newAlerts}</strong> new`,
-    highSev ? `<strong style="color:#ff8080">${highSev}</strong> high severity` : null,
-  ].filter(Boolean);
-  document.getElementById("statusPills").innerHTML = pills.map(x => `<span class="pill">${x}</span>`).join("");
+  document.getElementById("statWallets").textContent = WALLETS.length;
+  document.getElementById("statClusters").textContent = CLUSTERS.length;
+  document.getElementById("statAlerts").textContent = ALERTS.length;
+  document.getElementById("statAlertsNew").textContent = newAlerts;
+  document.getElementById("statHighSev").textContent = highSev;
 }
 
-/* ════════════════════════════════════════
-   TOP RISK WALLETS
-════════════════════════════════════════ */
+function renderSeverityBars() {
+  const box = document.getElementById("severityBars");
+  const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+  ALERTS.forEach(a => { if (counts[a.severity] !== undefined) counts[a.severity]++; });
+  const max = Math.max(1, ...Object.values(counts));
+  const colors = { HIGH: "#ff6b6b", MEDIUM: "#ffc350", LOW: "#78c8ff" };
+  if (!ALERTS.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }
+  box.innerHTML = Object.entries(counts).map(([k, v]) => `
+    <div class="bar-row">
+      <span class="bar-label">${k}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${v/max*100}%;background:${colors[k]}"></div></div>
+      <span class="bar-value">${v}</span>
+    </div>`).join("");
+}
+
 function renderTopRisk() {
   const box = document.getElementById("topRiskList");
   const top = [...WALLETS].sort((a,b) => (b.risk_score||0) - (a.risk_score||0)).slice(0,5);
@@ -1040,15 +1280,12 @@ function renderTopRisk() {
     </div>`).join("");
 }
 
-/* ════════════════════════════════════════
-   LATEST ALERTS (panel preview)
-════════════════════════════════════════ */
 function renderLatestAlerts() {
   const box = document.getElementById("latestAlertsList");
   const top = [...ALERTS].sort((a,b) => b.alert_id - a.alert_id).slice(0,5);
   if (!top.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }
   box.innerHTML = top.map(a => `
-    <div class="row-item" onclick="scrollToId('alerts')">
+    <div class="row-item" onclick="go('alerts')">
       <div class="ri-left">
         <span class="ri-dot" style="background:${a.severity==='HIGH'?'#ff6b6b':a.severity==='MEDIUM'?'#ffc350':'#78c8ff'}"></span>
         <span class="ri-title">${a.pattern_type}</span>
@@ -1203,7 +1440,7 @@ function renderAlerts() {
 }
 
 /* ════════════════════════════════════════
-   GRAPH (vis-network)
+   GRAPH PAGE (vis-network + stats + donut + pagerank bars)
 ════════════════════════════════════════ */
 let networkInstance = null;
 
@@ -1213,6 +1450,22 @@ function renderSnapshotSelect() {
   sel.innerHTML = SNAPSHOTS.map(s => `<option value="${s.snapshot_id}">${s.snapshot_name} (${s.vertex_count}v/${s.edge_count}e)</option>`).join("")
     || `<option value="1">snapshot #1</option>`;
   if (current && [...sel.options].some(o => o.value === current)) sel.value = current;
+}
+
+function renderPagerankBars() {
+  const box = document.getElementById("pagerankBars");
+  const entries = Object.values(PAGERANK).sort((a,b) => a.rank_position - b.rank_position).slice(0,8);
+  if (!entries.length) { box.innerHTML = `<div class="empty-hint">No PageRank data for run ${runId()}.</div>`; return; }
+  const max = Math.max(...entries.map(e => e.metric_value)) || 1;
+  box.innerHTML = entries.map(e => {
+    const w = WALLETS.find(x => x.wallet_id === e.wallet_id);
+    return `
+    <div class="bar-row clickable" onclick="openWalletModal(${e.wallet_id})">
+      <span class="bar-label">${w ? shortAddr(w.address) : "#"+e.wallet_id}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${e.metric_value/max*100}%;background:linear-gradient(90deg,var(--blue),var(--green))"></div></div>
+      <span class="bar-value">#${e.rank_position}</span>
+    </div>`;
+  }).join("");
 }
 
 async function renderGraph() {
@@ -1232,16 +1485,20 @@ async function renderGraph() {
   const walletIds = new Set();
   edges.forEach(e => { walletIds.add(e.src_wallet_id); walletIds.add(e.dst_wallet_id); });
   WALLETS.forEach(w => walletIds.add(w.wallet_id)); // include isolated nodes too
+  const walletsInGraph = [...walletIds].map(id => WALLETS.find(w => w.wallet_id === id)).filter(Boolean);
 
+  const inkColor = getComputedStyle(document.documentElement).getPropertyValue("--ink").trim() || "#fff";
   const nodes = [...walletIds].map(id => {
     const w = WALLETS.find(x => x.wallet_id === id);
     const pr = PAGERANK[id];
+    const base = riskColor(w?.risk_score), rim = riskColorRim(w?.risk_score);
     return {
       id,
       label: w ? shortAddr(w.address) : `#${id}`,
       value: Math.max(1, w?.tx_count || 1),
-      color: { background: riskColor(w?.risk_score), border: "rgba(255,255,255,.4)" },
-      font: { color: getComputedStyle(document.documentElement).getPropertyValue("--ink").trim() || "#fff" },
+      color: { background: base, border: rim, highlight: { background: base, border: "#fff" }, hover: { background: base, border: "#fff" } },
+      font: { color: inkColor, size: 12, face: "Roboto Mono, monospace", background: "rgba(10,14,24,.6)", vadjust: -3 },
+      shadow: { enabled: true, color: "rgba(0,0,0,.55)", size: 16, x: 0, y: 5 },
       title: w ? `${w.address}\nType: ${w.address_type}\nRisk: ${w.risk_score ?? "–"}\nTx count: ${w.tx_count}${pr ? `\nPageRank: #${pr.rank_position} (${pr.metric_value.toFixed(4)})` : ""}` : `wallet #${id}`,
     };
   });
@@ -1251,28 +1508,57 @@ async function renderGraph() {
     from: e.src_wallet_id,
     to: e.dst_wallet_id,
     value: e.edge_weight || 1,
-    arrows: "to",
-    title: `${e.transfer_count} transfer${e.transfer_count!==1?"s":""} · weight ${e.edge_weight}`,
-    color: { color: "rgba(150,180,255,.45)", highlight: "#5596ff" },
+    arrows: { to: { enabled: true, scaleFactor: 0.55 } },
+    title: `${e.transfer_count} transfer${e.transfer_count!==1?"s":""}\nweight ${e.edge_weight}`,
+    color: { color: "rgba(150,180,255,.5)", highlight: "#5596ff", hover: "#5596ff" },
+    shadow: { enabled: true, color: "rgba(0,0,0,.35)", size: 6, x: 0, y: 2 },
   }));
 
   if (networkInstance) { networkInstance.destroy(); networkInstance = null; }
 
   networkInstance = new vis.Network(canvas, { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edgeItems) }, {
-    nodes: { shape: "dot", scaling: { min: 10, max: 40 } },
-    edges: { smooth: { type: "continuous" }, scaling: { min: 1, max: 8 } },
-    physics: { barnesHut: { gravitationalConstant: -4000, springLength: 140 }, stabilization: { iterations: 150 } },
-    interaction: { hover: true, tooltipDelay: 100 },
+    autoResize: true,
+    nodes: { shape: "dot", scaling: { min: 14, max: 46 }, borderWidth: 2.5, borderWidthSelected: 3.5 },
+    edges: { smooth: { type: "continuous", roundness: 0.35 }, scaling: { min: 1.4, max: 7 } },
+    physics: {
+      barnesHut: { gravitationalConstant: -5200, springLength: 160, springConstant: 0.045, damping: 0.35 },
+      stabilization: { iterations: 180 },
+    },
+    interaction: { hover: true, tooltipDelay: 80, hideEdgesOnDrag: true },
   });
 
   // vis-network's force simulation otherwise keeps ticking every animation
-  // frame forever, even once the layout has visibly settled and even while
-  // scrolled away from the graph -- a standing CPU cost for no visual
-  // benefit. Turn physics off the moment it stabilizes; dragging a node
-  // still re-enables it temporarily on its own.
+  // frame forever, even once the layout has visibly settled -- a standing
+  // CPU cost for no visual benefit. Turn physics off the moment it
+  // stabilizes; dragging a node still re-enables it temporarily on its own.
   networkInstance.once("stabilizationIterationsDone", () => {
     networkInstance?.setOptions({ physics: false });
   });
+
+  // Graph-page stats + side panels, scoped to the wallets actually in view.
+  document.getElementById("gsNodes").textContent = walletIds.size;
+  document.getElementById("gsEdges").textContent = edges.length;
+  const density = walletIds.size > 1 ? (edges.length / (walletIds.size * (walletIds.size - 1)) * 100) : 0;
+  document.getElementById("gsDensity").textContent = density.toFixed(1) + "%";
+  const hub = [...walletsInGraph].sort((a,b) => (b.tx_count||0) - (a.tx_count||0))[0];
+  document.getElementById("gsHub").textContent = hub ? shortAddr(hub.address) : "–";
+
+  renderDonut(walletsInGraph, "graphRiskDonut", "graphRiskDonutTotal", "graphRiskDonutLegend");
+  renderPagerankBars();
+
+  const topByRank = walletsInGraph
+    .filter(w => PAGERANK[w.wallet_id])
+    .sort((a,b) => PAGERANK[a.wallet_id].rank_position - PAGERANK[b.wallet_id].rank_position)
+    .slice(0,5);
+  const topBox = document.getElementById("graphTopWallets");
+  topBox.innerHTML = topByRank.length ? topByRank.map(w => `
+    <div class="row-item" onclick="openWalletModal(${w.wallet_id})">
+      <div class="ri-left">
+        <span class="ri-dot" style="background:${riskColor(w.risk_score)}"></span>
+        <span class="ri-title">${shortAddr(w.address)}</span>
+      </div>
+      <span class="ri-sub">#${PAGERANK[w.wallet_id].rank_position}</span>
+    </div>`).join("") : `<div class="empty-hint">No PageRank data for run ${runId()}.</div>`;
 }
 
 function updateGraphTheme() {
@@ -1293,9 +1579,8 @@ document.getElementById("runIdInput").addEventListener("change", async e => {
 function applyPrefs() {
   const p = loadPref();
   const theme  = p.theme  || "dark";
-  // Off by default: a full-screen WebGL animation loop is expensive to run
-  // continuously. Opt in from Settings > Appearance if you want it.
-  const bg     = p.bg     || "none";
+  // See the VANTA_CONFIGS comment above for why TOPOLOGY is the default.
+  const bg     = p.bg     || "topology";
   const accent = p.accent || "default";
 
   document.documentElement.dataset.theme  = theme;
@@ -1374,16 +1659,15 @@ document.querySelectorAll(".modal").forEach(m=>m.addEventListener("click",e=>{ i
 document.getElementById("toggleSidebar").addEventListener("click",()=>{
   document.getElementById("app").classList.toggle("collapsed");
 });
+function closeMobileSidebar() {
+  document.getElementById("sidebar").classList.remove("mob-open");
+  document.getElementById("mobOverlay").classList.remove("open");
+}
 document.getElementById("mobMenuBtn").addEventListener("click",()=>{
   document.getElementById("sidebar").classList.add("mob-open");
   document.getElementById("mobOverlay").classList.add("open");
 });
-document.getElementById("mobOverlay").addEventListener("click",()=>{
-  document.getElementById("sidebar").classList.remove("mob-open");
-  document.getElementById("mobOverlay").classList.remove("open");
-});
-
-function setActive(el){ document.querySelectorAll(".nav-item").forEach(x=>x.classList.remove("active")); el.classList.add("active"); }
+document.getElementById("mobOverlay").addEventListener("click", closeMobileSidebar);
 
 /* ════════════════════════════════════════
    FAB
@@ -1395,13 +1679,15 @@ document.addEventListener("click",e=>{ if(!document.getElementById("fab").contai
 /* ════════════════════════════════════════
    KEYBOARD SHORTCUTS
 ════════════════════════════════════════ */
+const PAGE_KEYS = { "1": "overview", "2": "wallets", "3": "clusters", "4": "alerts", "5": "graph" };
 document.addEventListener("keydown",e=>{
   const tag=document.activeElement.tagName;
   if(["INPUT","TEXTAREA","SELECT"].includes(tag)) return;
   if(document.querySelector(".modal.open")) { if(e.key==="Escape") document.querySelectorAll(".modal.open").forEach(m=>m.classList.remove("open")); return; }
+  if (PAGE_KEYS[e.key]) { go(PAGE_KEYS[e.key]); return; }
   switch(e.key){
     case "r": case "R": loadAll(); break;
-    case "/":           e.preventDefault(); document.getElementById("walletSearch").focus(); scrollToId("wallets"); break;
+    case "/":           e.preventDefault(); go("wallets"); document.getElementById("walletSearch").focus(); break;
     case "?":           openModal("kbdModal"); break;
     case "s": case "S": openModal("settingsModal"); break;
     case "b": case "B": document.getElementById("app").classList.toggle("collapsed"); break;
@@ -1416,7 +1702,7 @@ document.addEventListener("keydown",e=>{
 });
 
 /* ════════════════════════════════════════
-   INIT
+   SCROLL REVEAL
 ════════════════════════════════════════ */
 function initScrollReveal() {
   if (prefersReducedMotion() || !("IntersectionObserver" in window)) {
@@ -1431,9 +1717,13 @@ function initScrollReveal() {
   document.querySelectorAll(".reveal").forEach(el => io.observe(el));
 }
 
+/* ════════════════════════════════════════
+   INIT
+════════════════════════════════════════ */
 window.addEventListener("DOMContentLoaded",()=>{
   applyPrefs();
   initScrollReveal();
+  go(location.hash.slice(1) || "overview");
   loadAll();
 });
 </script>
