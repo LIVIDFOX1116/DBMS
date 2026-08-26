@@ -1,0 +1,12 @@
+# CPU-only dependencies. Works on the Zenbook and in any plain Python env.
+# Install: pip install -r requirements.txt
+requests>=2.31
+psycopg2-binary>=2.9
+python-dotenv>=1.0
+pandas>=2.0
+pyarrow>=14.0        # parquet read/write
+networkx>=3.0        # CPU graph fallback -- see graph/backend.py
+scipy>=1.11           # required by networkx.pagerank
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pytest>=8.0
