@@ -451,8 +451,21 @@ div.vis-tooltip {
   max-width: 260px;
 }
 .graph-legend { display: flex; align-items: center; gap: 16px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; opacity: .75; }
-.legend-scale { display: inline-flex; height: 10px; width: 90px; border-radius: 999px; background: linear-gradient(90deg, hsl(120,70%,55%), hsl(60,70%,55%), hsl(0,70%,55%)); vertical-align: middle; }
+.legend-scale { display: inline-flex; height: 10px; width: 90px; border-radius: 999px; background: linear-gradient(90deg, hsl(120,90%,58%), hsl(60,90%,58%), hsl(0,90%,58%)); vertical-align: middle; box-shadow: 0 0 10px rgba(150,200,255,.35); }
 .graph-side-stack { display: grid; gap: 20px; }
+
+/* Ambient neon glow flanking the graph panel -- static blurred gradients,
+   no animation loop, just two large blurred circles bleeding in from the
+   sides for the "neon-lit dashboard" feel instead of a flat dark card. */
+.graph-ambient-wrap { position: relative; }
+.graph-ambient-wrap::before,
+.graph-ambient-wrap::after {
+  content: ''; position: absolute; width: 280px; height: 280px;
+  border-radius: 50%; filter: blur(95px); pointer-events: none; z-index: 0;
+}
+.graph-ambient-wrap::before { left: -120px; top: 5%; background: radial-gradient(circle, rgba(80,150,255,.55), transparent 70%); }
+.graph-ambient-wrap::after  { right: -120px; top: 45%; background: radial-gradient(circle, rgba(255,70,180,.4), transparent 70%); }
+.graph-ambient-wrap > .panel { position: relative; z-index: 1; }
 
 /* ══════════════════════════════════════════
    FAB
@@ -777,6 +790,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
           </div>
         </div>
 
+        <div class="graph-ambient-wrap">
         <div class="panel reveal">
           <div class="graph-toolbar">
             <select class="sort-sel" id="snapshotSelect"></select>
@@ -811,6 +825,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
               </div>
             </div>
           </div>
+        </div>
         </div>
 
         <div class="panel reveal">
@@ -1105,6 +1120,23 @@ function riskColorRim(score) {
   if (score === null || score === undefined) return "rgba(255,255,255,.4)";
   const hue = Math.max(0, Math.min(120, 120 * (1 - score / 100)));
   return `hsl(${hue},85%,78%)`;
+}
+// A punchier, more saturated fill for the graph specifically -- badges/bars
+// elsewhere use the muted riskColor() on purpose (readable against light
+// backgrounds too), but on the dark canvas a flatter, more saturated hue
+// reads as "neon" rather than "traffic light."
+function riskColorNeon(score) {
+  if (score === null || score === undefined) return "hsl(0,0%,55%)";
+  const hue = Math.max(0, Math.min(120, 120 * (1 - score / 100)));
+  return `hsl(${hue},90%,58%)`;
+}
+// A translucent glow color for canvas shadow-blur, in the node's own hue
+// instead of a generic black drop-shadow -- this is what actually reads as
+// "glowing" rather than just "has a shadow."
+function riskColorGlow(score) {
+  if (score === null || score === undefined) return "rgba(255,255,255,.7)";
+  const hue = Math.max(0, Math.min(120, 120 * (1 - score / 100)));
+  return `hsla(${hue},100%,65%,.95)`;
 }
 function typeBadgeClass(t) {
   return { SYBIL: "b-type-sybil", WASH_TRADE: "b-type-wash", MIXER: "b-type-mixer", PEEL_CHAIN: "b-type-peel" }[t] || "b-type-none";
@@ -1491,14 +1523,13 @@ async function renderGraph() {
   const nodes = [...walletIds].map(id => {
     const w = WALLETS.find(x => x.wallet_id === id);
     const pr = PAGERANK[id];
-    const base = riskColor(w?.risk_score), rim = riskColorRim(w?.risk_score);
+    const base = riskColorNeon(w?.risk_score), rim = riskColorRim(w?.risk_score);
     return {
       id,
       label: w ? shortAddr(w.address) : `#${id}`,
       value: Math.max(1, w?.tx_count || 1),
       color: { background: base, border: rim, highlight: { background: base, border: "#fff" }, hover: { background: base, border: "#fff" } },
-      font: { color: inkColor, size: 12, face: "Roboto Mono, monospace", background: "rgba(10,14,24,.6)", vadjust: -3 },
-      shadow: { enabled: true, color: "rgba(0,0,0,.55)", size: 16, x: 0, y: 5 },
+      font: { color: inkColor, size: 12, face: "Roboto Mono, monospace", background: "rgba(10,14,24,.65)", vadjust: -3 },
       title: w ? `${w.address}\nType: ${w.address_type}\nRisk: ${w.risk_score ?? "–"}\nTx count: ${w.tx_count}${pr ? `\nPageRank: #${pr.rank_position} (${pr.metric_value.toFixed(4)})` : ""}` : `wallet #${id}`,
     };
   });
@@ -1510,8 +1541,7 @@ async function renderGraph() {
     value: e.edge_weight || 1,
     arrows: { to: { enabled: true, scaleFactor: 0.55 } },
     title: `${e.transfer_count} transfer${e.transfer_count!==1?"s":""}\nweight ${e.edge_weight}`,
-    color: { color: "rgba(150,180,255,.5)", highlight: "#5596ff", hover: "#5596ff" },
-    shadow: { enabled: true, color: "rgba(0,0,0,.35)", size: 6, x: 0, y: 2 },
+    color: { color: "rgba(130,170,255,.7)", highlight: "#8ab4ff", hover: "#8ab4ff" },
   }));
 
   if (networkInstance) { networkInstance.destroy(); networkInstance = null; }
@@ -1533,6 +1563,35 @@ async function renderGraph() {
   // stabilizes; dragging a node still re-enables it temporarily on its own.
   networkInstance.once("stabilizationIterationsDone", () => {
     networkInstance?.setOptions({ physics: false });
+  });
+
+  // vis-network's own per-node `shadow` option renders as basically
+  // invisible on this canvas -- draw the glow ourselves instead: a radial
+  // gradient in the node's own hue, painted *before* the nodes/edges each
+  // frame so it sits behind them as a genuine bloom rather than a flat dot.
+  const valueRange = { min: Math.min(...nodes.map(n => n.value)), max: Math.max(...nodes.map(n => n.value)) };
+  function approxNodeRadius(value) {
+    if (valueRange.max === valueRange.min) return 28;
+    const t = (value - valueRange.min) / (valueRange.max - valueRange.min);
+    return 14 + t * (46 - 14); // mirrors nodes.scaling.min/max above
+  }
+  networkInstance.on("beforeDrawing", (ctx) => {
+    const positions = networkInstance.getPositions();
+    nodes.forEach(n => {
+      const pos = positions[n.id];
+      if (!pos) return;
+      const w = WALLETS.find(x => x.wallet_id === n.id);
+      const glowRadius = approxNodeRadius(n.value) * 3.4;
+      const glowColor = riskColorGlow(w?.risk_score);
+      const grad = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowRadius);
+      grad.addColorStop(0, glowColor);
+      grad.addColorStop(0.35, glowColor);
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.beginPath();
+      ctx.fillStyle = grad;
+      ctx.arc(pos.x, pos.y, glowRadius, 0, Math.PI * 2);
+      ctx.fill();
+    });
   });
 
   // Graph-page stats + side panels, scoped to the wallets actually in view.
