@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" data-bg="topology">
+<html lang="en" data-theme="dark" data-bg="none">
 <head>
 <link
   href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
@@ -54,7 +54,13 @@
   --sidebar-c:  66px;
   --r:          14px;
   --shadow:     0 12px 36px rgba(0,0,0,.35);
-  --transition: .25s ease;
+  --ease:       cubic-bezier(.16,1,.3,1);
+  --transition: .25s var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+  .reveal { opacity: 1 !important; transform: none !important; }
 }
 
 /* LIGHT THEME */
@@ -94,6 +100,8 @@ body {
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 999px; }
+
+:focus-visible { outline: 2px solid rgba(80,150,255,.75); outline-offset: 2px; border-radius: 4px; }
 
 /* ══════════════════════════════════════════
    APP LAYOUT
@@ -221,7 +229,6 @@ body {
   backdrop-filter: blur(16px); box-shadow: var(--shadow);
   display: grid; grid-template-columns: 1fr auto;
   gap: 16px; align-items: center; margin-bottom: 20px;
-  animation: revealUp .5s .1s both;
 }
 @media (max-width:700px) { .status-bar { grid-template-columns: 1fr; } }
 .greet { font-size: 16px; margin-bottom: 10px; }
@@ -242,6 +249,7 @@ body {
   display: inline-flex; align-items: center; gap: 6px;
 }
 .btn:hover { background: var(--g2); transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.btn:active { transform: translateY(0) scale(.97); transition-duration: .1s; }
 .btn.primary { background: rgba(80,150,255,.75); border-color: rgba(255,255,255,.35); }
 .btn.primary:hover { background: rgba(80,150,255,.9); }
 .btn.danger:hover { background: rgba(220,70,70,.35); border-color: rgba(255,100,100,.5); }
@@ -255,7 +263,7 @@ body {
   background: var(--g1); border: 1px solid var(--gb);
   border-radius: var(--r); padding: 20px 22px;
   backdrop-filter: blur(16px); box-shadow: var(--shadow);
-  margin-bottom: 26px; animation: revealUp .5s .2s both;
+  margin-bottom: 26px;
 }
 .panel-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
 .row-list { display: grid; gap: 9px; }
@@ -309,9 +317,10 @@ body {
   border-radius: var(--r); padding: 20px;
   background: var(--g1); border: 1px solid var(--gb);
   box-shadow: var(--shadow); cursor: pointer;
-  transition: transform .3s ease, box-shadow .3s ease;
+  transition: transform .35s var(--ease), box-shadow .35s var(--ease);
 }
 .card:hover { transform: translateY(-5px) scale(1.012); box-shadow: 0 20px 48px rgba(0,0,0,.42); }
+.card:active { transform: translateY(-2px) scale(1.005); transition-duration: .1s; }
 .card-accent {
   position: absolute; inset: -40% -40% auto auto;
   height: 200px; width: 200px; border-radius: 50%;
@@ -492,8 +501,21 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
    KEYFRAMES
 ══════════════════════════════════════════ */
 @keyframes fadeDown { from{opacity:0;transform:translateY(-20px)} to{opacity:1;transform:translateY(0)} }
-@keyframes revealUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
 @keyframes popIn    { from{opacity:0;transform:scale(.93)} to{opacity:1;transform:scale(1)} }
+
+/* ══════════════════════════════════════════
+   SCROLL REVEAL — sections fade/slide in as they enter
+   view (IntersectionObserver-driven, see script) instead of
+   all firing at once on load.
+══════════════════════════════════════════ */
+.reveal { opacity: 0; transform: translateY(22px); transition: opacity .6s var(--ease), transform .6s var(--ease); }
+.reveal.in { opacity: 1; transform: translateY(0); }
+
+/* ══════════════════════════════════════════
+   SKELETON (shimmer loading placeholder)
+══════════════════════════════════════════ */
+.skel { display:inline-block; height:13px; width:64px; border-radius:999px; background:linear-gradient(90deg,var(--g0) 25%,var(--g2) 50%,var(--g0) 75%); background-size:200% 100%; animation:shimmer 1.4s ease infinite; vertical-align:middle; }
+@keyframes shimmer { from{background-position:200% 0;} to{background-position:-200% 0;} }
 </style>
 </head>
 <body>
@@ -562,7 +584,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
     <div class="container">
 
       <!-- STATUS BAR -->
-      <section class="status-bar" id="statusBar">
+      <section class="status-bar reveal" id="statusBar">
         <div>
           <div class="greet" id="greetTxt">Connecting…</div>
           <div class="pills" id="statusPills"></div>
@@ -575,7 +597,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
       </section>
 
       <!-- TOP RISK WALLETS -->
-      <section class="panel" id="topRiskSection">
+      <section class="panel reveal" id="topRiskSection">
         <div class="panel-hdr">
           <div class="section-title" style="margin-bottom:0;">⚠ Top Risk Wallets</div>
         </div>
@@ -583,7 +605,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
       </section>
 
       <!-- LATEST ALERTS -->
-      <section class="panel" id="latestAlertsSection">
+      <section class="panel reveal" id="latestAlertsSection">
         <div class="panel-hdr">
           <div class="section-title" style="margin-bottom:0;">🚨 Latest Alerts</div>
         </div>
@@ -591,7 +613,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
       </section>
 
       <!-- WALLETS -->
-      <section id="wallets" style="margin-bottom:26px;">
+      <section id="wallets" class="reveal" style="margin-bottom:26px;">
         <div class="sec-header">
           <div class="section-title" style="margin-bottom:0;">Wallets</div>
           <div class="sec-controls">
@@ -616,7 +638,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
       </section>
 
       <!-- CLUSTERS -->
-      <section id="clusters" style="margin-bottom:26px;">
+      <section id="clusters" class="reveal" style="margin-bottom:26px;">
         <div class="sec-header">
           <div class="section-title" style="margin-bottom:0;">Clusters</div>
         </div>
@@ -624,7 +646,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
       </section>
 
       <!-- ALERTS -->
-      <section id="alerts" style="margin-bottom:26px;">
+      <section id="alerts" class="reveal" style="margin-bottom:26px;">
         <div class="sec-header">
           <div class="section-title" style="margin-bottom:0;">Alerts</div>
         </div>
@@ -638,7 +660,7 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
       </section>
 
       <!-- GRAPH -->
-      <section class="panel" id="graph">
+      <section class="panel reveal" id="graph">
         <div class="panel-hdr">
           <div class="section-title" style="margin-bottom:0;">🕸 Wallet Graph</div>
         </div>
@@ -771,12 +793,13 @@ kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; pa
 
       <div class="settings-section">
         <h4>Background effect</h4>
+        <small style="opacity:.55;display:block;margin-bottom:8px;">Off by default -- these run a continuous WebGL animation, which costs real CPU/GPU.</small>
         <div class="bg-opts">
-          <div class="bg-opt on" data-bg="topology" onclick="setBg('topology',this)"><span class="bg-icon">〰️</span>Topology</div>
+          <div class="bg-opt" data-bg="topology" onclick="setBg('topology',this)"><span class="bg-icon">〰️</span>Topology</div>
           <div class="bg-opt" data-bg="waves" onclick="setBg('waves',this)"><span class="bg-icon">🌊</span>Waves</div>
           <div class="bg-opt" data-bg="fog" onclick="setBg('fog',this)"><span class="bg-icon">🌫️</span>Fog</div>
           <div class="bg-opt" data-bg="net" onclick="setBg('net',this)"><span class="bg-icon">🕸️</span>Net</div>
-          <div class="bg-opt" data-bg="none" onclick="setBg('none',this)"><span class="bg-icon">⬛</span>None</div>
+          <div class="bg-opt on" data-bg="none" onclick="setBg('none',this)"><span class="bg-icon">⬛</span>None</div>
         </div>
       </div>
 
@@ -833,12 +856,17 @@ const VANTA_CONFIGS = {
   none: () => null,
 };
 
+const prefersReducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 function startVanta(bgKey) {
   if (vantaEffect) {
     try { vantaEffect.destroy(); } catch(e) { console.warn("Vanta destroy:", e); }
     vantaEffect = null;
   }
-  if (bgKey === "none") return;
+  // A full-screen WebGL/canvas animation loop is real, continuous CPU/GPU
+  // cost -- skip it entirely for reduced-motion users rather than just
+  // slowing it down.
+  if (bgKey === "none" || prefersReducedMotion()) return;
   const factory = VANTA_CONFIGS[bgKey];
   if (!factory) return;
   try {
@@ -848,6 +876,15 @@ function startVanta(bgKey) {
     vantaEffect = null;
   }
 }
+
+// Vanta keeps rendering every frame even when the tab isn't visible unless
+// told otherwise -- pause/resume it with the tab instead of burning battery
+// and competing with everything else for the main thread in the background.
+document.addEventListener("visibilitychange", () => {
+  if (!vantaEffect) return;
+  if (document.hidden) vantaEffect.pause?.();
+  else vantaEffect.resume?.();
+});
 
 /* ════════════════════════════════════════
    PREFERENCES (theme/bg/accent + API connection settings)
@@ -888,6 +925,7 @@ async function api(path, params = {}) {
    UTILITIES
 ════════════════════════════════════════ */
 function scrollToId(id) { document.getElementById(id)?.scrollIntoView({behavior:"smooth",block:"start"}); }
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
 function shortAddr(a) { return a && a.length > 12 ? `${a.slice(0,6)}…${a.slice(-4)}` : a; }
 function copyToClipboard(text) {
   navigator.clipboard?.writeText(text)
@@ -923,6 +961,7 @@ let HEALTHY = false;
 
 async function loadAll() {
   document.getElementById("greetTxt").textContent = "Connecting…";
+  document.getElementById("statusPills").innerHTML = Array(4).fill('<span class="pill"><span class="skel"></span></span>').join("");
   try {
     const health = await api("/health");
     HEALTHY = health.status === "ok";
@@ -1023,7 +1062,7 @@ function renderLatestAlerts() {
 ════════════════════════════════════════ */
 let walletSearchQ = "", walletSort = "risk", walletFilter = "all";
 
-document.getElementById("walletSearch").addEventListener("input", e => { walletSearchQ = e.target.value.toLowerCase(); renderWallets(); });
+document.getElementById("walletSearch").addEventListener("input", debounce(e => { walletSearchQ = e.target.value.toLowerCase(); renderWallets(); }, 150));
 document.getElementById("walletSort").addEventListener("change", e => { walletSort = e.target.value; renderWallets(); });
 document.getElementById("walletFilterBar").addEventListener("click", e => {
   const btn = e.target.closest(".fbtn"); if (!btn) return;
@@ -1225,6 +1264,21 @@ async function renderGraph() {
     physics: { barnesHut: { gravitationalConstant: -4000, springLength: 140 }, stabilization: { iterations: 150 } },
     interaction: { hover: true, tooltipDelay: 100 },
   });
+
+  // vis-network's force simulation otherwise keeps ticking every animation
+  // frame forever, even once the layout has visibly settled and even while
+  // scrolled away from the graph -- a standing CPU cost for no visual
+  // benefit. Turn physics off the moment it stabilizes; dragging a node
+  // still re-enables it temporarily on its own.
+  networkInstance.once("stabilizationIterationsDone", () => {
+    networkInstance?.setOptions({ physics: false });
+  });
+}
+
+function updateGraphTheme() {
+  if (!networkInstance) return;
+  const ink = getComputedStyle(document.documentElement).getPropertyValue("--ink").trim() || "#fff";
+  networkInstance.setOptions({ nodes: { font: { color: ink } } });
 }
 
 document.getElementById("snapshotSelect").addEventListener("change", renderGraph);
@@ -1239,7 +1293,9 @@ document.getElementById("runIdInput").addEventListener("change", async e => {
 function applyPrefs() {
   const p = loadPref();
   const theme  = p.theme  || "dark";
-  const bg     = p.bg     || "topology";
+  // Off by default: a full-screen WebGL animation loop is expensive to run
+  // continuously. Opt in from Settings > Appearance if you want it.
+  const bg     = p.bg     || "none";
   const accent = p.accent || "default";
 
   document.documentElement.dataset.theme  = theme;
@@ -1261,7 +1317,7 @@ function setTheme(t) {
   document.documentElement.dataset.theme=t;
   document.querySelectorAll(".theme-opt").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
   toast(t==="dark"?"🌙 Dark mode on":"☀️ Light mode on","info");
-  renderGraph();
+  updateGraphTheme();
 }
 function setBg(bg) {
   const p=loadPref(); p.bg=bg; savePref(p);
@@ -1354,7 +1410,7 @@ document.addEventListener("keydown",e=>{
       const cur=loadPref(); const nt=cur.theme==="dark"?"light":"dark"; cur.theme=nt; savePref(cur);
       document.documentElement.dataset.theme=nt;
       document.querySelectorAll(".theme-opt").forEach(x=>x.classList.toggle("on",x.dataset.t===nt));
-      toast(nt==="dark"?"🌙 Dark mode":"☀️ Light mode","info"); renderGraph(); break;
+      toast(nt==="dark"?"🌙 Dark mode":"☀️ Light mode","info"); updateGraphTheme(); break;
     case "Escape": document.querySelectorAll(".modal.open").forEach(m=>m.classList.remove("open")); break;
   }
 });
@@ -1362,8 +1418,22 @@ document.addEventListener("keydown",e=>{
 /* ════════════════════════════════════════
    INIT
 ════════════════════════════════════════ */
+function initScrollReveal() {
+  if (prefersReducedMotion() || !("IntersectionObserver" in window)) {
+    document.querySelectorAll(".reveal").forEach(el => el.classList.add("in"));
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) { entry.target.classList.add("in"); io.unobserve(entry.target); }
+    });
+  }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+  document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+}
+
 window.addEventListener("DOMContentLoaded",()=>{
   applyPrefs();
+  initScrollReveal();
   loadAll();
 });
 </script>
