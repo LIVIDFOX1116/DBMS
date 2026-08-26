@@ -48,6 +48,19 @@ if the run hasn't been triaged into a type yet — always handle `null` in the U
 `cluster_id` and `wallet_id` are both nullable — an alert can be wallet-only,
 cluster-only, or both.
 
+## GET /snapshots
+```json
+[{"snapshot_id": 1, "snapshot_name": "polynetwork_2hop_v1", "start_block": 0,
+  "end_block": 999999999, "vertex_count": 6, "edge_count": 7, "is_directed": true}]
+```
+
+## GET /snapshots/{snapshot_id}/edges?limit=500
+The graph itself -- what the frontend's graph view renders as nodes (from
+`/wallets`) and edges (from here).
+```json
+[{"src_wallet_id": 1, "dst_wallet_id": 2, "edge_weight": 12.4, "transfer_count": 5}]
+```
+
 ## GET /runs/{run_id}/metrics?metric_name=pagerank&limit=50
 `metric_name` is whichever algorithm wrote it: `pagerank`, or
 `bfs_distance_from_{seed_wallet_id}` for path-tracing. There is no fixed enum
@@ -67,3 +80,6 @@ endpoint.
 - `/runs/{run_id}/metrics` doesn't validate that `run_id` exists in mock mode;
   it just returns `[]`. The frontend should treat an empty list as "no data
   yet," not as an error.
+- CORS is wide open (`allow_origins=["*"]`, GET only) so the frontend can be
+  opened as a static file or served from any local port without config --
+  safe only because there's no auth and nothing here mutates state.

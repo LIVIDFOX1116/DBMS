@@ -21,6 +21,7 @@ import pathlib
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import psycopg2
 
 from ingestion import config
@@ -29,6 +30,17 @@ app = FastAPI(
     title="Transaction Graph Analyzer API",
     version="0.1.0",
     description="Shared contract between the GPU/backend half and the frontend half. See docs/API_CONTRACT.md.",
+)
+
+# No auth and no mutating endpoints (see API_CONTRACT.md "Known simplifications"),
+# so a wildcard origin doesn't widen the attack surface -- it just lets the
+# frontend be opened as a static file or served from any local dev port
+# without per-origin config.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
 )
 
 MOCK_PATH = pathlib.Path(__file__).parent / "mock_data.json"
@@ -161,6 +173,40 @@ def list_alerts(status: Optional[str] = None):
                     """SELECT alert_id, run_id, cluster_id, wallet_id, pattern_type, severity, confidence, review_status
                        FROM alert ORDER BY detected_at DESC LIMIT 100"""
                 )
+            return rows_as_dicts(cur)
+    finally:
+        conn.close()
+
+
+@app.get("/snapshots")
+def list_snapshots():
+    if using_mock():
+        return load_mock()["snapshots"]
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT snapshot_id, snapshot_name, start_block, end_block, vertex_count, edge_count, is_directed
+                   FROM graph_snapshot ORDER BY created_at DESC"""
+            )
+            return rows_as_dicts(cur)
+    finally:
+        conn.close()
+
+
+@app.get("/snapshots/{snapshot_id}/edges")
+def snapshot_edges(snapshot_id: int, limit: int = 500):
+    if using_mock():
+        edges = load_mock()["edges"].get(str(snapshot_id), [])
+        return edges[:limit]
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT src_wallet_id, dst_wallet_id, edge_weight, transfer_count
+                   FROM snapshot_edge WHERE snapshot_id = %s LIMIT %s""",
+                (snapshot_id, limit),
+            )
             return rows_as_dicts(cur)
     finally:
         conn.close()
