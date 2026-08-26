@@ -1,0 +1,223 @@
+// GPU-Accelerated Ethereum Transaction-Graph Analyzer — corrected schema (v2)
+// Paste this whole file into https://dbdiagram.io (free, no login) to get an
+// auto-laid-out ER diagram, or into Lucidchart via Import Data -> ER Diagram (PostgreSQL)
+// if your assignment requires a screenshot from one of those specific tools.
+
+Table wallet {
+  wallet_id bigint [pk, increment]
+  address char(42) [unique, not null]
+  address_type varchar(10) [not null, note: 'EOA or CONTRACT']
+  first_seen_block bigint
+  last_seen_block bigint
+  balance_wei numeric(38,0) [default: 0]
+  total_sent_wei numeric(38,0) [default: 0]
+  total_recv_wei numeric(38,0) [default: 0]
+  tx_count int [default: 0]
+  risk_score decimal(5,2)
+
+  Note: 'Graph VERTEX. Central hub entity referenced by nearly every other table.'
+}
+
+Table block {
+  block_number bigint [pk]
+  block_hash char(66) [unique, not null]
+  proposer_wallet_id bigint [ref: > wallet.wallet_id, note: 'Renamed from miner_wallet_id: Ethereum has been proof-of-stake since Sept 2022']
+  block_timestamp timestamp [not null]
+  gas_used bigint
+  gas_limit bigint
+  tx_count int
+}
+
+Table transaction {
+  tx_hash char(66) [pk]
+  block_number bigint [ref: > block.block_number, not null]
+  from_wallet_id bigint [ref: > wallet.wallet_id, not null]
+  to_wallet_id bigint [ref: > wallet.wallet_id, note: 'nullable: contract-creation txs have no recipient']
+  value_wei numeric(38,0) [not null]
+  gas_price bigint
+  gas_used bigint
+  tx_index smallint
+  nonce int
+  status boolean
+  method_id char(10)
+
+  Note: 'Graph EDGE (associative entity resolving the recursive WALLET-to-WALLET m:n).'
+}
+
+Table token {
+  token_id int [pk, increment]
+  contract_wallet_id bigint [ref: - wallet.wallet_id, unique, not null, note: 'FIXED: made mandatory — every token row must map to a wallet row; this is a subtype link (the contract IS a wallet), not a "deployer" link']
+  contract_address char(42) [unique, not null]
+  symbol varchar(16)
+  token_name varchar(64)
+  decimals smallint
+  standard varchar(10)
+}
+
+Table token_transfer {
+  transfer_id bigint [pk, increment]
+  tx_hash char(66) [ref: > transaction.tx_hash, not null]
+  token_id int [ref: > token.token_id, not null]
+  from_wallet_id bigint [ref: > wallet.wallet_id, not null, note: 'FIXED: relationship to wallet was previously undocumented']
+  to_wallet_id bigint [ref: > wallet.wallet_id, not null, note: 'FIXED: relationship to wallet was previously undocumented']
+  token_amount numeric(38,0)
+  log_index smallint
+
+  indexes {
+    (tx_hash, log_index) [unique]
+  }
+}
+
+Table label {
+  label_id int [pk, increment]
+  label_name varchar(60) [unique, not null]
+  category varchar(30)
+  source varchar(40)
+  is_sanctioned boolean [default: false]
+}
+
+Table wallet_label {
+  wallet_id bigint [ref: > wallet.wallet_id, not null]
+  label_id int [ref: > label.label_id, not null]
+  tagged_by int [ref: > analyst.analyst_id]
+  confidence decimal(4,3)
+  tagged_at timestamp [default: `now()`]
+
+  indexes {
+    (wallet_id, label_id) [pk]
+  }
+}
+
+Table graph_snapshot {
+  snapshot_id int [pk, increment]
+  snapshot_name varchar(80) [unique, not null]
+  file_path varchar(255) [not null]
+  file_format varchar(10) [not null]
+  start_block bigint
+  end_block bigint
+  vertex_count bigint
+  edge_count bigint
+  is_directed boolean [default: true]
+  checksum_sha256 char(64)
+}
+
+Table snapshot_edge {
+  edge_id bigint [pk, increment]
+  snapshot_id int [ref: > graph_snapshot.snapshot_id, not null]
+  src_wallet_id bigint [ref: > wallet.wallet_id, not null, note: 'FIXED: relationship to wallet was previously undocumented']
+  dst_wallet_id bigint [ref: > wallet.wallet_id, not null, note: 'FIXED: relationship to wallet was previously undocumented']
+  edge_weight double
+  transfer_count int [default: 1]
+
+  indexes {
+    (snapshot_id, src_wallet_id, dst_wallet_id) [unique, note: 'CHANGED: aggregate key no longer includes tx_hash — see snapshot_edge_tx bridge table']
+  }
+}
+
+Table snapshot_edge_tx {
+  snapshot_edge_id bigint [ref: > snapshot_edge.edge_id, not null]
+  tx_hash char(66) [ref: > transaction.tx_hash, not null]
+
+  indexes {
+    (snapshot_edge_id, tx_hash) [pk]
+  }
+
+  Note: 'NEW bridge entity (v2). Resolves the contradiction in v1 where SNAPSHOT_EDGE both aggregated many
+  transactions (edge_weight/transfer_count) AND held a single UNIQUE(snapshot,tx) foreign key. This table lets
+  one aggregated CSR edge trace back to every underlying transaction — needed so an analyst can click a
+  suspicious edge and see the real transactions behind it.'
+}
+
+Table algorithm {
+  algorithm_id int [pk, increment]
+  algorithm_name varchar(40) [unique, not null]
+  category varchar(20) [not null]
+  cugraph_function varchar(60)
+  default_params jsonb
+  library_version varchar(20)
+}
+
+Table analysis_run {
+  run_id bigint [pk, increment]
+  snapshot_id int [ref: > graph_snapshot.snapshot_id, not null]
+  algorithm_id int [ref: > algorithm.algorithm_id, not null]
+  analyst_id int [ref: > analyst.analyst_id, not null]
+  parameters jsonb
+  gpu_device varchar(40)
+  gpu_memory_mb int
+  started_at timestamp
+  completed_at timestamp
+  runtime_ms int
+  status varchar(12)
+}
+
+Table vertex_metric {
+  metric_id bigint [pk, increment]
+  run_id bigint [ref: > analysis_run.run_id, not null]
+  wallet_id bigint [ref: > wallet.wallet_id, not null]
+  metric_name varchar(30) [not null]
+  metric_value double
+  rank_position int
+
+  indexes {
+    (run_id, wallet_id, metric_name) [unique]
+  }
+}
+
+Table cluster {
+  cluster_id bigint [pk, increment]
+  run_id bigint [ref: > analysis_run.run_id, not null]
+  community_label int [not null]
+  member_count int
+  internal_edges bigint
+  modularity_score double
+  cluster_type varchar(20) [note: 'SYBIL / WASH_TRADE / MIXER / PEEL_CHAIN']
+  risk_score decimal(5,2)
+}
+
+Table cluster_member {
+  cluster_id bigint [ref: > cluster.cluster_id, not null]
+  wallet_id bigint [ref: > wallet.wallet_id, not null]
+  membership_score double
+  is_core_node boolean [default: false]
+  in_degree int
+  out_degree int
+
+  indexes {
+    (cluster_id, wallet_id) [pk]
+  }
+}
+
+Table alert {
+  alert_id bigint [pk, increment]
+  run_id bigint [ref: > analysis_run.run_id, not null]
+  cluster_id bigint [ref: > cluster.cluster_id]
+  wallet_id bigint [ref: > wallet.wallet_id]
+  reviewed_by int [ref: > analyst.analyst_id]
+  pattern_type varchar(20) [not null]
+  severity varchar(10) [not null]
+  confidence decimal(4,3)
+  detected_at timestamp [default: `now()`]
+  review_status varchar(12) [default: 'NEW']
+}
+
+Table visualization {
+  viz_id int [pk, increment]
+  run_id bigint [ref: > analysis_run.run_id, not null]
+  layout_algorithm varchar(40)
+  image_path varchar(255)
+  image_format varchar(10)
+  nodes_rendered int
+  edges_rendered int
+  generated_at timestamp [default: `now()`]
+}
+
+Table analyst {
+  analyst_id int [pk, increment]
+  username varchar(40) [unique, not null]
+  email varchar(120) [not null]
+  password_hash char(60) [not null]
+  role varchar(20) [not null]
+  organisation varchar(80)
+  created_at timestamp [default: `now()`]
+}

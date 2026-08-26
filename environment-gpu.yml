@@ -1,0 +1,46 @@
+# RAPIDS environment for the GPU laptops (RTX 4070, GTX 1650) -- run this
+# INSIDE WSL2 Ubuntu, not on Windows directly, and not on the Zenbook.
+#
+# Setup (one time):
+#   1. Install WSL2 + Ubuntu on Windows: https://learn.microsoft.com/windows/wsl/install
+#   2. Install the latest NVIDIA driver on the WINDOWS host (not inside WSL2).
+#   3. Install miniforge inside WSL2 Ubuntu:
+#        curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+#        bash Miniforge3-$(uname)-$(uname -m).sh
+#   4. conda env create -f environment-gpu.yml
+#   5. conda activate txgraph-gpu
+#   6. python scripts/verify_gpu_env.py   <- must print "PHASE 0 GPU CHECK: COMPLETE"
+#
+# Requirements this depends on (see project bible / chat history for the
+# reasoning): NVIDIA GPU with compute capability 7.0+ (Volta or newer --
+# Pascal is unsupported since RAPIDS 24.02), CUDA 12 with driver 525.60.13+
+# (or CUDA 13 with driver 580.65.06+), Windows 11 + WSL2 Ubuntu (WSL1 doesn't
+# work). Both the GTX 1650 (Turing, cc 7.5) and RTX 4070 laptop (Ada
+# Lovelace, cc 8.9) meet the compute-capability floor -- VRAM is the real
+# constraint on the GTX 1650 (~4GB), not compute capability.
+#
+# IMPORTANT: RAPIDS version numbers change every release (YY.MM scheme, e.g.
+# 25.02, 26.06...). Rather than pinning a version here that will be stale by
+# the time you read this, get the exact current command from the official
+# release selector at https://docs.rapids.ai/install/ (choose Conda, your
+# CUDA version, Python 3.11) and use its channel/package list in place of
+# the versions below if they don't resolve.
+name: txgraph-gpu
+channels:
+  - rapidsai
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.11
+  - cudf
+  - cugraph
+  - cupy
+  - pandas
+  - pyarrow
+  - psycopg2
+  - python-dotenv
+  - requests
+  - pip
+  - pip:
+      - fastapi
+      - "uvicorn[standard]"

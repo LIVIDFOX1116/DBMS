@@ -1,0 +1,318 @@
+<svg viewBox="0 0 1900 820" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Helvetica, Arial, sans-serif" role="img">
+<title>ER Diagram - GPU-Accelerated Ethereum Transaction-Graph Analyzer</title>
+<desc>Entity-relationship diagram with 18 entities across three layers (on-chain data, GPU analytics, forensic output) plus a central WALLET hub entity, showing primary keys, foreign keys, and relationship cardinalities.</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+  </marker>
+</defs>
+
+<rect x="0" y="0" width="1900" height="820" fill="#ffffff"/>
+
+<!-- Title -->
+<text x="30" y="30" font-size="18" font-weight="700" fill="#111827">GPU-Accelerated Ethereum Transaction-Graph Analyzer — Entity Relationship Diagram (v2, corrected)</text>
+
+<!-- Band backgrounds -->
+<rect x="250" y="45" width="1610" height="150" rx="8" fill="#eaf1fd" stroke="#c7d9f5"/>
+<text x="266" y="63" font-size="11" font-weight="700" fill="#2f6fed">LAYER 1 — ON-CHAIN DATA</text>
+
+<rect x="250" y="215" width="1610" height="150" rx="8" fill="#e9f9ef" stroke="#c7ead4"/>
+<text x="266" y="233" font-size="11" font-weight="700" fill="#1f9d55">LAYER 2 — GPU ANALYTICS</text>
+
+<rect x="250" y="385" width="1610" height="150" rx="8" fill="#fdf1e3" stroke="#f3d9b5"/>
+<text x="266" y="403" font-size="11" font-weight="700" fill="#d9781c">LAYER 3 — FORENSIC OUTPUT</text>
+
+<!-- ================= RELATIONSHIP LINES (drawn first, under boxes) ================= -->
+<g stroke="#94a3b8" stroke-width="1.3" fill="none" marker-end="url(#arrow)">
+<!-- WALLET fan-out: layer1/2 via lane y=205, layer3 via lane y=375 -->
+<path d="M35,235 L35,205 L385,205 L385,70"/>
+<path d="M50,235 L50,205 L649,205 L649,70"/>
+<path d="M65,235 L65,205 L669,205 L669,70"/>
+<path d="M80,235 L80,205 L923,205 L923,70"/>
+<path d="M95,235 L95,205 L1177,205 L1177,70"/>
+<path d="M110,235 L110,205 L1197,205 L1197,70"/>
+<path d="M125,235 L125,205 L1715,205 L1715,70"/>
+<path d="M140,235 L140,205 L649,205 L649,235"/>
+<path d="M155,235 L155,205 L669,205 L669,235"/>
+<path d="M170,235 L170,205 L1715,205 L1715,235"/>
+<path d="M90,345 L90,375 L738,375 L738,405"/>
+<path d="M130,345 L130,375 L1046,375 L1046,405"/>
+
+<!-- Layer1 internal -->
+<path d="M510,110 L544,115"/>
+<path d="M1038,105 L1072,115"/>
+<path d="M1566,105 L1600,110"/>
+<path d="M659,160 L659,180 L1187,180 L1187,160"/>
+
+<!-- Layer1 -> Layer2 -->
+<path d="M659,160 L659,205 L923,205 L923,235"/>
+
+<!-- Layer2 internal -->
+<path d="M510,280 L544,280"/>
+<path d="M774,280 L808,270"/>
+<path d="M1302,265 L1336,280"/>
+<path d="M1566,280 L1600,275"/>
+<path d="M395,305 L395,340 L1451,340 L1451,325"/>
+
+<!-- Layer2 -> Layer3 -->
+<path d="M1451,325 L1451,375 L420,375 L420,405"/>
+<path d="M1451,325 L1451,376 L1056,376 L1056,405"/>
+<path d="M1451,325 L1451,377 L1374,377 L1374,405"/>
+
+<!-- Layer3 internal -->
+<path d="M560,440 L598,440"/>
+<path d="M420,475 L420,520 L1046,520 L1046,495"/>
+<path d="M1692,475 L1692,525 L1066,525 L1066,495"/>
+
+<!-- Layer3 -> Layer2 (analyst initiates run) -->
+<path d="M1692,405 L1692,375 L1451,375 L1451,325"/>
+
+<!-- Long-distance via right margin: ANALYST assigns WALLET_LABEL -->
+<path d="M1832,440 L1875,440 L1875,110 L1830,110"/>
+</g>
+
+<!-- Relationship verb + cardinality labels -->
+<g font-size="9" font-style="italic" fill="#475569">
+<text x="215" y="200">proposes (0,1)-(0,N)</text>
+<text x="215" y="215">sends tx (1,1)-(0,N)</text>
+<text x="290" y="228">receives tx (0,1)-(0,N)</text>
+<text x="430" y="198">is instance of (1,1)-(0,1)</text>
+<text x="570" y="198">sends tok. (1,1)-(0,N)</text>
+<text x="730" y="228">receives tok. (0,1)-(0,N)</text>
+<text x="1400" y="198">is tagged (1,1)-(0,N)</text>
+<text x="330" y="222">is src of (1,1)-(0,N)</text>
+<text x="490" y="228">is dst of (0,1)-(0,N)</text>
+<text x="1400" y="222">scored in (1,1)-(0,N)</text>
+<text x="330" y="368">belongs to (1,1)-(0,N)</text>
+<text x="770" y="368">flagged in (0,1)-(0,N)</text>
+
+<text x="512" y="105">includes (1,1)-(0,N)</text>
+<text x="1040" y="98">moved in (1,1)-(0,N)</text>
+<text x="1568" y="98">applied to (1,1)-(0,N)</text>
+<text x="900" y="175">emits (1,1)-(0,N)</text>
+<text x="960" y="220">traced by (1,1)-(0,N)</text>
+
+<text x="512" y="273">contains (1,1)-(1,N)</text>
+<text x="778" y="273">aggregates (1,1)-(1,N)</text>
+<text x="1304" y="258">executed in (1,1)-(0,N)</text>
+<text x="1568" y="273">produces (1,1)-(0,N)</text>
+<text x="1000" y="335">loaded by (1,1)-(0,N)</text>
+
+<text x="1140" y="370">detects (1,1)-(0,N)</text>
+<text x="1060" y="355">generates (1,1)-(0,N)</text>
+<text x="1260" y="370">renders (1,1)-(0,N)</text>
+<text x="1500" y="355">initiates (1,1)-(0,N)</text>
+
+<text x="562" y="435">groups (1,1)-(1,N)</text>
+<text x="700" y="512">raises (0,1)-(0,N)</text>
+<text x="1300" y="518">reviews (0,1)-(0,N)</text>
+<text x="1720" y="270">assigns (0,1)-(0,N)</text>
+</g>
+
+<!-- ================= ENTITY BOXES ================= -->
+<!-- helper style: header rect + name + attribute lines -->
+
+<!-- WALLET (hub) -->
+<g>
+ <rect x="20" y="235" width="190" height="110" rx="6" fill="#ffffff" stroke="#7a2fed" stroke-width="1.6"/>
+ <path d="M20,241 a6,6 0 0 1 6,-6 h178 a6,6 0 0 1 6,6 v18 h-190 z" fill="#7a2fed"/>
+ <text x="115" y="254" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">WALLET</text>
+ <text x="30" y="273" font-size="10"><tspan font-weight="700">PK</tspan> wallet_id</text>
+ <text x="30" y="287" font-size="10">    address (UK)</text>
+ <text x="30" y="301" font-size="10">    address_type (EOA/CONTRACT)</text>
+ <text x="30" y="315" font-size="10">    risk_score</text>
+ <text x="30" y="335" font-size="9" fill="#7a2fed" font-style="italic">central vertex — hub of the graph</text>
+</g>
+
+<!-- BLOCK -->
+<g>
+ <rect x="280" y="60" width="230" height="80" rx="6" fill="#ffffff" stroke="#2f6fed" stroke-width="1.4"/>
+ <path d="M280,66 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#2f6fed"/>
+ <text x="395" y="79" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">BLOCK</text>
+ <text x="290" y="98" font-size="10"><tspan font-weight="700">PK</tspan> block_number</text>
+ <text x="290" y="112" font-size="10"><tspan font-weight="700">FK</tspan> proposer_wallet_id → WALLET</text>
+ <text x="290" y="126" font-size="10">    block_timestamp</text>
+</g>
+
+<!-- TRANSACTION -->
+<g>
+ <rect x="544" y="60" width="230" height="90" rx="6" fill="#ffffff" stroke="#2f6fed" stroke-width="1.4"/>
+ <path d="M544,66 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#2f6fed"/>
+ <text x="659" y="79" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">TRANSACTION</text>
+ <text x="554" y="98" font-size="10"><tspan font-weight="700">PK</tspan> tx_hash</text>
+ <text x="554" y="112" font-size="10"><tspan font-weight="700">FK</tspan> block_number, from_wallet_id,</text>
+ <text x="554" y="124" font-size="10">    to_wallet_id (→ WALLET)</text>
+ <text x="554" y="138" font-size="10">    value_wei, gas_price</text>
+</g>
+
+<!-- TOKEN -->
+<g>
+ <rect x="808" y="60" width="230" height="70" rx="6" fill="#ffffff" stroke="#2f6fed" stroke-width="1.4"/>
+ <path d="M808,66 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#2f6fed"/>
+ <text x="923" y="79" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">TOKEN</text>
+ <text x="818" y="98" font-size="10"><tspan font-weight="700">PK</tspan> token_id</text>
+ <text x="818" y="112" font-size="10"><tspan font-weight="700">FK</tspan> contract_wallet_id → WALLET (UK)</text>
+</g>
+
+<!-- TOKEN_TRANSFER -->
+<g>
+ <rect x="1072" y="60" width="230" height="90" rx="6" fill="#ffffff" stroke="#2f6fed" stroke-width="1.4"/>
+ <path d="M1072,66 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#2f6fed"/>
+ <text x="1187" y="79" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">TOKEN_TRANSFER</text>
+ <text x="1082" y="98" font-size="10"><tspan font-weight="700">PK</tspan> transfer_id</text>
+ <text x="1082" y="112" font-size="10"><tspan font-weight="700">FK</tspan> tx_hash, token_id,</text>
+ <text x="1082" y="124" font-size="10">    from/to_wallet_id (→ WALLET)</text>
+ <text x="1082" y="138" font-size="10">    token_amount</text>
+</g>
+
+<!-- LABEL -->
+<g>
+ <rect x="1336" y="60" width="230" height="70" rx="6" fill="#ffffff" stroke="#2f6fed" stroke-width="1.4"/>
+ <path d="M1336,66 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#2f6fed"/>
+ <text x="1451" y="79" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">LABEL</text>
+ <text x="1346" y="98" font-size="10"><tspan font-weight="700">PK</tspan> label_id</text>
+ <text x="1346" y="112" font-size="10">    label_name (UK), category</text>
+</g>
+
+<!-- WALLET_LABEL -->
+<g>
+ <rect x="1600" y="60" width="230" height="80" rx="6" fill="#ffffff" stroke="#2f6fed" stroke-width="1.4"/>
+ <path d="M1600,66 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#2f6fed"/>
+ <text x="1715" y="79" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">WALLET_LABEL</text>
+ <text x="1610" y="98" font-size="10"><tspan font-weight="700">PK,FK</tspan> wallet_id → WALLET</text>
+ <text x="1610" y="112" font-size="10"><tspan font-weight="700">PK,FK</tspan> label_id → LABEL</text>
+ <text x="1610" y="126" font-size="10"><tspan font-weight="700">FK</tspan> tagged_by → ANALYST</text>
+</g>
+
+<!-- GRAPH_SNAPSHOT -->
+<g>
+ <rect x="280" y="230" width="230" height="70" rx="6" fill="#ffffff" stroke="#1f9d55" stroke-width="1.4"/>
+ <path d="M280,236 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#1f9d55"/>
+ <text x="395" y="249" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">GRAPH_SNAPSHOT</text>
+ <text x="290" y="268" font-size="10"><tspan font-weight="700">PK</tspan> snapshot_id</text>
+ <text x="290" y="282" font-size="10">    snapshot_name (UK), file_path</text>
+</g>
+
+<!-- SNAPSHOT_EDGE -->
+<g>
+ <rect x="544" y="230" width="230" height="90" rx="6" fill="#ffffff" stroke="#1f9d55" stroke-width="1.4"/>
+ <path d="M544,236 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#1f9d55"/>
+ <text x="659" y="249" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">SNAPSHOT_EDGE</text>
+ <text x="554" y="268" font-size="10"><tspan font-weight="700">PK</tspan> edge_id</text>
+ <text x="554" y="282" font-size="10"><tspan font-weight="700">FK</tspan> snapshot_id, src/dst_wallet_id</text>
+ <text x="554" y="296" font-size="10">    edge_weight, transfer_count</text>
+</g>
+
+<!-- SNAPSHOT_EDGE_TX (new bridge) -->
+<g>
+ <rect x="808" y="230" width="230" height="70" rx="6" fill="#f5faf7" stroke="#1f9d55" stroke-width="1.6" stroke-dasharray="4,2"/>
+ <path d="M808,236 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#1f9d55"/>
+ <text x="923" y="249" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">SNAPSHOT_EDGE_TX *</text>
+ <text x="818" y="268" font-size="10"><tspan font-weight="700">PK,FK</tspan> snapshot_edge_id</text>
+ <text x="818" y="282" font-size="10"><tspan font-weight="700">PK,FK</tspan> tx_hash → TRANSACTION</text>
+</g>
+
+<!-- ALGORITHM -->
+<g>
+ <rect x="1072" y="230" width="230" height="60" rx="6" fill="#ffffff" stroke="#1f9d55" stroke-width="1.4"/>
+ <path d="M1072,236 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#1f9d55"/>
+ <text x="1187" y="249" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">ALGORITHM</text>
+ <text x="1082" y="268" font-size="10"><tspan font-weight="700">PK</tspan> algorithm_id</text>
+ <text x="1082" y="282" font-size="10">    algorithm_name (UK)</text>
+</g>
+
+<!-- ANALYSIS_RUN -->
+<g>
+ <rect x="1336" y="230" width="230" height="90" rx="6" fill="#ffffff" stroke="#1f9d55" stroke-width="1.4"/>
+ <path d="M1336,236 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#1f9d55"/>
+ <text x="1451" y="249" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">ANALYSIS_RUN</text>
+ <text x="1346" y="268" font-size="10"><tspan font-weight="700">PK</tspan> run_id</text>
+ <text x="1346" y="282" font-size="10"><tspan font-weight="700">FK</tspan> snapshot_id, algorithm_id,</text>
+ <text x="1346" y="294" font-size="10">    analyst_id</text>
+ <text x="1346" y="308" font-size="10">    started_at, completed_at</text>
+</g>
+
+<!-- VERTEX_METRIC -->
+<g>
+ <rect x="1600" y="230" width="230" height="80" rx="6" fill="#ffffff" stroke="#1f9d55" stroke-width="1.4"/>
+ <path d="M1600,236 a6,6 0 0 1 6,-6 h218 a6,6 0 0 1 6,6 v18 h-230 z" fill="#1f9d55"/>
+ <text x="1715" y="249" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">VERTEX_METRIC</text>
+ <text x="1610" y="268" font-size="10"><tspan font-weight="700">PK</tspan> metric_id</text>
+ <text x="1610" y="282" font-size="10"><tspan font-weight="700">FK</tspan> run_id, wallet_id</text>
+ <text x="1610" y="296" font-size="10">    metric_name, metric_value</text>
+</g>
+
+<!-- CLUSTER -->
+<g>
+ <rect x="280" y="400" width="280" height="70" rx="6" fill="#ffffff" stroke="#d9781c" stroke-width="1.4"/>
+ <path d="M280,406 a6,6 0 0 1 6,-6 h268 a6,6 0 0 1 6,6 v18 h-280 z" fill="#d9781c"/>
+ <text x="420" y="419" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">CLUSTER</text>
+ <text x="290" y="438" font-size="10"><tspan font-weight="700">PK</tspan> cluster_id  <tspan font-weight="700">FK</tspan> run_id</text>
+ <text x="290" y="452" font-size="10">    cluster_type (SYBIL/WASH_TRADE/…), risk_score</text>
+</g>
+
+<!-- CLUSTER_MEMBER -->
+<g>
+ <rect x="598" y="400" width="280" height="70" rx="6" fill="#ffffff" stroke="#d9781c" stroke-width="1.4"/>
+ <path d="M598,406 a6,6 0 0 1 6,-6 h268 a6,6 0 0 1 6,6 v18 h-280 z" fill="#d9781c"/>
+ <text x="738" y="419" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">CLUSTER_MEMBER</text>
+ <text x="608" y="438" font-size="10"><tspan font-weight="700">PK,FK</tspan> cluster_id → CLUSTER</text>
+ <text x="608" y="452" font-size="10"><tspan font-weight="700">PK,FK</tspan> wallet_id → WALLET</text>
+</g>
+
+<!-- ALERT -->
+<g>
+ <rect x="916" y="400" width="280" height="90" rx="6" fill="#ffffff" stroke="#d9781c" stroke-width="1.4"/>
+ <path d="M916,406 a6,6 0 0 1 6,-6 h268 a6,6 0 0 1 6,6 v18 h-280 z" fill="#d9781c"/>
+ <text x="1056" y="419" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">ALERT</text>
+ <text x="926" y="438" font-size="10"><tspan font-weight="700">PK</tspan> alert_id</text>
+ <text x="926" y="452" font-size="10"><tspan font-weight="700">FK</tspan> run_id, cluster_id, wallet_id,</text>
+ <text x="926" y="464" font-size="10">    reviewed_by → ANALYST</text>
+ <text x="926" y="478" font-size="10">    pattern_type, severity, confidence</text>
+</g>
+
+<!-- VISUALIZATION -->
+<g>
+ <rect x="1234" y="400" width="280" height="70" rx="6" fill="#ffffff" stroke="#d9781c" stroke-width="1.4"/>
+ <path d="M1234,406 a6,6 0 0 1 6,-6 h268 a6,6 0 0 1 6,6 v18 h-280 z" fill="#d9781c"/>
+ <text x="1374" y="419" text-anchor="middle" font-size="11.5" font-weight="700" fill="#ffffff">VISUALIZATION</text>
+ <text x="1244" y="438" font-size="10"><tspan font-weight="700">PK</tspan> viz_id  <tspan font-weight="700">FK</tspan> run_id</text>
+ <text x="1244" y="452" font-size="10">    layout_algorithm, image_path</text>
+</g>
+
+<!-- ANALYST -->
+<g>
+ <rect x="1552" y="400" width="280" height="70" rx="6" fill="#ffffff" stroke="#d9781c" stroke-width="1.4"/>
+ <path d="M1552,406 a6,6 0 0 1 6,-6 h268 a6,6 0 0 1 6,6 v18 h-280 z" fill="#d9781c"/>
+ <text x="1692" y="419" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">ANALYST</text>
+ <text x="1562" y="438" font-size="10"><tspan font-weight="700">PK</tspan> analyst_id</text>
+ <text x="1562" y="452" font-size="10">    username (UK), role</text>
+</g>
+
+<!-- ================= LEGEND / NOTES PANEL ================= -->
+<rect x="20" y="560" width="925" height="245" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+<text x="36" y="583" font-size="12" font-weight="700" fill="#111827">Notation</text>
+<text x="36" y="602" font-size="10" fill="#334155">Line = relationship. Label = verb + cardinality shown as (min,max)–(min,max), read across the line.</text>
+<text x="36" y="618" font-size="10" fill="#334155"><tspan font-weight="700">PK</tspan> = primary key   <tspan font-weight="700">FK</tspan> = foreign key   <tspan font-weight="700">UK</tspan> = unique key   dashed box = new entity added in this revision</text>
+<text x="36" y="634" font-size="10" fill="#334155">WALLET is the graph vertex and the busiest entity — 12 of the 30 relationships terminate there, drawn via two bus lanes to keep the diagram readable.</text>
+
+<text x="36" y="662" font-size="12" font-weight="700" fill="#111827">Entities: 18   ·   Relationships: 30   ·   Target DBMS: PostgreSQL 15</text>
+
+<text x="36" y="690" font-size="12" font-weight="700" fill="#b91c1c">Corrections made from the v1 design (see chat for full explanation):</text>
+<text x="36" y="708" font-size="10" fill="#334155">1. Added WALLET↔TOKEN_TRANSFER (sends/receives) — v1 had the FK columns but never modelled the relationship.</text>
+<text x="36" y="724" font-size="10" fill="#334155">2. Added WALLET↔SNAPSHOT_EDGE (is src of / is dst of) — same omission on the analytics side.</text>
+<text x="36" y="740" font-size="10" fill="#334155">3. Renamed WALLET–TOKEN "deploys" → "is instance of": contract_wallet_id points to the contract's own WALLET row (a subtype link), not a deployer; no deployer was actually tracked.</text>
+<text x="36" y="756" font-size="10" fill="#334155">4. BLOCK.miner_wallet_id renamed conceptually to proposer/fee-recipient — Ethereum has been proof-of-stake since Sept 2022, so "miner" is legacy terminology.</text>
+<text x="36" y="772" font-size="10" fill="#334155">5. Introduced SNAPSHOT_EDGE_TX bridge entity: v1's SNAPSHOT_EDGE had both an aggregate weight/count AND a UNIQUE(snapshot,tx) FK to a single transaction — self-contradictory. The bridge lets one CSR edge trace back to every underlying transaction.</text>
+
+<rect x="965" y="560" width="915" height="245" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+<text x="981" y="583" font-size="12" font-weight="700" fill="#111827">How to get a native Lucidchart / dbdiagram.io screenshot</text>
+<text x="981" y="602" font-size="10" fill="#334155">This image was generated directly (no desktop access to StarUML/EdrawMax, no Lucidchart account in this session).</text>
+<text x="981" y="618" font-size="10" fill="#334155">A DBML file was generated alongside this diagram — paste its contents into dbdiagram.io (free, no login) or</text>
+<text x="981" y="634" font-size="10" fill="#334155">Lucidchart's "Import Data → ER Diagram" to get a screenshot from the exact named tool if your rubric requires it.</text>
+<text x="981" y="660" font-size="12" font-weight="700" fill="#111827">Three-layer design rationale</text>
+<text x="981" y="678" font-size="10" fill="#334155">Layer 1 mirrors the raw chain data pulled via BigQuery/Etherscan. Layer 2 records exactly which slice was</text>
+<text x="981" y="694" font-size="10" fill="#334155">exported to Parquet, loaded into cuDF/cuGraph as CSR, and which algorithm ran on it — so every result is</text>
+<text x="981" y="710" font-size="10" fill="#334155">reproducible. Layer 3 holds what an analyst actually works with: clusters, alerts, and rendered visualizations,</text>
+<text x="981" y="726" font-size="10" fill="#334155">versioned per ANALYSIS_RUN so a Monday result and a Friday result can be compared, not overwritten.</text>
+</svg>
