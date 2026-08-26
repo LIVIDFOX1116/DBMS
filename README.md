@@ -110,3 +110,19 @@ machine with internet access and/or a GPU.
 ```bash
 python -m pytest tests/ -v
 ```
+
+## Promoting dev to main
+
+`dev` is the working branch -- commit and push there. `main` only moves
+forward via a manual, test-gated promotion:
+
+```bash
+git checkout dev
+python scripts/promote_to_main.py
+```
+
+This runs the full test suite and pushes `dev` to `origin/main` (as a
+fast-forward) only if every test passes; main is left untouched on any
+failure. CI (`.github/workflows/ci.yml`) also runs on every push to `dev`
+and `main`, and on PRs into `main`, so failures surface long before you'd
+even try to promote.
