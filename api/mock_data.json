@@ -27,6 +27,20 @@
     {"alert_id": 1, "run_id": 1, "cluster_id": 1, "wallet_id": 2, "pattern_type": "SYBIL_FANOUT", "severity": "HIGH", "confidence": 0.74, "review_status": "NEW"},
     {"alert_id": 2, "run_id": 1, "cluster_id": null, "wallet_id": 1, "pattern_type": "HUB_WALLET", "severity": "MEDIUM", "confidence": 0.60, "review_status": "NEW"}
   ],
+  "snapshots": [
+    {"snapshot_id": 1, "snapshot_name": "polynetwork_2hop_v1", "start_block": 0, "end_block": 999999999, "vertex_count": 6, "edge_count": 7, "is_directed": true}
+  ],
+  "edges": {
+    "1": [
+      {"src_wallet_id": 1, "dst_wallet_id": 2, "edge_weight": 12.4, "transfer_count": 5},
+      {"src_wallet_id": 1, "dst_wallet_id": 5, "edge_weight": 40.0, "transfer_count": 3},
+      {"src_wallet_id": 2, "dst_wallet_id": 3, "edge_weight": 3.1, "transfer_count": 2},
+      {"src_wallet_id": 2, "dst_wallet_id": 4, "edge_weight": 2.0, "transfer_count": 1},
+      {"src_wallet_id": 5, "dst_wallet_id": 6, "edge_weight": 1.0, "transfer_count": 1},
+      {"src_wallet_id": 3, "dst_wallet_id": 4, "edge_weight": 0.5, "transfer_count": 1},
+      {"src_wallet_id": 5, "dst_wallet_id": 3, "edge_weight": 0.8, "transfer_count": 1}
+    ]
+  },
   "runs": {
     "1": {
       "pagerank": [

@@ -10,3 +10,4 @@ scipy>=1.11           # required by networkx.pagerank
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pytest>=8.0
+httpx>=0.24        # required by fastapi.testclient.TestClient

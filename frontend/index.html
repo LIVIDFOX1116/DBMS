@@ -1,0 +1,1371 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-bg="topology">
+<head>
+<link
+  href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"
+  rel="stylesheet"
+/>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>TXGRAPH — Transaction Graph Analyzer</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+<!-- THREE.js required by WAVES / FOG / NET — must load before Vanta -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+<!-- p5.js required by TOPOLOGY -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.2/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.topology.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.waves.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.fog.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.net.min.js"></script>
+<!-- vis-network: renders the wallet transaction graph (nodes = wallets, edges = /snapshots/{id}/edges) -->
+<link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+
+<style>
+/* ══════════════════════════════════════════
+   DESIGN TOKENS — dark (default)
+   Adapted from the "TIMELINE" personal project planner UI (same author) --
+   the layout shell, theming system, and component vocabulary carry over
+   directly; only the content (wallets/clusters/alerts/graph instead of
+   projects/tasks) and the data layer (a real backend, not localStorage) change.
+══════════════════════════════════════════ */
+.material-icons-outlined {
+  font-size: 18px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+.nav-item .material-icons-outlined { font-size: 19px; }
+.hero-mob-menu .material-icons-outlined { font-size: 22px; }
+.fab-main .material-icons-outlined { font-size: 26px; }
+:root {
+  --bg-base:    #1a1f2e;
+  --g0:         rgba(255,255,255,.07);
+  --g1:         rgba(255,255,255,.12);
+  --g2:         rgba(255,255,255,.18);
+  --gb:         rgba(255,255,255,.20);
+  --ink:        #ffffff;
+  --ink2:       rgba(255,255,255,.65);
+  --blue:       rgba(80,150,255,.9);
+  --green:      rgba(140,255,160,.9);
+  --sidebar-w:  256px;
+  --sidebar-c:  66px;
+  --r:          14px;
+  --shadow:     0 12px 36px rgba(0,0,0,.35);
+  --transition: .25s ease;
+}
+
+/* LIGHT THEME */
+html[data-theme="light"] {
+  --bg-base:  #eef1f8;
+  --g0:       rgba(0,0,0,.04);
+  --g1:       rgba(0,0,0,.07);
+  --g2:       rgba(0,0,0,.13);
+  --gb:       rgba(0,0,0,.14);
+  --ink:      #0f1726;
+  --ink2:     rgba(15,23,38,.55);
+  --shadow:   0 12px 36px rgba(0,0,0,.12);
+}
+html[data-theme="light"] body { background: var(--bg-base); }
+html[data-theme="light"] #vanta-bg { opacity: .35; }
+html[data-theme="light"] .sidebar  { background: rgba(255,255,255,.72); border-color: rgba(0,0,0,.1); }
+html[data-theme="light"] .hero     { background: rgba(255,255,255,.55); border-color: rgba(0,0,0,.1); }
+html[data-theme="light"] .toast    { border-color: rgba(0,0,0,.15); }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); }
+
+/* BG ACCENT OVERRIDES */
+html[data-accent="navy"]   { --bg-base: #0d1117; }
+html[data-accent="forest"] { --bg-base: #0c1a0e; }
+html[data-accent="purple"] { --bg-base: #160d2b; }
+html[data-accent="slate"]  { --bg-base: #0f1923; }
+html[data-accent="ember"]  { --bg-base: #1f100a; }
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "Roboto", sans-serif; color: var(--ink);
+  min-height: 100vh; overflow-x: hidden;
+  background: var(--bg-base);
+  transition: background .4s ease, color .3s ease;
+}
+#vanta-bg { position: fixed; inset: 0; z-index: -1; transition: opacity .4s; }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 999px; }
+
+/* ══════════════════════════════════════════
+   APP LAYOUT
+══════════════════════════════════════════ */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  min-height: 100vh;
+  transition: grid-template-columns .3s ease;
+}
+.app.collapsed { grid-template-columns: var(--sidebar-c) 1fr; }
+@media (max-width: 900px) { .app { grid-template-columns: 1fr; } }
+
+/* ══════════════════════════════════════════
+   SIDEBAR
+══════════════════════════════════════════ */
+.sidebar {
+  position: sticky; top: 0; height: 100vh;
+  width: var(--sidebar-w);
+  padding: 16px 12px;
+  background: var(--g0);
+  border-right: 1px solid var(--gb);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  display: flex; flex-direction: column;
+  transition: width .3s ease;
+  overflow: hidden;
+  z-index: 100;
+}
+.app.collapsed .sidebar { width: var(--sidebar-c); }
+@media (max-width: 900px) {
+  .sidebar { position: fixed; width: var(--sidebar-w) !important; transform: translateX(-110%); transition: transform .3s ease; z-index: 300; }
+  .sidebar.mob-open { transform: translateX(0); }
+}
+
+/* Brand */
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; margin-bottom: 16px;
+  border: 1px solid var(--gb); border-radius: 13px;
+  background: var(--g1); flex-shrink: 0;
+}
+.brand-dot { width: 12px; height: 12px; border-radius: 50%; background: #5596ff; box-shadow: 0 0 0 3px rgba(85,150,255,.22); flex-shrink: 0; }
+.brand-name { font-family: "Poppins"; font-weight: 800; letter-spacing: .7px; font-size: 14.5px; white-space: nowrap; flex: 1; }
+.toggle-btn {
+  background: none; border: none; color: var(--ink2);
+  font-size: 17px; cursor: pointer; padding: 0 2px;
+  flex-shrink: 0; transition: color .2s, transform .2s; line-height: 1;
+}
+.toggle-btn:hover { color: var(--ink); transform: scale(1.1); }
+.app.collapsed .brand-name { opacity: 0; width: 0; overflow: hidden; }
+.app.collapsed .brand { padding: 10px; justify-content: space-between; }
+
+.nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.sidebar-footer { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--gb); }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 11px;
+  text-decoration: none; color: var(--ink);
+  background: transparent; border: 1px solid transparent;
+  cursor: pointer; transition: background .2s, border-color .2s, transform .2s;
+  white-space: nowrap; width: 100%; font-size: inherit;
+  overflow: hidden;
+}
+.nav-item:hover { background: var(--g1); border-color: var(--gb); }
+.nav-item.active { background: rgba(80,150,255,.22); border-color: rgba(80,150,255,.38); }
+.nav-item .ni { font-size: 17px; flex-shrink: 0; line-height: 1; }
+.nav-item .nl { font-family: "Poppins"; font-size: 13px; font-weight: 500; transition: opacity .2s, width .2s; white-space: nowrap; }
+
+.app.collapsed .nav-item { justify-content: center; padding: 10px; }
+.app.collapsed .nav-item .nl { opacity: 0; width: 0; overflow: hidden; }
+
+.nav-sep { height: 1px; background: var(--gb); margin: 6px 0; opacity: .5; flex-shrink: 0; }
+
+.app.collapsed .nav-item { position: relative; }
+.app.collapsed .nav-item:hover::after {
+  content: attr(data-tip);
+  position: absolute; left: calc(100% + 10px); top: 50%;
+  transform: translateY(-50%);
+  background: rgba(15,23,38,.95); color: #fff;
+  padding: 5px 10px; border-radius: 8px; font-size: 12px;
+  font-family: "Poppins"; white-space: nowrap; pointer-events: none;
+  border: 1px solid var(--gb); z-index: 999;
+}
+
+/* ══════════════════════════════════════════
+   MAIN COLUMN
+══════════════════════════════════════════ */
+.main { min-height: 100vh; padding-bottom: 80px; }
+
+.hero {
+  text-align: center;
+  background: var(--g0); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--gb);
+  padding: 36px 20px 26px;
+  position: relative; overflow: hidden;
+  animation: fadeDown .6s ease-out;
+}
+.hero::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 700px 250px at 50% 0%, rgba(80,150,255,.1), transparent 65%);
+  pointer-events: none;
+}
+.hero h1 {
+  font-family: "Poppins"; font-size: clamp(32px,5.5vw,52px); font-weight: 800;
+  letter-spacing: 1px; text-shadow: 0 8px 30px rgba(0,0,0,.4); margin-bottom: 4px;
+}
+.hero .subtitle { opacity: .75; font-size: 14px; letter-spacing: .3px; }
+.hero-mob-menu {
+  position: absolute; left: 16px; top: 16px; display: none;
+  background: var(--g1); border: 1px solid var(--gb);
+  border-radius: 10px; padding: 8px 12px; cursor: pointer; color: var(--ink); font-size: 18px;
+}
+@media (max-width:900px) { .hero-mob-menu { display: flex; } }
+
+.container { width: min(1300px,100%); margin: auto; padding: 20px 22px 0; }
+
+/* ══════════════════════════════════════════
+   STATUS BAR (was "welcome-dash")
+══════════════════════════════════════════ */
+.status-bar {
+  background: var(--g1); border: 1px solid var(--gb);
+  border-radius: var(--r); padding: 18px 22px;
+  backdrop-filter: blur(16px); box-shadow: var(--shadow);
+  display: grid; grid-template-columns: 1fr auto;
+  gap: 16px; align-items: center; margin-bottom: 20px;
+  animation: revealUp .5s .1s both;
+}
+@media (max-width:700px) { .status-bar { grid-template-columns: 1fr; } }
+.greet { font-size: 16px; margin-bottom: 10px; }
+.greet strong { font-family: "Poppins"; font-size: 18px; font-weight: 700; }
+.pills { display: flex; flex-wrap: wrap; gap: 7px; }
+.pill {
+  padding: 5px 13px; border-radius: 999px;
+  background: var(--g0); border: 1px solid var(--gb);
+  font-size: 12.5px;
+}
+.pill strong { font-family: "Poppins"; }
+.quick-btns { display: flex; gap: 9px; flex-wrap: wrap; }
+
+.btn {
+  background: var(--g1); padding: 9px 17px; border-radius: 10px;
+  font-family: "Poppins"; font-size: 13px; color: var(--ink);
+  border: 1px solid var(--gb); cursor: pointer; transition: var(--transition);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { background: var(--g2); transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.btn.primary { background: rgba(80,150,255,.75); border-color: rgba(255,255,255,.35); }
+.btn.primary:hover { background: rgba(80,150,255,.9); }
+.btn.danger:hover { background: rgba(220,70,70,.35); border-color: rgba(255,100,100,.5); }
+
+.section-title { font-family: "Poppins"; font-size: 19px; font-weight: 700; margin-bottom: 12px; }
+
+/* ══════════════════════════════════════════
+   GENERIC PANEL (top-risk / latest-alerts / graph)
+══════════════════════════════════════════ */
+.panel {
+  background: var(--g1); border: 1px solid var(--gb);
+  border-radius: var(--r); padding: 20px 22px;
+  backdrop-filter: blur(16px); box-shadow: var(--shadow);
+  margin-bottom: 26px; animation: revealUp .5s .2s both;
+}
+.panel-hdr { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
+.row-list { display: grid; gap: 9px; }
+.row-item {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--g0); border: 1px solid var(--gb);
+  border-radius: 11px; padding: 10px 14px; gap: 12px; cursor: pointer;
+  transition: background .2s;
+}
+.row-item:hover { background: var(--g1); }
+.ri-left { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
+.ri-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.ri-title { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: "Roboto Mono", "Roboto", monospace; }
+.ri-sub { font-size: 11.5px; opacity: .6; flex-shrink: 0; }
+.empty-hint { opacity: .55; font-size: 14px; padding: 8px 0; }
+
+/* ══════════════════════════════════════════
+   TOOLBARS (search / sort / filter — shared by wallets, clusters, alerts)
+══════════════════════════════════════════ */
+.sec-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.sec-controls { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.search-box {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--g0); border: 1px solid var(--gb);
+  border-radius: 10px; padding: 8px 13px;
+}
+.search-box input { background: none; border: none; outline: none; color: var(--ink); font-family: "Roboto"; font-size: 13.5px; width: 170px; }
+.search-box input::placeholder { opacity: .4; }
+.sort-sel {
+  background: var(--g0); border: 1px solid var(--gb); color: var(--ink);
+  border-radius: 10px; padding: 8px 12px; font-family: "Poppins"; font-size: 12.5px;
+  cursor: pointer; outline: none;
+}
+.sort-sel option { background: var(--bg-base); }
+
+.filter-bar { display: flex; gap: 7px; margin-bottom: 14px; flex-wrap: wrap; }
+.fbtn {
+  padding: 6px 15px; border-radius: 999px; border: 1px solid var(--gb);
+  background: var(--g0); cursor: pointer; font-family: "Poppins"; font-size: 12.5px; color: var(--ink); transition: var(--transition);
+}
+.fbtn:hover { background: var(--g1); }
+.fbtn.on { background: rgba(80,150,255,.4); border-color: rgba(255,255,255,.55); }
+
+/* ══════════════════════════════════════════
+   CARD GRID (wallets, clusters)
+══════════════════════════════════════════ */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(272px,1fr)); gap: 18px; margin-bottom: 26px; }
+
+.card {
+  position: relative; overflow: hidden;
+  border-radius: var(--r); padding: 20px;
+  background: var(--g1); border: 1px solid var(--gb);
+  box-shadow: var(--shadow); cursor: pointer;
+  transition: transform .3s ease, box-shadow .3s ease;
+}
+.card:hover { transform: translateY(-5px) scale(1.012); box-shadow: 0 20px 48px rgba(0,0,0,.42); }
+.card-accent {
+  position: absolute; inset: -40% -40% auto auto;
+  height: 200px; width: 200px; border-radius: 50%;
+  filter: blur(20px); pointer-events: none; opacity: .65;
+}
+.card h3 { font-family: "Roboto Mono", monospace; font-size: 15px; margin-bottom: 5px; position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; word-break: break-all; }
+.badge { padding: 4px 10px; border-radius: 999px; font-size: 11.5px; font-family: "Poppins"; font-weight: 600; display: inline-block; margin-right: 5px; }
+.b-type-eoa      { background: rgba(100,160,255,.35); }
+.b-type-contract { background: rgba(190,120,255,.35); }
+.b-risk-low  { background: rgba(140,255,160,.4); }
+.b-risk-med  { background: rgba(255,195,80,.42); }
+.b-risk-high { background: rgba(220,70,70,.42); }
+.b-risk-unknown { background: rgba(255,255,255,.16); }
+.b-sev-high   { background: rgba(220,70,70,.42); }
+.b-sev-medium { background: rgba(255,195,80,.42); }
+.b-sev-low    { background: rgba(120,200,255,.35); }
+.b-status-new        { background: rgba(100,160,255,.4); }
+.b-status-reviewed   { background: rgba(140,255,160,.4); }
+.b-status-dismissed  { background: rgba(255,255,255,.18); }
+.b-type-sybil { background: rgba(100,160,255,.4); }
+.b-type-wash  { background: rgba(190,120,255,.4); }
+.b-type-mixer { background: rgba(255,150,80,.4); }
+.b-type-peel  { background: rgba(90,220,200,.4); }
+.b-type-none  { background: rgba(255,255,255,.18); }
+.card-desc { font-size: 12.5px; opacity: .65; margin-top: 5px; }
+.card-meta { font-size: 12.5px; opacity: .8; margin-top: 9px; }
+.progress { width: 100%; height: 6px; border-radius: 999px; background: rgba(255,255,255,.12); overflow: hidden; margin-top: 9px; }
+.progress-bar { height: 100%; transition: width .4s ease; }
+.card-actions { display: flex; gap: 10px; margin-top: 11px; position: relative; z-index: 1; }
+.cact { cursor: pointer; font-size: 12.5px; opacity: .65; transition: .2s; padding: 3px 8px; border-radius: 6px; }
+.cact:hover { opacity: 1; background: rgba(255,255,255,.12); }
+
+.empty-grid {
+  grid-column: 1/-1; text-align: center; padding: 60px 20px;
+  border: 2px dashed var(--gb); border-radius: var(--r); opacity: .65;
+}
+.empty-grid .ei { font-size: 50px; margin-bottom: 12px; }
+.empty-grid p { font-family: "Poppins"; font-size: 17px; margin-bottom: 5px; }
+.empty-grid small { font-size: 13px; opacity: .7; }
+
+/* ══════════════════════════════════════════
+   ALERTS LIST
+══════════════════════════════════════════ */
+.alert-list { display: grid; gap: 10px; margin-bottom: 26px; }
+.alert-row {
+  background: var(--g1); border: 1px solid var(--gb); border-radius: var(--r);
+  padding: 14px 18px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  box-shadow: var(--shadow);
+}
+.alert-main { flex: 1; min-width: 220px; }
+.alert-title { font-family: "Poppins"; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.alert-sub { font-size: 12px; opacity: .65; }
+.confidence-bar { width: 120px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.12); overflow: hidden; }
+.confidence-fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--green)); }
+.alert-actions { display: flex; gap: 8px; }
+
+/* ══════════════════════════════════════════
+   GRAPH PANEL
+══════════════════════════════════════════ */
+.graph-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+#graphCanvas {
+  height: 560px; border-radius: 12px; border: 1px solid var(--gb);
+  background: var(--g0); overflow: hidden;
+}
+.graph-legend { display: flex; align-items: center; gap: 16px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; opacity: .75; }
+.legend-scale { display: inline-flex; height: 10px; width: 90px; border-radius: 999px; background: linear-gradient(90deg, hsl(120,70%,55%), hsl(60,70%,55%), hsl(0,70%,55%)); vertical-align: middle; }
+
+/* ══════════════════════════════════════════
+   FAB
+══════════════════════════════════════════ */
+.fab { position: fixed; right: 20px; bottom: 20px; z-index: 200; }
+.fab-main {
+  width: 54px; height: 54px; border-radius: 50%;
+  background: linear-gradient(135deg, rgba(80,150,255,.9), rgba(140,255,160,.85));
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(255,255,255,.45); box-shadow: 0 12px 32px rgba(0,0,0,.42);
+  cursor: pointer; font-size: 22px; color: #fff;
+  transition: transform .25s, box-shadow .25s;
+}
+.fab-main:hover { transform: scale(1.06) rotate(45deg); box-shadow: 0 18px 42px rgba(0,0,0,.55); }
+.fab.open .fab-main { transform: rotate(45deg); }
+.fab-radial { position: absolute; right: 0; bottom: 62px; display: flex; flex-direction: column; gap: 7px; opacity: 0; pointer-events: none; transform: translateY(10px); transition: opacity .2s, transform .2s; }
+.fab.open .fab-radial { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.rbtn { padding: 9px 14px; border-radius: 12px; background: var(--g2); border: 1px solid var(--gb); backdrop-filter: blur(14px); cursor: pointer; color: var(--ink); font-family: "Poppins"; font-size: 12.5px; white-space: nowrap; transition: .2s; text-align: left; }
+.rbtn:hover { background: rgba(255,255,255,.28); transform: translateX(-3px); }
+
+/* ══════════════════════════════════════════
+   MODALS
+══════════════════════════════════════════ */
+.modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); backdrop-filter: blur(10px); justify-content: center; align-items: center; z-index: 9000; }
+.modal.open { display: flex; }
+.modal-box {
+  width: min(520px, 95%); padding: 26px; border-radius: 20px;
+  background: var(--g2); border: 1px solid var(--gb);
+  box-shadow: 0 24px 64px rgba(0,0,0,.55); animation: popIn .2s ease-out;
+  max-height: 90vh; overflow-y: auto;
+}
+.modal-box h3 { font-family: "Poppins"; font-size: 19px; margin-bottom: 18px; word-break: break-all; }
+.modal-label { font-size: 11.5px; font-weight: 600; letter-spacing: .4px; opacity: .7; text-transform: uppercase; margin-bottom: 5px; display: block; }
+.modal-input {
+  width: 100%; padding: 11px 13px; margin-bottom: 14px;
+  border-radius: 11px; border: 1px solid var(--gb);
+  background: var(--g0); color: var(--ink); font-size: 14px; font-family: "Roboto"; outline: none; transition: .2s;
+}
+.modal-input:focus { border-color: rgba(80,150,255,.7); background: var(--g1); box-shadow: 0 0 0 3px rgba(80,150,255,.12); }
+select.modal-input { padding: 10px 13px; cursor: pointer; }
+select.modal-input option { background: var(--bg-base); }
+.modal-actions { display: flex; gap: 10px; margin-top: 6px; }
+.modal-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 14px 0; }
+.modal-stat { background: var(--g0); border: 1px solid var(--gb); border-radius: 11px; padding: 10px 13px; }
+.modal-stat .ms-label { font-size: 11px; opacity: .6; text-transform: uppercase; letter-spacing: .3px; }
+.modal-stat .ms-value { font-family: "Poppins"; font-size: 17px; font-weight: 700; margin-top: 2px; }
+.member-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+.member-table th { text-align: left; opacity: .6; font-weight: 600; font-size: 11px; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--gb); }
+.member-table td { padding: 8px; border-bottom: 1px solid var(--g0); font-family: "Roboto Mono", monospace; }
+
+/* Settings tabs */
+.stab-row { display: flex; gap: 5px; margin-bottom: 20px; border-bottom: 1px solid var(--gb); padding-bottom: 12px; }
+.stab { padding: 6px 14px; border-radius: 999px; border: 1px solid transparent; font-family: "Poppins"; font-size: 12.5px; cursor: pointer; background: none; color: var(--ink); transition: .2s; }
+.stab:hover { background: var(--g1); }
+.stab.on { background: rgba(80,150,255,.35); border-color: rgba(80,150,255,.5); }
+.stab-content { display: none; }
+.stab-content.on { display: block; }
+.settings-section { margin-bottom: 20px; }
+.settings-section h4 { font-family: "Poppins"; font-size: 12px; font-weight: 700; opacity: .55; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; }
+
+.theme-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.theme-opt {
+  padding: 12px; border-radius: 12px; border: 2px solid var(--gb);
+  cursor: pointer; text-align: center; transition: .2s; font-family: "Poppins"; font-size: 13px;
+  background: var(--g0);
+}
+.theme-opt:hover { background: var(--g1); }
+.theme-opt.on { border-color: rgba(80,150,255,.7); background: rgba(80,150,255,.18); }
+.theme-icon { font-size: 24px; display: block; margin-bottom: 5px; }
+
+.accent-opts { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 4px; }
+.accent-swatch {
+  width: 36px; height: 36px; border-radius: 50%; cursor: pointer;
+  border: 3px solid transparent; transition: transform .2s, border-color .2s;
+}
+.accent-swatch:hover { transform: scale(1.12); }
+.accent-swatch.on { border-color: #fff; box-shadow: 0 0 0 2px rgba(255,255,255,.4); }
+
+.bg-opts { display: grid; grid-template-columns: repeat(3,1fr); gap: 9px; }
+.bg-opt {
+  padding: 10px 8px; border-radius: 12px; border: 2px solid var(--gb);
+  cursor: pointer; text-align: center; font-family: "Poppins"; font-size: 11.5px;
+  background: var(--g0); transition: .2s;
+}
+.bg-opt:hover { background: var(--g1); }
+.bg-opt.on { border-color: rgba(80,150,255,.7); background: rgba(80,150,255,.18); }
+.bg-icon { font-size: 20px; display: block; margin-bottom: 4px; }
+
+/* ══════════════════════════════════════════
+   TOAST
+══════════════════════════════════════════ */
+.toast-con { position: fixed; bottom: 82px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 7px; align-items: flex-end; pointer-events: none; }
+.toast { padding: 11px 17px; border-radius: 12px; font-size: 13px; font-family: "Poppins"; font-weight: 500; backdrop-filter: blur(16px); border: 1px solid var(--gb); box-shadow: 0 8px 24px rgba(0,0,0,.38); opacity: 0; transform: translateX(16px); transition: opacity .25s, transform .25s; pointer-events: none; max-width: 300px; }
+.toast.show { opacity: 1; transform: translateX(0); }
+.toast.info    { background: rgba(60,110,200,.88); color: #fff; }
+.toast.success { background: rgba(50,170,90,.88);  color: #fff; }
+.toast.warn    { background: rgba(210,155,30,.88);  color: #fff; }
+.toast.error   { background: rgba(210,70,70,.88);   color: #fff; }
+
+/* ══════════════════════════════════════════
+   KEYBOARD SHORTCUT OVERLAY
+══════════════════════════════════════════ */
+.kbd-modal { background: rgba(0,0,0,.6); }
+.kbd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; margin-top: 10px; }
+.kbd-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; opacity: .85; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+kbd { background: var(--g1); border: 1px solid var(--gb); border-radius: 6px; padding: 2px 7px; font-size: 11.5px; font-family: "Poppins"; }
+
+.mob-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 299; }
+@media (max-width:900px) { .mob-overlay.open { display: block; } }
+
+/* ══════════════════════════════════════════
+   KEYFRAMES
+══════════════════════════════════════════ */
+@keyframes fadeDown { from{opacity:0;transform:translateY(-20px)} to{opacity:1;transform:translateY(0)} }
+@keyframes revealUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+@keyframes popIn    { from{opacity:0;transform:scale(.93)} to{opacity:1;transform:scale(1)} }
+</style>
+</head>
+<body>
+
+<div id="vanta-bg"></div>
+<div class="toast-con" id="toastCon"></div>
+<div class="mob-overlay" id="mobOverlay"></div>
+
+<div class="app" id="app">
+
+  <!-- ═══════════════ SIDEBAR ═══════════════ -->
+  <aside class="sidebar" id="sidebar">
+
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">TXGRAPH</span>
+      <button class="toggle-btn" id="toggleSidebar" title="Toggle sidebar">☰</button>
+    </div>
+
+    <nav class="nav">
+      <a class="nav-item active" href="#overview" data-tip="Overview" onclick="setActive(this)">
+        <span class="ni material-icons-outlined">home</span><span class="nl">Overview</span>
+      </a>
+      <a class="nav-item" href="#wallets" data-tip="Wallets" onclick="setActive(this)">
+        <span class="ni material-icons-outlined">account_balance_wallet</span><span class="nl">Wallets</span>
+      </a>
+      <a class="nav-item" href="#clusters" data-tip="Clusters" onclick="setActive(this)">
+        <span class="ni material-icons-outlined">hub</span><span class="nl">Clusters</span>
+      </a>
+      <a class="nav-item" href="#alerts" data-tip="Alerts" onclick="setActive(this)">
+        <span class="ni material-icons-outlined">warning</span><span class="nl">Alerts</span>
+      </a>
+      <a class="nav-item" href="#graph" data-tip="Graph" onclick="setActive(this)">
+        <span class="ni material-icons-outlined">scatter_plot</span><span class="nl">Graph</span>
+      </a>
+      <div class="nav-sep"></div>
+      <button class="nav-item" data-tip="Refresh data" onclick="loadAll()">
+        <span class="ni material-icons-outlined">refresh</span><span class="nl">Refresh data</span>
+      </button>
+    </nav>
+
+    <div class="nav-sep" style="margin-top:auto;"></div>
+    <div class="sidebar-footer">
+      <button class="nav-item" data-tip="Shortcuts" onclick="openModal('kbdModal')">
+        <span class="ni material-icons-outlined">keyboard</span><span class="nl">Shortcuts</span>
+      </button>
+      <button class="nav-item" data-tip="Settings" id="settingsBtn">
+        <span class="ni material-icons-outlined">settings</span><span class="nl">Settings</span>
+      </button>
+      <a class="nav-item" id="apiDocsLink" href="#" target="_blank" rel="noopener" data-tip="API Docs">
+        <span class="ni material-icons-outlined">description</span><span class="nl">API Docs</span>
+      </a>
+    </div>
+
+  </aside>
+
+  <!-- ═══════════════ MAIN ═══════════════ -->
+  <main class="main">
+
+    <header class="hero" id="overview">
+      <button class="hero-mob-menu" id="mobMenuBtn"><span class="material-icons-outlined">menu</span></button>
+      <h1>TXGRAPH</h1>
+      <div class="subtitle">GPU-accelerated Ethereum transaction-graph analyzer</div>
+    </header>
+
+    <div class="container">
+
+      <!-- STATUS BAR -->
+      <section class="status-bar" id="statusBar">
+        <div>
+          <div class="greet" id="greetTxt">Connecting…</div>
+          <div class="pills" id="statusPills"></div>
+        </div>
+        <div class="quick-btns">
+          <button class="btn primary" onclick="loadAll()"><span class="material-icons-outlined">refresh</span> Refresh</button>
+          <button class="btn" onclick="scrollToId('alerts')"><span class="material-icons-outlined">warning</span> Alerts</button>
+          <button class="btn" onclick="scrollToId('graph')"><span class="material-icons-outlined">scatter_plot</span> Graph</button>
+        </div>
+      </section>
+
+      <!-- TOP RISK WALLETS -->
+      <section class="panel" id="topRiskSection">
+        <div class="panel-hdr">
+          <div class="section-title" style="margin-bottom:0;">⚠ Top Risk Wallets</div>
+        </div>
+        <div class="row-list" id="topRiskList"></div>
+      </section>
+
+      <!-- LATEST ALERTS -->
+      <section class="panel" id="latestAlertsSection">
+        <div class="panel-hdr">
+          <div class="section-title" style="margin-bottom:0;">🚨 Latest Alerts</div>
+        </div>
+        <div class="row-list" id="latestAlertsList"></div>
+      </section>
+
+      <!-- WALLETS -->
+      <section id="wallets" style="margin-bottom:26px;">
+        <div class="sec-header">
+          <div class="section-title" style="margin-bottom:0;">Wallets</div>
+          <div class="sec-controls">
+            <div class="search-box">
+              <span style="opacity:.4;font-size:14px;">🔍</span>
+              <input type="text" id="walletSearch" placeholder="Search address…" />
+            </div>
+            <select class="sort-sel" id="walletSort">
+              <option value="risk">Highest risk</option>
+              <option value="tx">Most active</option>
+              <option value="address">Address A–Z</option>
+            </select>
+          </div>
+        </div>
+        <div class="filter-bar" id="walletFilterBar">
+          <button class="fbtn on" data-f="all">All</button>
+          <button class="fbtn" data-f="EOA">EOA</button>
+          <button class="fbtn" data-f="CONTRACT">Contract</button>
+          <button class="fbtn" data-f="high-risk">High risk</button>
+        </div>
+        <div class="card-grid" id="walletGrid"></div>
+      </section>
+
+      <!-- CLUSTERS -->
+      <section id="clusters" style="margin-bottom:26px;">
+        <div class="sec-header">
+          <div class="section-title" style="margin-bottom:0;">Clusters</div>
+        </div>
+        <div class="card-grid" id="clusterGrid"></div>
+      </section>
+
+      <!-- ALERTS -->
+      <section id="alerts" style="margin-bottom:26px;">
+        <div class="sec-header">
+          <div class="section-title" style="margin-bottom:0;">Alerts</div>
+        </div>
+        <div class="filter-bar" id="alertFilterBar">
+          <button class="fbtn on" data-f="all">All</button>
+          <button class="fbtn" data-f="NEW">New</button>
+          <button class="fbtn" data-f="REVIEWED">Reviewed</button>
+          <button class="fbtn" data-f="DISMISSED">Dismissed</button>
+        </div>
+        <div class="alert-list" id="alertList"></div>
+      </section>
+
+      <!-- GRAPH -->
+      <section class="panel" id="graph">
+        <div class="panel-hdr">
+          <div class="section-title" style="margin-bottom:0;">🕸 Wallet Graph</div>
+        </div>
+        <div class="graph-toolbar">
+          <select class="sort-sel" id="snapshotSelect"></select>
+          <input class="modal-input" style="margin:0;width:100px;" id="runIdInput" type="number" min="1" value="1" title="Run ID (for PageRank coloring in tooltips)"/>
+          <button class="btn" onclick="renderGraph()"><span class="material-icons-outlined">refresh</span> Redraw</button>
+        </div>
+        <div id="graphCanvas"></div>
+        <div class="graph-legend">
+          <span>Node color = risk score:</span>
+          <span class="legend-scale"></span>
+          <span>low → high</span>
+          <span>Node size = tx count · Edge thickness = transfer volume</span>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- FAB -->
+<div class="fab" id="fab">
+  <div class="fab-main" onclick="toggleFab()">＋</div>
+  <div class="fab-radial">
+    <button class="rbtn" onclick="loadAll();closeFab()">🔄 Refresh data</button>
+    <button class="rbtn" onclick="scrollToId('alerts');closeFab()">🚨 Jump to Alerts</button>
+    <button class="rbtn" onclick="scrollToId('graph');closeFab()">🕸 Jump to Graph</button>
+  </div>
+</div>
+
+<!-- ═══════════════ MODALS ═══════════════ -->
+
+<!-- Wallet detail -->
+<div class="modal" id="walletModal">
+  <div class="modal-box">
+    <h3 id="wmAddress">0x…</h3>
+    <div id="wmBadges" style="margin-bottom:10px;"></div>
+    <div class="modal-stat-grid">
+      <div class="modal-stat"><div class="ms-label">Tx count</div><div class="ms-value" id="wmTxCount">–</div></div>
+      <div class="modal-stat"><div class="ms-label">Risk score</div><div class="ms-value" id="wmRisk">–</div></div>
+      <div class="modal-stat"><div class="ms-label">PageRank rank</div><div class="ms-value" id="wmRank">–</div></div>
+      <div class="modal-stat"><div class="ms-label">PageRank value</div><div class="ms-value" id="wmRankValue">–</div></div>
+    </div>
+    <div id="wmClusters"></div>
+    <div class="modal-actions">
+      <button class="btn primary" onclick="copyToClipboard(document.getElementById('wmAddress').textContent)">📋 Copy address</button>
+      <button class="btn" onclick="closeModal('walletModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Cluster detail -->
+<div class="modal" id="clusterModal">
+  <div class="modal-box" style="width:min(640px,95%);">
+    <h3 id="cmTitle">Cluster</h3>
+    <div id="cmBadges" style="margin-bottom:10px;"></div>
+    <div class="modal-stat-grid">
+      <div class="modal-stat"><div class="ms-label">Members</div><div class="ms-value" id="cmMemberCount">–</div></div>
+      <div class="modal-stat"><div class="ms-label">Modularity</div><div class="ms-value" id="cmModularity">–</div></div>
+    </div>
+    <table class="member-table">
+      <thead><tr><th>Address</th><th>Membership</th><th>Core</th></tr></thead>
+      <tbody id="cmMembersBody"></tbody>
+    </table>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('clusterModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard Shortcuts -->
+<div class="modal kbd-modal" id="kbdModal">
+  <div class="modal-box" style="width:min(560px,95%);">
+    <h3>⌨️ Keyboard Shortcuts</h3>
+    <div class="kbd-grid">
+      <div class="kbd-row"><span>Refresh data</span><kbd>R</kbd></div>
+      <div class="kbd-row"><span>Search wallets</span><kbd>/</kbd></div>
+      <div class="kbd-row"><span>Shortcuts</span><kbd>?</kbd></div>
+      <div class="kbd-row"><span>Settings</span><kbd>S</kbd></div>
+      <div class="kbd-row"><span>Toggle sidebar</span><kbd>B</kbd></div>
+      <div class="kbd-row"><span>Close modal</span><kbd>Esc</kbd></div>
+      <div class="kbd-row"><span>Scroll to top</span><kbd>G</kbd></div>
+      <div class="kbd-row"><span>Toggle theme</span><kbd>D</kbd></div>
+    </div>
+    <div class="modal-actions" style="margin-top:18px;">
+      <button class="btn" onclick="closeModal('kbdModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings -->
+<div class="modal" id="settingsModal">
+  <div class="modal-box" style="width:min(520px,95%);">
+    <h3>⚙️ Settings</h3>
+
+    <div class="stab-row">
+      <button class="stab on" onclick="switchStab(this,'stab-connection')">🔌 Connection</button>
+      <button class="stab" onclick="switchStab(this,'stab-theme')">🎨 Appearance</button>
+    </div>
+
+    <!-- Connection tab -->
+    <div class="stab-content on" id="stab-connection">
+      <div class="settings-section">
+        <h4>API base URL</h4>
+        <input class="modal-input" id="s_apiBase" placeholder="http://localhost:8000" />
+        <button class="btn primary" onclick="saveConnectionSettings()">Save & reconnect</button>
+        <button class="btn" onclick="testConnection()">🔎 Test connection</button>
+      </div>
+      <div class="settings-section">
+        <h4>Analysis run ID</h4>
+        <input class="modal-input" id="s_runId" type="number" min="1" placeholder="1" />
+        <small style="opacity:.6;">Used for the PageRank rank/value shown in wallet details.</small>
+      </div>
+    </div>
+
+    <!-- Appearance tab -->
+    <div class="stab-content" id="stab-theme">
+      <div class="settings-section">
+        <h4>Theme</h4>
+        <div class="theme-opts">
+          <div class="theme-opt on" data-t="dark" onclick="setTheme('dark',this)">
+            <span class="theme-icon">🌙</span>Dark
+          </div>
+          <div class="theme-opt" data-t="light" onclick="setTheme('light',this)">
+            <span class="theme-icon">☀️</span>Light
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Background effect</h4>
+        <div class="bg-opts">
+          <div class="bg-opt on" data-bg="topology" onclick="setBg('topology',this)"><span class="bg-icon">〰️</span>Topology</div>
+          <div class="bg-opt" data-bg="waves" onclick="setBg('waves',this)"><span class="bg-icon">🌊</span>Waves</div>
+          <div class="bg-opt" data-bg="fog" onclick="setBg('fog',this)"><span class="bg-icon">🌫️</span>Fog</div>
+          <div class="bg-opt" data-bg="net" onclick="setBg('net',this)"><span class="bg-icon">🕸️</span>Net</div>
+          <div class="bg-opt" data-bg="none" onclick="setBg('none',this)"><span class="bg-icon">⬛</span>None</div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Background color</h4>
+        <div class="accent-opts">
+          <div class="accent-swatch on" data-a="default" style="background:#1a1f2e;" onclick="setAccent('default',this)" title="Classic Dark"></div>
+          <div class="accent-swatch" data-a="navy" style="background:#0d1117;" onclick="setAccent('navy',this)" title="Deep Navy"></div>
+          <div class="accent-swatch" data-a="forest" style="background:#0c1a0e;" onclick="setAccent('forest',this)" title="Forest"></div>
+          <div class="accent-swatch" data-a="purple" style="background:#160d2b;" onclick="setAccent('purple',this)" title="Purple Night"></div>
+          <div class="accent-swatch" data-a="slate" style="background:#0f1923;" onclick="setAccent('slate',this)" title="Slate"></div>
+          <div class="accent-swatch" data-a="ember" style="background:#1f100a;" onclick="setAccent('ember',this)" title="Ember"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-actions" style="margin-top:6px;">
+      <button class="btn" onclick="closeModal('settingsModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ════════════════════════════════════════
+   VANTA BACKGROUND MANAGER (unchanged from the source project)
+════════════════════════════════════════ */
+let vantaEffect = null;
+
+const VANTA_CONFIGS = {
+  topology: () => VANTA.TOPOLOGY({
+    el: "#vanta-bg",
+    backgroundColor: 0x1a1f2e,
+    color: 0x5a7fbf,
+    mouseControls: true, touchControls: true, minHeight: 200, minWidth: 200
+  }),
+  waves: () => VANTA.WAVES({
+    el: "#vanta-bg",
+    mouseControls: true, touchControls: true, minHeight: 200, minWidth: 200,
+    color: 0x1a3a6a, shininess: 40, waveHeight: 18, waveSpeed: 0.75, zoom: 0.9
+  }),
+  fog: () => VANTA.FOG({
+    el: "#vanta-bg",
+    mouseControls: true, touchControls: true, minHeight: 200, minWidth: 200,
+    highlightColor: 0x3a5a90, midtoneColor: 0x1a2e55,
+    lowlightColor: 0x0a1020, baseColor: 0x0d1525,
+    blurFactor: 0.6, speed: 1.2, zoom: 1
+  }),
+  net: () => VANTA.NET({
+    el: "#vanta-bg",
+    mouseControls: true, touchControls: true, minHeight: 200, minWidth: 200,
+    color: 0x4a80cf, backgroundColor: 0x0d1220,
+    points: 9, maxDistance: 22, spacing: 17
+  }),
+  none: () => null,
+};
+
+function startVanta(bgKey) {
+  if (vantaEffect) {
+    try { vantaEffect.destroy(); } catch(e) { console.warn("Vanta destroy:", e); }
+    vantaEffect = null;
+  }
+  if (bgKey === "none") return;
+  const factory = VANTA_CONFIGS[bgKey];
+  if (!factory) return;
+  try {
+    vantaEffect = factory();
+  } catch(e) {
+    console.error(`Vanta "${bgKey}" failed:`, e);
+    vantaEffect = null;
+  }
+}
+
+/* ════════════════════════════════════════
+   PREFERENCES (theme/bg/accent + API connection settings)
+   No per-user auth here -- the API itself has none (see API_CONTRACT.md),
+   so preferences are just this browser's local settings, not an account.
+════════════════════════════════════════ */
+const PREF_KEY = "txgraph_prefs";
+const DEFAULT_API_BASE = "http://localhost:8000";
+const loadPref = () => { try { return JSON.parse(localStorage.getItem(PREF_KEY) || "{}"); } catch { return {}; } };
+const savePref = p => localStorage.setItem(PREF_KEY, JSON.stringify(p));
+
+const apiBase  = () => loadPref().apiBase || DEFAULT_API_BASE;
+const runId    = () => Number(loadPref().runId) || 1;
+
+/* ════════════════════════════════════════
+   TOAST
+════════════════════════════════════════ */
+function toast(msg, type="info") {
+  const el = document.createElement("div");
+  el.className = `toast ${type}`; el.textContent = msg;
+  document.getElementById("toastCon").appendChild(el);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.add("show")));
+  setTimeout(()=>{ el.classList.remove("show"); setTimeout(()=>el.remove(),300); }, 3200);
+}
+
+/* ════════════════════════════════════════
+   API LAYER
+════════════════════════════════════════ */
+async function api(path, params = {}) {
+  const url = new URL(apiBase() + path);
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null) url.searchParams.set(k, v); });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
+  return res.json();
+}
+
+/* ════════════════════════════════════════
+   UTILITIES
+════════════════════════════════════════ */
+function scrollToId(id) { document.getElementById(id)?.scrollIntoView({behavior:"smooth",block:"start"}); }
+function shortAddr(a) { return a && a.length > 12 ? `${a.slice(0,6)}…${a.slice(-4)}` : a; }
+function copyToClipboard(text) {
+  navigator.clipboard?.writeText(text)
+    .then(() => toast("Copied ✓","success"))
+    .catch(() => toast("Copy failed","error"));
+}
+function riskTier(score) {
+  if (score === null || score === undefined) return "unknown";
+  if (score >= 67) return "high";
+  if (score >= 34) return "med";
+  return "low";
+}
+function riskBadgeClass(score) { return `b-risk-${riskTier(score)}`; }
+function riskColor(score) {
+  if (score === null || score === undefined) return "hsl(0,0%,60%)";
+  const hue = Math.max(0, Math.min(120, 120 * (1 - score / 100)));
+  return `hsl(${hue},70%,55%)`;
+}
+function typeBadgeClass(t) {
+  return { SYBIL: "b-type-sybil", WASH_TRADE: "b-type-wash", MIXER: "b-type-mixer", PEEL_CHAIN: "b-type-peel" }[t] || "b-type-none";
+}
+function severityBadgeClass(s) { return `b-sev-${(s||"").toLowerCase()}`; }
+function statusBadgeClass(s) { return `b-status-${(s||"").toLowerCase()}`; }
+
+/* ════════════════════════════════════════
+   STATE
+════════════════════════════════════════ */
+let WALLETS = [], CLUSTERS = [], ALERTS = [], SNAPSHOTS = [];
+let CLUSTER_MEMBERS = {};   // cluster_id -> [{wallet_id, address, membership_score, is_core_node}]
+let WALLET_CLUSTERS = {};   // wallet_id  -> [cluster_id, ...]
+let PAGERANK = {};          // wallet_id  -> {metric_value, rank_position}
+let HEALTHY = false;
+
+async function loadAll() {
+  document.getElementById("greetTxt").textContent = "Connecting…";
+  try {
+    const health = await api("/health");
+    HEALTHY = health.status === "ok";
+
+    [WALLETS, CLUSTERS, ALERTS, SNAPSHOTS] = await Promise.all([
+      api("/wallets", { limit: 200 }),
+      api("/clusters"),
+      api("/alerts"),
+      api("/snapshots"),
+    ]);
+
+    const memberLists = await Promise.all(CLUSTERS.map(c => api(`/clusters/${c.cluster_id}/members`).catch(() => [])));
+    CLUSTER_MEMBERS = {}; WALLET_CLUSTERS = {};
+    CLUSTERS.forEach((c, i) => {
+      CLUSTER_MEMBERS[c.cluster_id] = memberLists[i];
+      memberLists[i].forEach(m => {
+        (WALLET_CLUSTERS[m.wallet_id] = WALLET_CLUSTERS[m.wallet_id] || []).push(c.cluster_id);
+      });
+    });
+
+    const pagerank = await api(`/runs/${runId()}/metrics`, { metric_name: "pagerank", limit: 200 }).catch(() => []);
+    PAGERANK = {};
+    pagerank.forEach(p => { PAGERANK[p.wallet_id] = p; });
+
+    document.getElementById("greetTxt").innerHTML = `<strong>🟢 API healthy</strong> — ${health.mode} mode`;
+    renderAll();
+  } catch (err) {
+    HEALTHY = false;
+    document.getElementById("greetTxt").innerHTML = `<strong style="color:#ff8080">🔴 API unreachable</strong>`;
+    document.getElementById("statusPills").innerHTML = `<span class="pill">Check Settings → Connection (currently ${apiBase()})</span>`;
+    toast(`Could not reach the API: ${err.message}`, "error");
+  }
+}
+
+function renderAll() {
+  renderStatusPills();
+  renderTopRisk();
+  renderLatestAlerts();
+  renderWallets();
+  renderClusters();
+  renderAlerts();
+  renderSnapshotSelect();
+  renderGraph();
+}
+
+/* ════════════════════════════════════════
+   STATUS BAR
+════════════════════════════════════════ */
+function renderStatusPills() {
+  const highSev = ALERTS.filter(a => a.severity === "HIGH").length;
+  const newAlerts = ALERTS.filter(a => a.review_status === "NEW").length;
+  const pills = [
+    `<strong>${WALLETS.length}</strong> wallets`,
+    `<strong>${CLUSTERS.length}</strong> clusters`,
+    `<strong>${ALERTS.length}</strong> alerts`,
+    `<strong>${newAlerts}</strong> new`,
+    highSev ? `<strong style="color:#ff8080">${highSev}</strong> high severity` : null,
+  ].filter(Boolean);
+  document.getElementById("statusPills").innerHTML = pills.map(x => `<span class="pill">${x}</span>`).join("");
+}
+
+/* ════════════════════════════════════════
+   TOP RISK WALLETS
+════════════════════════════════════════ */
+function renderTopRisk() {
+  const box = document.getElementById("topRiskList");
+  const top = [...WALLETS].sort((a,b) => (b.risk_score||0) - (a.risk_score||0)).slice(0,5);
+  if (!top.length) { box.innerHTML = `<div class="empty-hint">No wallet data yet.</div>`; return; }
+  box.innerHTML = top.map(w => `
+    <div class="row-item" onclick="openWalletModal(${w.wallet_id})">
+      <div class="ri-left">
+        <span class="ri-dot" style="background:${riskColor(w.risk_score)}"></span>
+        <span class="ri-title">${w.address}</span>
+      </div>
+      <span class="badge ${riskBadgeClass(w.risk_score)}">${w.risk_score ?? "–"}</span>
+    </div>`).join("");
+}
+
+/* ════════════════════════════════════════
+   LATEST ALERTS (panel preview)
+════════════════════════════════════════ */
+function renderLatestAlerts() {
+  const box = document.getElementById("latestAlertsList");
+  const top = [...ALERTS].sort((a,b) => b.alert_id - a.alert_id).slice(0,5);
+  if (!top.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }
+  box.innerHTML = top.map(a => `
+    <div class="row-item" onclick="scrollToId('alerts')">
+      <div class="ri-left">
+        <span class="ri-dot" style="background:${a.severity==='HIGH'?'#ff6b6b':a.severity==='MEDIUM'?'#ffc350':'#78c8ff'}"></span>
+        <span class="ri-title">${a.pattern_type}</span>
+      </div>
+      <span class="ri-sub">${(a.confidence*100).toFixed(0)}% confidence</span>
+    </div>`).join("");
+}
+
+/* ════════════════════════════════════════
+   WALLETS
+════════════════════════════════════════ */
+let walletSearchQ = "", walletSort = "risk", walletFilter = "all";
+
+document.getElementById("walletSearch").addEventListener("input", e => { walletSearchQ = e.target.value.toLowerCase(); renderWallets(); });
+document.getElementById("walletSort").addEventListener("change", e => { walletSort = e.target.value; renderWallets(); });
+document.getElementById("walletFilterBar").addEventListener("click", e => {
+  const btn = e.target.closest(".fbtn"); if (!btn) return;
+  walletFilter = btn.dataset.f;
+  document.querySelectorAll("#walletFilterBar .fbtn").forEach(x => x.classList.toggle("on", x === btn));
+  renderWallets();
+});
+
+function renderWallets() {
+  const grid = document.getElementById("walletGrid");
+  let list = WALLETS.filter(w => {
+    if (walletFilter === "high-risk" && riskTier(w.risk_score) !== "high") return false;
+    if (walletFilter !== "all" && walletFilter !== "high-risk" && w.address_type !== walletFilter) return false;
+    if (walletSearchQ && !w.address.toLowerCase().includes(walletSearchQ)) return false;
+    return true;
+  });
+  if (walletSort === "risk") list.sort((a,b) => (b.risk_score||0) - (a.risk_score||0));
+  else if (walletSort === "tx") list.sort((a,b) => (b.tx_count||0) - (a.tx_count||0));
+  else if (walletSort === "address") list.sort((a,b) => a.address.localeCompare(b.address));
+
+  if (!list.length) {
+    grid.innerHTML = `<div class="empty-grid"><div class="ei">🔍</div><p>No matching wallets</p><small>Try a different search or filter.</small></div>`;
+    return;
+  }
+
+  grid.innerHTML = list.map(w => {
+    const pct = w.risk_score ?? 0;
+    const clusterCount = (WALLET_CLUSTERS[w.wallet_id] || []).length;
+    return `
+    <div class="card" onclick="openWalletModal(${w.wallet_id})">
+      <div class="card-accent" style="background:radial-gradient(closest-side,${riskColor(w.risk_score)}55,transparent)"></div>
+      <h3>${shortAddr(w.address)}</h3>
+      <span class="badge b-type-${w.address_type.toLowerCase()}">${w.address_type}</span>
+      <span class="badge ${riskBadgeClass(w.risk_score)}">risk ${w.risk_score ?? "–"}</span>
+      <div class="card-meta">${w.tx_count} tx${clusterCount ? ` · in ${clusterCount} cluster${clusterCount!==1?'s':''}` : ""}</div>
+      <div class="progress"><div class="progress-bar" style="width:${pct}%;background:${riskColor(w.risk_score)}"></div></div>
+      <div class="card-actions">
+        <span class="cact" onclick="event.stopPropagation();copyToClipboard('${w.address}')">📋 Copy</span>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function openWalletModal(id) {
+  const w = WALLETS.find(x => x.wallet_id === id);
+  if (!w) return;
+  document.getElementById("wmAddress").textContent = w.address;
+  document.getElementById("wmBadges").innerHTML =
+    `<span class="badge b-type-${w.address_type.toLowerCase()}">${w.address_type}</span>` +
+    `<span class="badge ${riskBadgeClass(w.risk_score)}">risk tier: ${riskTier(w.risk_score)}</span>`;
+  document.getElementById("wmTxCount").textContent = w.tx_count;
+  document.getElementById("wmRisk").textContent = w.risk_score ?? "–";
+  const pr = PAGERANK[id];
+  document.getElementById("wmRank").textContent = pr ? `#${pr.rank_position}` : "no data";
+  document.getElementById("wmRankValue").textContent = pr ? pr.metric_value.toFixed(4) : "no data";
+  const clusterIds = WALLET_CLUSTERS[id] || [];
+  document.getElementById("wmClusters").innerHTML = clusterIds.length
+    ? `<div class="modal-label">Member of</div>` + clusterIds.map(cid => {
+        const c = CLUSTERS.find(x => x.cluster_id === cid);
+        return `<span class="badge ${typeBadgeClass(c?.cluster_type)}" style="cursor:pointer;" onclick="closeModal('walletModal');openClusterModal(${cid})">${c?.cluster_type || "cluster #"+cid}</span>`;
+      }).join("")
+    : "";
+  openModal("walletModal");
+}
+
+/* ════════════════════════════════════════
+   CLUSTERS
+════════════════════════════════════════ */
+function renderClusters() {
+  const grid = document.getElementById("clusterGrid");
+  if (!CLUSTERS.length) {
+    grid.innerHTML = `<div class="empty-grid"><div class="ei">🕸</div><p>No clusters yet</p><small>Run Louvain community detection to populate this.</small></div>`;
+    return;
+  }
+  grid.innerHTML = CLUSTERS.map(c => `
+    <div class="card" onclick="openClusterModal(${c.cluster_id})">
+      <div class="card-accent" style="background:radial-gradient(closest-side,${riskColor(c.risk_score)}55,transparent)"></div>
+      <h3>Cluster #${c.cluster_id}</h3>
+      <span class="badge ${typeBadgeClass(c.cluster_type)}">${c.cluster_type || "Untriaged"}</span>
+      <span class="badge ${riskBadgeClass(c.risk_score)}">risk ${c.risk_score ?? "–"}</span>
+      <div class="card-meta">${c.member_count} members · modularity ${c.modularity_score?.toFixed(2) ?? "–"}</div>
+    </div>`).join("");
+}
+
+function openClusterModal(id) {
+  const c = CLUSTERS.find(x => x.cluster_id === id);
+  if (!c) return;
+  document.getElementById("cmTitle").textContent = `Cluster #${c.cluster_id}`;
+  document.getElementById("cmBadges").innerHTML =
+    `<span class="badge ${typeBadgeClass(c.cluster_type)}">${c.cluster_type || "Untriaged"}</span>` +
+    `<span class="badge ${riskBadgeClass(c.risk_score)}">risk ${c.risk_score ?? "–"}</span>`;
+  document.getElementById("cmMemberCount").textContent = c.member_count;
+  document.getElementById("cmModularity").textContent = c.modularity_score?.toFixed(3) ?? "–";
+  const members = CLUSTER_MEMBERS[id] || [];
+  document.getElementById("cmMembersBody").innerHTML = members.map(m => `
+    <tr>
+      <td>${shortAddr(m.address)}</td>
+      <td>${(m.membership_score*100).toFixed(0)}%</td>
+      <td>${m.is_core_node ? "⭐ core" : "–"}</td>
+    </tr>`).join("") || `<tr><td colspan="3">No member data.</td></tr>`;
+  openModal("clusterModal");
+}
+
+/* ════════════════════════════════════════
+   ALERTS
+════════════════════════════════════════ */
+let alertFilter = "all";
+document.getElementById("alertFilterBar").addEventListener("click", e => {
+  const btn = e.target.closest(".fbtn"); if (!btn) return;
+  alertFilter = btn.dataset.f;
+  document.querySelectorAll("#alertFilterBar .fbtn").forEach(x => x.classList.toggle("on", x === btn));
+  renderAlerts();
+});
+
+function renderAlerts() {
+  const box = document.getElementById("alertList");
+  const list = ALERTS.filter(a => alertFilter === "all" || a.review_status === alertFilter);
+  if (!list.length) {
+    box.innerHTML = `<div class="empty-grid"><div class="ei">✅</div><p>No alerts here</p><small>Nothing matches this filter.</small></div>`;
+    return;
+  }
+  box.innerHTML = list.map(a => `
+    <div class="alert-row">
+      <div class="alert-main">
+        <div class="alert-title">${a.pattern_type}
+          <span class="badge ${severityBadgeClass(a.severity)}">${a.severity}</span>
+          <span class="badge ${statusBadgeClass(a.review_status)}">${a.review_status}</span>
+        </div>
+        <div class="alert-sub">run #${a.run_id}${a.wallet_id ? ` · wallet #${a.wallet_id}` : ""}${a.cluster_id ? ` · cluster #${a.cluster_id}` : ""}</div>
+      </div>
+      <div class="confidence-bar"><div class="confidence-fill" style="width:${(a.confidence*100).toFixed(0)}%"></div></div>
+      <span class="ri-sub">${(a.confidence*100).toFixed(0)}%</span>
+      <div class="alert-actions">
+        ${a.wallet_id ? `<button class="btn" onclick="openWalletModal(${a.wallet_id})">Wallet</button>` : ""}
+        ${a.cluster_id ? `<button class="btn" onclick="openClusterModal(${a.cluster_id})">Cluster</button>` : ""}
+      </div>
+    </div>`).join("");
+}
+
+/* ════════════════════════════════════════
+   GRAPH (vis-network)
+════════════════════════════════════════ */
+let networkInstance = null;
+
+function renderSnapshotSelect() {
+  const sel = document.getElementById("snapshotSelect");
+  const current = sel.value;
+  sel.innerHTML = SNAPSHOTS.map(s => `<option value="${s.snapshot_id}">${s.snapshot_name} (${s.vertex_count}v/${s.edge_count}e)</option>`).join("")
+    || `<option value="1">snapshot #1</option>`;
+  if (current && [...sel.options].some(o => o.value === current)) sel.value = current;
+}
+
+async function renderGraph() {
+  const canvas = document.getElementById("graphCanvas");
+  const snapshotId = document.getElementById("snapshotSelect").value || (SNAPSHOTS[0]?.snapshot_id ?? 1);
+  document.getElementById("runIdInput").value = runId();
+
+  let edges = [];
+  try {
+    edges = await api(`/snapshots/${snapshotId}/edges`, { limit: 1000 });
+  } catch (err) {
+    canvas.innerHTML = "";
+    toast(`Could not load graph edges: ${err.message}`, "error");
+    return;
+  }
+
+  const walletIds = new Set();
+  edges.forEach(e => { walletIds.add(e.src_wallet_id); walletIds.add(e.dst_wallet_id); });
+  WALLETS.forEach(w => walletIds.add(w.wallet_id)); // include isolated nodes too
+
+  const nodes = [...walletIds].map(id => {
+    const w = WALLETS.find(x => x.wallet_id === id);
+    const pr = PAGERANK[id];
+    return {
+      id,
+      label: w ? shortAddr(w.address) : `#${id}`,
+      value: Math.max(1, w?.tx_count || 1),
+      color: { background: riskColor(w?.risk_score), border: "rgba(255,255,255,.4)" },
+      font: { color: getComputedStyle(document.documentElement).getPropertyValue("--ink").trim() || "#fff" },
+      title: w ? `${w.address}\nType: ${w.address_type}\nRisk: ${w.risk_score ?? "–"}\nTx count: ${w.tx_count}${pr ? `\nPageRank: #${pr.rank_position} (${pr.metric_value.toFixed(4)})` : ""}` : `wallet #${id}`,
+    };
+  });
+
+  const edgeItems = edges.map((e, i) => ({
+    id: i,
+    from: e.src_wallet_id,
+    to: e.dst_wallet_id,
+    value: e.edge_weight || 1,
+    arrows: "to",
+    title: `${e.transfer_count} transfer${e.transfer_count!==1?"s":""} · weight ${e.edge_weight}`,
+    color: { color: "rgba(150,180,255,.45)", highlight: "#5596ff" },
+  }));
+
+  if (networkInstance) { networkInstance.destroy(); networkInstance = null; }
+
+  networkInstance = new vis.Network(canvas, { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edgeItems) }, {
+    nodes: { shape: "dot", scaling: { min: 10, max: 40 } },
+    edges: { smooth: { type: "continuous" }, scaling: { min: 1, max: 8 } },
+    physics: { barnesHut: { gravitationalConstant: -4000, springLength: 140 }, stabilization: { iterations: 150 } },
+    interaction: { hover: true, tooltipDelay: 100 },
+  });
+}
+
+document.getElementById("snapshotSelect").addEventListener("change", renderGraph);
+document.getElementById("runIdInput").addEventListener("change", async e => {
+  const p = loadPref(); p.runId = Number(e.target.value) || 1; savePref(p);
+  await loadAll();
+});
+
+/* ════════════════════════════════════════
+   THEME + BACKGROUND SYSTEM
+════════════════════════════════════════ */
+function applyPrefs() {
+  const p = loadPref();
+  const theme  = p.theme  || "dark";
+  const bg     = p.bg     || "topology";
+  const accent = p.accent || "default";
+
+  document.documentElement.dataset.theme  = theme;
+  document.documentElement.dataset.accent = accent;
+
+  document.querySelectorAll(".theme-opt").forEach(el => el.classList.toggle("on", el.dataset.t === theme));
+  document.querySelectorAll(".bg-opt").forEach(el => el.classList.toggle("on", el.dataset.bg === bg));
+  document.querySelectorAll(".accent-swatch").forEach(el => el.classList.toggle("on", el.dataset.a === accent));
+
+  document.getElementById("s_apiBase").value = p.apiBase || DEFAULT_API_BASE;
+  document.getElementById("s_runId").value = p.runId || 1;
+  document.getElementById("apiDocsLink").href = `${apiBase()}/docs`;
+
+  startVanta(bg);
+}
+
+function setTheme(t) {
+  const p=loadPref(); p.theme=t; savePref(p);
+  document.documentElement.dataset.theme=t;
+  document.querySelectorAll(".theme-opt").forEach(x=>x.classList.toggle("on",x.dataset.t===t));
+  toast(t==="dark"?"🌙 Dark mode on":"☀️ Light mode on","info");
+  renderGraph();
+}
+function setBg(bg) {
+  const p=loadPref(); p.bg=bg; savePref(p);
+  document.querySelectorAll(".bg-opt").forEach(x=>x.classList.toggle("on",x.dataset.bg===bg));
+  startVanta(bg);
+  toast("Background updated","success");
+}
+function setAccent(a) {
+  const p=loadPref(); p.accent=a; savePref(p);
+  document.documentElement.dataset.accent=a;
+  document.querySelectorAll(".accent-swatch").forEach(x=>x.classList.toggle("on",x.dataset.a===a));
+}
+
+function switchStab(btn, contentId) {
+  document.querySelectorAll(".stab").forEach(b=>b.classList.remove("on"));
+  document.querySelectorAll(".stab-content").forEach(c=>c.classList.remove("on"));
+  btn.classList.add("on");
+  document.getElementById(contentId).classList.add("on");
+}
+
+function saveConnectionSettings() {
+  const base = document.getElementById("s_apiBase").value.trim() || DEFAULT_API_BASE;
+  const rid = Number(document.getElementById("s_runId").value) || 1;
+  const p = loadPref(); p.apiBase = base; p.runId = rid; savePref(p);
+  document.getElementById("apiDocsLink").href = `${base}/docs`;
+  toast("Connection settings saved ✓","success");
+  loadAll();
+}
+
+async function testConnection() {
+  const base = document.getElementById("s_apiBase").value.trim() || DEFAULT_API_BASE;
+  try {
+    const res = await fetch(`${base}/health`);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const body = await res.json();
+    toast(`✓ Reachable — ${body.mode} mode`,"success");
+  } catch (err) {
+    toast(`✗ Unreachable: ${err.message}`,"error");
+  }
+}
+
+document.getElementById("settingsBtn").addEventListener("click", () => openModal("settingsModal"));
+
+/* ════════════════════════════════════════
+   MODAL HELPERS
+════════════════════════════════════════ */
+function openModal(id){ document.getElementById(id).classList.add("open"); }
+function closeModal(id){ document.getElementById(id).classList.remove("open"); }
+document.querySelectorAll(".modal").forEach(m=>m.addEventListener("click",e=>{ if(e.target===m) m.classList.remove("open"); }));
+
+/* ════════════════════════════════════════
+   SIDEBAR
+════════════════════════════════════════ */
+document.getElementById("toggleSidebar").addEventListener("click",()=>{
+  document.getElementById("app").classList.toggle("collapsed");
+});
+document.getElementById("mobMenuBtn").addEventListener("click",()=>{
+  document.getElementById("sidebar").classList.add("mob-open");
+  document.getElementById("mobOverlay").classList.add("open");
+});
+document.getElementById("mobOverlay").addEventListener("click",()=>{
+  document.getElementById("sidebar").classList.remove("mob-open");
+  document.getElementById("mobOverlay").classList.remove("open");
+});
+
+function setActive(el){ document.querySelectorAll(".nav-item").forEach(x=>x.classList.remove("active")); el.classList.add("active"); }
+
+/* ════════════════════════════════════════
+   FAB
+════════════════════════════════════════ */
+function toggleFab(){ document.getElementById("fab").classList.toggle("open"); }
+function closeFab(){ document.getElementById("fab").classList.remove("open"); }
+document.addEventListener("click",e=>{ if(!document.getElementById("fab").contains(e.target)) closeFab(); });
+
+/* ════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+════════════════════════════════════════ */
+document.addEventListener("keydown",e=>{
+  const tag=document.activeElement.tagName;
+  if(["INPUT","TEXTAREA","SELECT"].includes(tag)) return;
+  if(document.querySelector(".modal.open")) { if(e.key==="Escape") document.querySelectorAll(".modal.open").forEach(m=>m.classList.remove("open")); return; }
+  switch(e.key){
+    case "r": case "R": loadAll(); break;
+    case "/":           e.preventDefault(); document.getElementById("walletSearch").focus(); scrollToId("wallets"); break;
+    case "?":           openModal("kbdModal"); break;
+    case "s": case "S": openModal("settingsModal"); break;
+    case "b": case "B": document.getElementById("app").classList.toggle("collapsed"); break;
+    case "g": case "G": window.scrollTo({top:0,behavior:"smooth"}); break;
+    case "d": case "D":
+      const cur=loadPref(); const nt=cur.theme==="dark"?"light":"dark"; cur.theme=nt; savePref(cur);
+      document.documentElement.dataset.theme=nt;
+      document.querySelectorAll(".theme-opt").forEach(x=>x.classList.toggle("on",x.dataset.t===nt));
+      toast(nt==="dark"?"🌙 Dark mode":"☀️ Light mode","info"); renderGraph(); break;
+    case "Escape": document.querySelectorAll(".modal.open").forEach(m=>m.classList.remove("open")); break;
+  }
+});
+
+/* ════════════════════════════════════════
+   INIT
+════════════════════════════════════════ */
+window.addEventListener("DOMContentLoaded",()=>{
+  applyPrefs();
+  loadAll();
+});
+</script>
+</body>
+</html>
