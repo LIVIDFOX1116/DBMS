@@ -77,6 +77,44 @@ def update_wallet_stats(conn) -> int:
     return updated
 
 
+def reclassify_address_types(conn, client: EtherscanClient, limit: int = 100) -> int:
+    """Corrects wallet.address_type using eth_getCode -- the one reliable
+    contract-vs-EOA signal (see EtherscanClient.get_code). ingest_subgraph
+    only ever marks CONTRACT for addresses discovered *as* an ERC20 token
+    (upsert_token); anything reached solely through native transactions
+    defaults to EOA even when it's obviously a contract, e.g. the Uniswap V2
+    Router, which has no ERC20 token of its own and so is never seen via
+    upsert_token at all.
+
+    Checking eth_getCode costs one full extra API call per address, which is
+    too expensive to run against every wallet in a real crawl (tens of
+    thousands). Scoped to the highest-tx_count EOA-tagged wallets instead --
+    a wrong label there is both most likely (high activity skews toward
+    infrastructure, not individuals) and most visible (these are exactly
+    what "top wallets" views surface). Run update_wallet_stats() first so
+    tx_count is populated -- otherwise this has nothing to rank by.
+
+    Returns the number of wallets reclassified to CONTRACT.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT wallet_id, address FROM wallet
+               WHERE address_type = 'EOA' ORDER BY tx_count DESC NULLS LAST LIMIT %s""",
+            (limit,),
+        )
+        candidates = cur.fetchall()
+
+    reclassified = 0
+    for wallet_id, address in candidates:
+        code = client.get_code(address)
+        if code and code not in ("0x", "0x0"):
+            with conn.cursor() as cur:
+                cur.execute("UPDATE wallet SET address_type = 'CONTRACT' WHERE wallet_id = %s", (wallet_id,))
+            conn.commit()
+            reclassified += 1
+    return reclassified
+
+
 # ---------------------------------------------------------------- DB helpers
 
 def upsert_wallet(cur, address: str, address_type: str = "EOA") -> int:
@@ -308,6 +346,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--address", default=config.CASE_STUDY_ADDRESS)
     parser.add_argument("--hops", type=int, default=config.HOP_COUNT)
+    parser.add_argument("--reclassify-top", type=int, default=100,
+                         help="how many top-tx_count EOA wallets to check via eth_getCode (0 to skip)")
     args = parser.parse_args()
 
     log.info("Starting crawl: seed=%s hops=%d", args.address, args.hops)
@@ -318,6 +358,11 @@ def main():
     try:
         updated = update_wallet_stats(conn)
         log.info("Backfilled tx_count/first_seen_block/last_seen_block for %d wallets", updated)
+
+        if args.reclassify_top > 0:
+            reclassified = reclassify_address_types(conn, EtherscanClient(), limit=args.reclassify_top)
+            log.info("Reclassified %d of the top %d EOA-tagged wallets as CONTRACT",
+                      reclassified, args.reclassify_top)
     finally:
         conn.close()
 

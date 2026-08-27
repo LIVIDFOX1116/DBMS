@@ -87,3 +87,26 @@ class EtherscanClient:
                 break
             page += 1
         return out[:max_results]
+
+    def get_code(self, address: str) -> str:
+        """proxy/eth_getCode -- the one reliable EOA-vs-contract signal.
+        txlist/tokentx never say which an address is; ingest_subgraph.py only
+        infers CONTRACT for addresses discovered *as* an ERC20 token, so
+        anything reached solely through native transactions defaults to EOA
+        even when it's obviously a contract (e.g. the Uniswap V2 Router).
+
+        Doesn't reuse _get(): the proxy module returns a raw JSON-RPC shape
+        (`{"result": "0x..."}`, a string) rather than the account module's
+        `{"status", "message", "result": [...]}` shape -- _get() hard-codes
+        `result if isinstance(result, list) else []`, which would silently
+        discard a valid hex-string result here.
+        """
+        self._throttle()
+        params = {
+            "chainid": config.CHAIN_ID, "apikey": self.api_key,
+            "module": "proxy", "action": "eth_getCode",
+            "address": address, "tag": "latest",
+        }
+        resp = requests.get(config.ETHERSCAN_BASE_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("result") or "0x"

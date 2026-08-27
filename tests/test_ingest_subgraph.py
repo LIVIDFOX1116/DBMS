@@ -145,5 +145,85 @@ class TestIngestSubgraph(unittest.TestCase):
         self.assertGreater(conn.committed, 0)
 
 
+class FakeCodeClient:
+    """For reclassify_address_types -- canned eth_getCode results, no network."""
+    def __init__(self, contract_addresses):
+        self.contract_addresses = set(contract_addresses)
+
+    def get_code(self, address):
+        return "0x606060" if address in self.contract_addresses else "0x"
+
+
+class ReclassifyFakeCursor:
+    def __init__(self, wallets):
+        self.wallets = wallets  # wallet_id -> {"address", "tx_count", "address_type"}
+        self._rows = []
+
+    def execute(self, query, params=()):
+        q = " ".join(query.split())
+        if q.startswith("SELECT wallet_id, address FROM wallet"):
+            (limit,) = params
+            eoa = [(wid, w["address"]) for wid, w in self.wallets.items() if w["address_type"] == "EOA"]
+            eoa.sort(key=lambda pair: -(self.wallets[pair[0]]["tx_count"] or 0))
+            self._rows = eoa[:limit]
+        elif q.startswith("UPDATE wallet SET address_type"):
+            (wallet_id,) = params
+            self.wallets[wallet_id]["address_type"] = "CONTRACT"
+        else:
+            raise AssertionError(f"ReclassifyFakeCursor doesn't know: {q[:60]}")
+
+    def fetchall(self):
+        return self._rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class ReclassifyFakeConnection:
+    def __init__(self, wallets):
+        self.wallets = wallets
+        self.committed = 0
+
+    def cursor(self):
+        return ReclassifyFakeCursor(self.wallets)
+
+    def commit(self):
+        self.committed += 1
+
+
+class TestReclassifyAddressTypes(unittest.TestCase):
+    def test_reclassifies_eoa_tagged_wallet_that_is_actually_a_contract(self):
+        wallets = {
+            1: {"address": "0xaaa", "tx_count": 100, "address_type": "EOA"},       # mislabeled -- really a contract
+            2: {"address": "0xbbb", "tx_count": 50, "address_type": "EOA"},        # genuinely an EOA
+            3: {"address": "0xccc", "tx_count": 999, "address_type": "CONTRACT"},  # already correct, not a candidate
+        }
+        conn = ReclassifyFakeConnection(wallets)
+        client = FakeCodeClient(contract_addresses={"0xaaa"})
+
+        reclassified = ing.reclassify_address_types(conn, client, limit=10)
+
+        self.assertEqual(reclassified, 1)
+        self.assertEqual(wallets[1]["address_type"], "CONTRACT")
+        self.assertEqual(wallets[2]["address_type"], "EOA")  # unchanged -- real EOA, not touched
+        self.assertGreater(conn.committed, 0)
+
+    def test_respects_limit_checking_highest_activity_first(self):
+        wallets = {i: {"address": f"0x{i}", "tx_count": 100 - i, "address_type": "EOA"} for i in range(5)}
+        conn = ReclassifyFakeConnection(wallets)
+        client = FakeCodeClient(contract_addresses={w["address"] for w in wallets.values()})
+
+        reclassified = ing.reclassify_address_types(conn, client, limit=2)
+
+        # Only the top 2 by tx_count (wallet_id 0 and 1) get checked at all.
+        self.assertEqual(reclassified, 2)
+        self.assertEqual(wallets[0]["address_type"], "CONTRACT")
+        self.assertEqual(wallets[1]["address_type"], "CONTRACT")
+        self.assertEqual(wallets[4]["address_type"], "EOA")  # never checked
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
