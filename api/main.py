@@ -119,13 +119,13 @@ def list_clusters(run_id: Optional[int] = None):
         with conn.cursor() as cur:
             if run_id is not None:
                 cur.execute(
-                    """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score
+                    """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score, modularity_score
                        FROM cluster WHERE run_id = %s""",
                     (run_id,),
                 )
             else:
                 cur.execute(
-                    """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score
+                    """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score, modularity_score
                        FROM cluster ORDER BY run_id DESC LIMIT 100"""
                 )
             return rows_as_dicts(cur)

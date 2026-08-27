@@ -41,6 +41,42 @@ def norm(addr: str) -> str:
     return addr.lower() if addr else None
 
 
+def update_wallet_stats(conn) -> int:
+    """Backfills wallet.tx_count/first_seen_block/last_seen_block from the
+    transaction table. Deliberately does NOT touch balance_wei/total_sent_wei/
+    total_recv_wei: those would need the wallet's *complete* on-chain history
+    (an eth_getBalance / full tx history call per wallet), not just what's
+    visible in this bounded subgraph. Computing them from partial data would
+    understate every wallet that wasn't itself a BFS seed and present a wrong
+    number as if it were authoritative -- worse than leaving it NULL. tx_count
+    and first/last_seen_block are honest either way: they're framed as "seen
+    in this subgraph," which is what they actually are.
+
+    Run once after a crawl (or re-run any time; it's a plain aggregate
+    UPDATE, safe to repeat). Returns the number of wallets updated.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE wallet w SET
+                tx_count = t.cnt,
+                first_seen_block = t.min_block,
+                last_seen_block = t.max_block
+            FROM (
+                SELECT wallet_id, COUNT(*) AS cnt, MIN(block_number) AS min_block, MAX(block_number) AS max_block
+                FROM (
+                    SELECT from_wallet_id AS wallet_id, block_number FROM transaction
+                    UNION ALL
+                    SELECT to_wallet_id AS wallet_id, block_number FROM transaction WHERE to_wallet_id IS NOT NULL
+                ) touched
+                GROUP BY wallet_id
+            ) t
+            WHERE w.wallet_id = t.wallet_id
+        """)
+        updated = cur.rowcount
+    conn.commit()
+    return updated
+
+
 # ---------------------------------------------------------------- DB helpers
 
 def upsert_wallet(cur, address: str, address_type: str = "EOA") -> int:
@@ -277,6 +313,13 @@ def main():
     log.info("Starting crawl: seed=%s hops=%d", args.address, args.hops)
     stats = crawl(args.address, args.hops, resume=True)
     log.info("Done: %s", stats)
+
+    conn = psycopg2.connect(**config.PG_DSN)
+    try:
+        updated = update_wallet_stats(conn)
+        log.info("Backfilled tx_count/first_seen_block/last_seen_block for %d wallets", updated)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ which defaults to "mock" (api/main.py:using_mock()).
 """
 from fastapi.testclient import TestClient
 
-from api.main import app
+from api import main as api_main
+from api.main import app, load_mock
 
 client = TestClient(app)
 
@@ -117,3 +118,85 @@ class TestRunMetrics:
         resp = client.get("/runs/9999/metrics")
         assert resp.status_code == 200
         assert resp.json() == []
+
+
+class _FakeCursor:
+    """Records the query text instead of touching a real database. rows_as_dicts()
+    calls .description and .fetchall() on the way out, so both need to work even
+    though there's no real result set -- an empty one is fine, we only care what
+    SQL was asked for, not what it would return."""
+    def __init__(self, sink):
+        self._sink = sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, query, params=None):
+        self._sink.append(" ".join(query.split()))
+
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return None
+
+    @property
+    def description(self):
+        return []
+
+
+class _FakeConn:
+    def __init__(self, sink):
+        self._sink = sink
+
+    def cursor(self):
+        return _FakeCursor(self._sink)
+
+    def close(self):
+        pass
+
+
+class TestLiveModeQueryShapes:
+    """We can't spin up a live Postgres in CI, but every live-mode SQL query
+    should ask for the same columns mock mode returns for the same endpoint --
+    api/main.py's whole design point is that the two modes are interchangeable
+    for callers (see its module docstring). This is exactly the bug class that
+    let /clusters silently drop modularity_score in live mode while mock kept
+    it, undetected until the endpoint was actually exercised against real
+    Postgres data for the first time."""
+
+    def _live_query(self, monkeypatch, path):
+        queries = []
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+        monkeypatch.setattr(api_main, "get_conn", lambda: _FakeConn(queries))
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert queries, f"no query captured for {path}"
+        return queries[0]
+
+    def test_clusters_by_run_id(self, monkeypatch):
+        query = self._live_query(monkeypatch, "/clusters?run_id=1")
+        mock_keys = set(load_mock()["clusters"][0].keys()) - {"members"}
+        missing = [k for k in mock_keys if k not in query]
+        assert not missing, f"live /clusters?run_id= query is missing columns: {missing}"
+
+    def test_clusters_unfiltered(self, monkeypatch):
+        query = self._live_query(monkeypatch, "/clusters")
+        mock_keys = set(load_mock()["clusters"][0].keys()) - {"members"}
+        missing = [k for k in mock_keys if k not in query]
+        assert not missing, f"live /clusters query is missing columns: {missing}"
+
+    def test_wallets(self, monkeypatch):
+        query = self._live_query(monkeypatch, "/wallets")
+        mock_keys = set(load_mock()["wallets"][0].keys())
+        missing = [k for k in mock_keys if k not in query]
+        assert not missing, f"live /wallets query is missing columns: {missing}"
+
+    def test_snapshots(self, monkeypatch):
+        query = self._live_query(monkeypatch, "/snapshots")
+        mock_keys = set(load_mock()["snapshots"][0].keys())
+        missing = [k for k in mock_keys if k not in query]
+        assert not missing, f"live /snapshots query is missing columns: {missing}"
