@@ -62,6 +62,17 @@ class TestClusters:
         resp = client.get("/clusters/9999/members")
         assert resp.status_code == 404
 
+    def test_get_cluster_by_id(self):
+        resp = client.get("/clusters/1")
+        assert resp.status_code == 200
+        cluster = resp.json()
+        assert cluster["cluster_type"] == "SYBIL"
+        assert "members" not in cluster
+
+    def test_get_cluster_404_for_unknown_id(self):
+        resp = client.get("/clusters/9999")
+        assert resp.status_code == 404
+
 
 class TestAlerts:
     def test_list_alerts_returns_all(self):
@@ -141,7 +152,11 @@ class _FakeCursor:
         return []
 
     def fetchone(self):
-        return None
+        # Truthy and non-empty so single-item GET endpoints (which check
+        # `if not row: raise 404`) proceed past that check -- with description
+        # empty, dict(zip(cols, row)) still comes out {}, which is all we need
+        # since we only care what query text was issued, not the response body.
+        return (1,)
 
     @property
     def description(self):
@@ -188,6 +203,12 @@ class TestLiveModeQueryShapes:
         mock_keys = set(load_mock()["clusters"][0].keys()) - {"members"}
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /clusters query is missing columns: {missing}"
+
+    def test_cluster_by_id(self, monkeypatch):
+        query = self._live_query(monkeypatch, "/clusters/1")
+        mock_keys = set(load_mock()["clusters"][0].keys()) - {"members"}
+        missing = [k for k in mock_keys if k not in query]
+        assert not missing, f"live /clusters/{{id}} query is missing columns: {missing}"
 
     def test_wallets(self, monkeypatch):
         query = self._live_query(monkeypatch, "/wallets")

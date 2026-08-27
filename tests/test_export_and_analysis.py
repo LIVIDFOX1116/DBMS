@@ -14,7 +14,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 import pandas as pd
 
 from graph.export_snapshot import write_parquet
-from graph.run_analysis import persist_vertex_metric, persist_clusters, start_run, finish_run
+from graph.run_analysis import (
+    persist_vertex_metric, persist_clusters, start_run, finish_run,
+    compute_internal_edges, classify_clusters,
+)
 
 
 def sample_edge_df():
@@ -70,11 +73,30 @@ class FakeCursor:
         elif q.startswith("INSERT INTO cluster_member"):
             self.state["cluster_members"].append(params)
             self._last = None
+        elif q.startswith("SELECT cluster_id, member_count, internal_edges"):
+            (run_id,) = params
+            self._last_many = [
+                (cid, c["member_count"], c["internal_edges"])
+                for cid, c in self.state["clusters_full"].items()
+                if c["run_id"] == run_id
+            ]
+            self._last = None
+        elif q.startswith("UPDATE cluster SET cluster_type"):
+            risk_score, cluster_id = params
+            self.state["clusters_full"][cluster_id]["cluster_type"] = "SYBIL"
+            self.state["clusters_full"][cluster_id]["risk_score"] = risk_score
+            self._last = None
+        elif q.startswith("INSERT INTO alert"):
+            self.state["alerts"].append(params)
+            self._last = None
         else:
             raise AssertionError(f"FakeCursor doesn't know: {q[:60]}")
 
     def fetchone(self):
         return self._last
+
+    def fetchall(self):
+        return getattr(self, "_last_many", [])
 
     def __enter__(self):
         return self
@@ -88,6 +110,7 @@ class FakeConnection:
         self.state = {
             "algorithms": {"pagerank": 1, "louvain": 2, "bfs": 3},
             "runs": {}, "vertex_metrics": [], "clusters": {}, "cluster_members": [],
+            "clusters_full": {}, "alerts": [],
         }
         self.committed = 0
 
@@ -124,6 +147,76 @@ class TestRunAnalysisBookkeeping(unittest.TestCase):
 
         self.assertEqual(len(conn.state["clusters"]), 2)  # two distinct community labels
         self.assertEqual(len(conn.state["cluster_members"]), 3)  # three wallets total
+
+
+class TestComputeInternalEdges(unittest.TestCase):
+    def test_counts_only_edges_within_the_same_community(self):
+        cluster_df = pd.DataFrame([
+            {"wallet_id": 1, "community_label": 0},
+            {"wallet_id": 2, "community_label": 0},
+            {"wallet_id": 3, "community_label": 0},
+            {"wallet_id": 4, "community_label": 1},
+        ])
+        edges_df = pd.DataFrame([
+            {"src_wallet_id": 1, "dst_wallet_id": 2},  # within community 0
+            {"src_wallet_id": 2, "dst_wallet_id": 3},  # within community 0
+            {"src_wallet_id": 3, "dst_wallet_id": 4},  # crosses communities -- not counted
+        ])
+        counts = compute_internal_edges(cluster_df, edges_df)
+        self.assertEqual(counts, {0: 2})  # community 1 has no internal edges at all
+
+
+class TestClassifyClusters(unittest.TestCase):
+    def _seed(self, conn, clusters):
+        conn.state["clusters_full"] = clusters
+
+    def test_flags_star_shaped_cluster_as_sybil(self):
+        conn = FakeConnection()
+        self._seed(conn, {
+            1: {"run_id": 7, "member_count": 10, "internal_edges": 9},  # star: 9 = 10-1 edges
+        })
+        flagged = classify_clusters(conn, run_id=7)
+        self.assertEqual(flagged, 1)
+        self.assertEqual(conn.state["clusters_full"][1]["cluster_type"], "SYBIL")
+        self.assertEqual(len(conn.state["alerts"]), 1)
+
+    def test_skips_cluster_below_minimum_size(self):
+        conn = FakeConnection()
+        self._seed(conn, {
+            1: {"run_id": 7, "member_count": 3, "internal_edges": 2},  # too small to be meaningful
+        })
+        flagged = classify_clusters(conn, run_id=7)
+        self.assertEqual(flagged, 0)
+        self.assertNotIn("cluster_type", conn.state["clusters_full"][1])
+        self.assertEqual(conn.state["alerts"], [])
+
+    def test_skips_densely_connected_cluster(self):
+        conn = FakeConnection()
+        self._seed(conn, {
+            # ratio 2.0 -- much denser than a star, not the fan-out pattern this heuristic targets
+            1: {"run_id": 7, "member_count": 10, "internal_edges": 20},
+        })
+        flagged = classify_clusters(conn, run_id=7)
+        self.assertEqual(flagged, 0)
+
+    def test_larger_star_cluster_gets_high_severity(self):
+        conn = FakeConnection()
+        self._seed(conn, {
+            1: {"run_id": 7, "member_count": 25, "internal_edges": 24},
+        })
+        classify_clusters(conn, run_id=7)
+        run_id, cluster_id, severity, confidence = conn.state["alerts"][0]
+        self.assertEqual(severity, "HIGH")
+
+    def test_only_classifies_clusters_from_the_given_run(self):
+        conn = FakeConnection()
+        self._seed(conn, {
+            1: {"run_id": 7, "member_count": 10, "internal_edges": 9},
+            2: {"run_id": 8, "member_count": 10, "internal_edges": 9},  # different run -- not touched
+        })
+        flagged = classify_clusters(conn, run_id=7)
+        self.assertEqual(flagged, 1)
+        self.assertNotIn("cluster_type", conn.state["clusters_full"][2])
 
 
 if __name__ == "__main__":

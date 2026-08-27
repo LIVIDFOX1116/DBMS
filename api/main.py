@@ -133,6 +133,30 @@ def list_clusters(run_id: Optional[int] = None):
         conn.close()
 
 
+@app.get("/clusters/{cluster_id}")
+def get_cluster(cluster_id: int):
+    if using_mock():
+        for c in load_mock()["clusters"]:
+            if c["cluster_id"] == cluster_id:
+                return {k: v for k, v in c.items() if k != "members"}
+        raise HTTPException(404, "cluster not found")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score, modularity_score
+                   FROM cluster WHERE cluster_id = %s""",
+                (cluster_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "cluster not found")
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+    finally:
+        conn.close()
+
+
 @app.get("/clusters/{cluster_id}/members")
 def cluster_members(cluster_id: int):
     if using_mock():

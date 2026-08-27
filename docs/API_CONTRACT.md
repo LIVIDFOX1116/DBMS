@@ -34,6 +34,12 @@ Single wallet, same shape as above. `404` if not found.
 `cluster_type` is one of `SYBIL`, `WASH_TRADE`, `MIXER`, `PEEL_CHAIN`, or `null`
 if the run hasn't been triaged into a type yet — always handle `null` in the UI.
 
+## GET /clusters/{cluster_id}
+Single cluster, same shape as one `/clusters` list item. `404` if not found.
+Needed because `/clusters` is capped (see below) -- a real run can produce
+thousands of clusters, so a specific cluster_id (e.g. from an alert) isn't
+guaranteed to be in the capped list and needs its own lookup.
+
 ## GET /clusters/{cluster_id}/members
 ```json
 [{"wallet_id": 2, "address": "0x1111...", "membership_score": 0.88, "is_core_node": true}]
@@ -75,8 +81,13 @@ endpoint.
 
 - No auth. Fine for a local, single-machine student project; do not expose
   this publicly as-is.
-- No pagination cursor, just `limit` — the bounded case-study subgraph is
-  small enough that offset pagination isn't worth building yet.
+- No pagination cursor, just `limit` (and for `/clusters`, a hard 100-row cap
+  when `run_id` isn't given). This assumption didn't survive contact with
+  real data: a single real crawl produced 9,531 clusters, so `/clusters`'
+  unfiltered list is a somewhat arbitrary 100 of them, not a representative
+  sample. `/clusters/{cluster_id}` exists specifically so a *known* cluster
+  id (e.g. from an alert) can always be fetched regardless of whether it
+  made that cut. Proper pagination is still the right long-term fix.
 - `/runs/{run_id}/metrics` doesn't validate that `run_id` exists in mock mode;
   it just returns `[]`. The frontend should treat an empty list as "no data
   yet," not as an error.
