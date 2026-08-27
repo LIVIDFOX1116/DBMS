@@ -19,7 +19,9 @@ Design notes:
     descope order, Section 8.2).
 """
 import argparse
+import json
 import logging
+import pathlib
 from decimal import Decimal
 
 import psycopg2
@@ -32,6 +34,7 @@ log = logging.getLogger("ingest_subgraph")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+CHECKPOINT_DIR = pathlib.Path(".state")
 
 
 def norm(addr: str) -> str:
@@ -136,9 +139,15 @@ def process_address(cur, client: EtherscanClient, address: str) -> set:
         from_id = upsert_wallet(cur, from_addr)
         to_id = upsert_wallet(cur, to_addr)
         contract_wallet_id = upsert_wallet(cur, contract_addr, address_type="CONTRACT")
+        # token.symbol/token_name are sized generously (see schema.sql), but
+        # an ERC20 contract's symbol()/name() is fully attacker-controlled
+        # and unbounded -- truncate defensively rather than trust any column
+        # width to be enough for whatever a spam/phishing token embeds there.
+        symbol = (tt.get("tokenSymbol") or "")[:128] or None
+        token_name = (tt.get("tokenName") or "")[:255] or None
         token_id = upsert_token(
             cur, contract_wallet_id, contract_addr,
-            tt.get("tokenSymbol"), tt.get("tokenName"), int(tt.get("tokenDecimal") or 18),
+            symbol, token_name, int(tt.get("tokenDecimal") or 18),
         )
         # token_transfer.tx_hash is a foreign key into transaction. The parent
         # tx is almost always already inserted (get_normal_transactions runs
@@ -160,31 +169,98 @@ def _transaction_exists(cur, tx_hash: str) -> bool:
     return cur.fetchone() is not None
 
 
-def crawl(seed_address: str, hop_count: int, client: EtherscanClient = None, conn=None) -> dict:
-    """BFS out to `hop_count` hops from `seed_address`. Returns simple stats."""
+# ------------------------------------------------------------- checkpointing
+# Per-address DB commits (below) make each address's *data* durable, but the
+# BFS frontier itself only ever lived in memory -- so before this existed,
+# re-running after any interruption restarted the walk from the seed and
+# re-crawled every already-done address from scratch (harmless to the DB via
+# upserts, but a full waste of the rate-limited API calls and time already
+# spent). This persists (hop, frontier, visited, next_frontier) to disk after
+# every address so a resumed run picks up exactly where it left off.
+
+def _checkpoint_path(seed_address: str, hop_count: int) -> pathlib.Path:
+    return CHECKPOINT_DIR / f"crawl_{norm(seed_address)}_{hop_count}.json"
+
+
+def _load_checkpoint(path: pathlib.Path) -> dict:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        log.warning("Ignoring unreadable checkpoint at %s", path)
+        return None
+
+
+def _save_checkpoint(path: pathlib.Path, hop: int, frontier: set, visited: set, next_frontier: set) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "hop": hop,
+        "frontier": sorted(frontier),
+        "visited": sorted(visited),
+        "next_frontier": sorted(next_frontier),
+    }))
+
+
+def crawl(seed_address: str, hop_count: int, client: EtherscanClient = None, conn=None, resume: bool = False) -> dict:
+    """BFS out to `hop_count` hops from `seed_address`. Returns simple stats.
+
+    resume=True (the CLI default) checkpoints progress to .state/ and picks
+    back up from there if a matching checkpoint exists; left off (False) for
+    the unit tests, which should stay hermetic -- no file I/O against a fake
+    client's data.
+    """
     client = client or EtherscanClient()
     own_conn = conn is None
     conn = conn or psycopg2.connect(**config.PG_DSN)
     stats = {"addresses_processed": 0, "hops_completed": 0}
 
+    ckpt_path = _checkpoint_path(seed_address, hop_count) if resume else None
+    ckpt = _load_checkpoint(ckpt_path) if ckpt_path else None
+
     try:
-        visited = set()
-        frontier = {norm(seed_address)}
-        for hop in range(hop_count + 1):
+        if ckpt:
+            visited = set(ckpt["visited"])
+            frontier = set(ckpt["frontier"])
+            next_frontier = set(ckpt["next_frontier"])
+            start_hop = ckpt["hop"]
+            log.info(
+                "Resuming from checkpoint: hop=%d, %d addresses already visited, %d pending this hop",
+                start_hop, len(visited), len(frontier - visited),
+            )
+        else:
+            visited = set()
+            frontier = {norm(seed_address)}
+            next_frontier = set()
+            start_hop = 0
+
+        for hop in range(start_hop, hop_count + 1):
             if not frontier:
                 break
-            next_frontier = set()
-            with conn.cursor() as cur:
-                for addr in sorted(frontier):
-                    if addr in visited:
-                        continue
-                    log.info("hop %d: processing %s", hop, addr)
+            for addr in sorted(frontier):
+                if addr in visited:
+                    continue
+                log.info("hop %d: processing %s", hop, addr)
+                # Commit per address, not once per whole hop: a hop can hold
+                # hundreds of addresses and take tens of minutes end to end
+                # (rate-limited API calls), so a crash or interruption
+                # partway through used to roll back everything done since
+                # the last hop boundary. Each address's writes are already a
+                # natural atomic unit (upserts, safe to redo), so committing
+                # here bounds the lost work to at most one in-flight address.
+                with conn.cursor() as cur:
                     next_frontier |= process_address(cur, client, addr)
-                    visited.add(addr)
-                    stats["addresses_processed"] += 1
-            conn.commit()
+                conn.commit()
+                visited.add(addr)
+                stats["addresses_processed"] += 1
+                if ckpt_path:
+                    _save_checkpoint(ckpt_path, hop, frontier, visited, next_frontier)
             frontier = next_frontier - visited
+            next_frontier = set()
             stats["hops_completed"] = hop + 1
+
+        if ckpt_path and ckpt_path.exists():
+            ckpt_path.unlink()  # full run completed -- nothing left to resume
     finally:
         if own_conn:
             conn.close()
@@ -199,7 +275,7 @@ def main():
     args = parser.parse_args()
 
     log.info("Starting crawl: seed=%s hops=%d", args.address, args.hops)
-    stats = crawl(args.address, args.hops)
+    stats = crawl(args.address, args.hops, resume=True)
     log.info("Done: %s", stats)
 
 

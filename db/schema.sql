@@ -68,8 +68,13 @@ CREATE TABLE IF NOT EXISTS token (
     token_id           SERIAL PRIMARY KEY,
     contract_wallet_id BIGINT NOT NULL UNIQUE REFERENCES wallet(wallet_id),
     contract_address   CHAR(42) NOT NULL UNIQUE,
-    symbol             VARCHAR(16),
-    token_name         VARCHAR(64),
+    -- symbol/token_name are attacker-controlled: any contract can set an
+    -- arbitrary ERC20 `symbol()`/`name()`, and phishing/spam tokens
+    -- unsolicited-airdropped to well-known addresses routinely embed a full
+    -- URL or message there. VARCHAR(16) crashed the very first live crawl
+    -- (StringDataRightTruncation) against a real high-profile address.
+    symbol             VARCHAR(128),
+    token_name         VARCHAR(255),
     decimals           SMALLINT,
     standard           VARCHAR(10) DEFAULT 'ERC20'
 );
@@ -80,7 +85,11 @@ CREATE TABLE IF NOT EXISTS token_transfer (
     token_id       INT NOT NULL REFERENCES token(token_id),
     from_wallet_id BIGINT NOT NULL REFERENCES wallet(wallet_id),
     to_wallet_id   BIGINT NOT NULL REFERENCES wallet(wallet_id),
-    token_amount   NUMERIC(38,0),
+    -- An ERC20 Transfer event's value is a raw uint256 (max ~1.1579e77,
+    -- 78 digits) -- unlike wei amounts, it's not bounded by any real supply,
+    -- since spam/scam tokens routinely mint absurd raw amounts on purpose.
+    -- NUMERIC(38,0) overflowed on the very first live crawl.
+    token_amount   NUMERIC(78,0),
     log_index      SMALLINT,
     UNIQUE (tx_hash, log_index)
 );
@@ -225,5 +234,13 @@ VALUES
     ('louvain',  'community',  'cugraph.louvain',  'TBD'),
     ('bfs',      'traversal',  'cugraph.bfs',       'TBD')
 ON CONFLICT (algorithm_name) DO NOTHING;
+
+-- Seed a default analyst: analysis_run.analyst_id is NOT NULL and FK's here,
+-- but nothing else in the pipeline creates analyst rows (no auth in this
+-- project -- see API_CONTRACT.md's known simplifications). Without this,
+-- graph/run_analysis.py's default analyst_id=1 has nothing to point at.
+INSERT INTO analyst (username, email, password_hash, role, organisation)
+VALUES ('system', 'system@local.dev', 'unused-no-auth-in-this-project---------------------------', 'admin', 'txgraph-analyzer')
+ON CONFLICT (username) DO NOTHING;
 
 COMMIT;
