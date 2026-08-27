@@ -1416,9 +1416,24 @@ function renderClusters() {
     </div>`).join("");
 }
 
-function openClusterModal(id) {
-  const c = CLUSTERS.find(x => x.cluster_id === id);
-  if (!c) return;
+async function openClusterModal(id) {
+  let c = CLUSTERS.find(x => x.cluster_id === id);
+  if (!c) {
+    // Not in the local list -- /clusters is capped (a real run can produce
+    // thousands of clusters), so a specific id from e.g. an alert isn't
+    // guaranteed to be in that capped sample. /clusters/{id} exists for
+    // exactly this: fetch it directly instead of failing silently.
+    try {
+      c = await api(`/clusters/${id}`);
+      CLUSTERS.push(c);
+    } catch (err) {
+      toast(`Cluster #${id} not found: ${err.message}`, "error");
+      return;
+    }
+  }
+  if (!CLUSTER_MEMBERS[id]) {
+    CLUSTER_MEMBERS[id] = await api(`/clusters/${id}/members`).catch(() => []);
+  }
   document.getElementById("cmTitle").textContent = `Cluster #${c.cluster_id}`;
   document.getElementById("cmBadges").innerHTML =
     `<span class="badge ${typeBadgeClass(c.cluster_type)}">${c.cluster_type || "Untriaged"}</span>` +

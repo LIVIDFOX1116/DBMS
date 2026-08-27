@@ -75,16 +75,17 @@ def persist_vertex_metric(conn, run_id: int, df: pd.DataFrame, metric_name: str,
     conn.commit()
 
 
-def persist_clusters(conn, run_id: int, df: pd.DataFrame, modularity: float) -> None:
+def persist_clusters(conn, run_id: int, df: pd.DataFrame, modularity: float, internal_edges: dict = None) -> None:
+    internal_edges = internal_edges or {}
     with conn.cursor() as cur:
         for label, group in df.groupby("community_label"):
             cur.execute(
                 """
-                INSERT INTO cluster (run_id, community_label, member_count, modularity_score)
-                VALUES (%s,%s,%s,%s)
+                INSERT INTO cluster (run_id, community_label, member_count, internal_edges, modularity_score)
+                VALUES (%s,%s,%s,%s,%s)
                 RETURNING cluster_id
                 """,
-                (run_id, int(label), len(group), modularity),
+                (run_id, int(label), len(group), int(internal_edges.get(label, 0)), modularity),
             )
             cluster_id = cur.fetchone()[0]
             for wallet_id in group.wallet_id:
@@ -98,6 +99,75 @@ def persist_clusters(conn, run_id: int, df: pd.DataFrame, modularity: float) -> 
     conn.commit()
 
 
+def compute_internal_edges(cluster_df: pd.DataFrame, edges_df: pd.DataFrame) -> dict:
+    """How many of the snapshot's edges have both endpoints in the same
+    community -- the structural signal classify_clusters() below uses. Plain
+    Python over the edge list, not vectorized: fine at this project's bounded-
+    subgraph scale (tens of thousands of edges), not meant for millions."""
+    label_by_wallet = dict(zip(cluster_df.wallet_id, cluster_df.community_label))
+    counts = {}
+    for src, dst in zip(edges_df.src_wallet_id, edges_df.dst_wallet_id):
+        src_label = label_by_wallet.get(int(src))
+        if src_label is not None and src_label == label_by_wallet.get(int(dst)):
+            counts[src_label] = counts.get(src_label, 0) + 1
+    return counts
+
+
+def classify_clusters(conn, run_id: int) -> int:
+    """Phase 4 in the project bible: a first, deliberately simple heuristic
+    for flagging plausible Sybil clusters -- not a general fraud classifier.
+
+    A Sybil ring's signature is fan-out: one funding wallet connected to many
+    otherwise-unconnected puppet addresses. Structurally that's a cluster
+    whose internal edge count is close to its member count -- a star/tree
+    topology has exactly member_count-1 edges. Anything much denser than
+    that isn't this pattern and is deliberately left untriaged rather than
+    force-fit into a category. Clusters under 5 members are also left
+    untriaged: a fan-out shape isn't distinguishable from coincidence at
+    that size.
+
+    risk_score and alert.confidence are both explicit, documented formulas
+    below, not a trained model -- exactly the "investigative lead, not
+    proof" framing the project bible requires (Section 1). Re-running this
+    against the same run_id is safe: it only ever UPDATEs cluster_type/
+    risk_score and INSERTs new alerts, it doesn't delete or re-derive
+    anything the run itself produced.
+
+    Returns the number of clusters flagged.
+    """
+    flagged = 0
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT cluster_id, member_count, internal_edges FROM cluster WHERE run_id = %s",
+            (run_id,),
+        )
+        clusters = cur.fetchall()
+
+    for cluster_id, member_count, internal_edges in clusters:
+        if member_count < 5 or internal_edges is None:
+            continue
+        if internal_edges / member_count > 1.15:
+            continue  # denser than a simple star -- not this heuristic's pattern
+
+        risk_score = min(95.0, 30.0 + member_count * 1.5)
+        confidence = min(0.9, 0.5 + member_count / 100)
+        severity = "HIGH" if member_count >= 20 else "MEDIUM"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE cluster SET cluster_type = 'SYBIL', risk_score = %s WHERE cluster_id = %s",
+                (risk_score, cluster_id),
+            )
+            cur.execute(
+                """INSERT INTO alert (run_id, cluster_id, pattern_type, severity, confidence, review_status)
+                   VALUES (%s,%s,'SYBIL_FANOUT',%s,%s,'NEW')""",
+                (run_id, cluster_id, severity, confidence),
+            )
+        flagged += 1
+    conn.commit()
+    return flagged
+
+
 def run_pagerank(conn, backend: GraphBackend, G, snapshot_id: int) -> pd.DataFrame:
     run_id = start_run(conn, snapshot_id, "pagerank")
     t0 = time.time()
@@ -107,13 +177,15 @@ def run_pagerank(conn, backend: GraphBackend, G, snapshot_id: int) -> pd.DataFra
     return df
 
 
-def run_louvain(conn, backend: GraphBackend, G, snapshot_id: int) -> pd.DataFrame:
+def run_louvain(conn, backend: GraphBackend, G, snapshot_id: int, edges_df: pd.DataFrame) -> tuple:
     run_id = start_run(conn, snapshot_id, "louvain")
     t0 = time.time()
     df, modularity = backend.louvain(G)
-    persist_clusters(conn, run_id, df, modularity)
+    internal_edges = compute_internal_edges(df, edges_df)
+    persist_clusters(conn, run_id, df, modularity, internal_edges)
+    flagged = classify_clusters(conn, run_id)
     finish_run(conn, run_id, int((time.time() - t0) * 1000), backend.backend_name)
-    return df
+    return df, flagged
 
 
 def run_bfs(conn, backend: GraphBackend, G, snapshot_id: int, seed_wallet_id: int) -> pd.DataFrame:
@@ -148,8 +220,8 @@ def main():
         pr = run_pagerank(conn, backend, G, args.snapshot_id)
         print(f"pagerank: top wallet_id={int(pr.iloc[0].wallet_id)} score={pr.iloc[0].score:.6f}")
 
-        lv = run_louvain(conn, backend, G, args.snapshot_id)
-        print(f"louvain: {lv.community_label.nunique()} communities found")
+        lv, flagged = run_louvain(conn, backend, G, args.snapshot_id, edges_df)
+        print(f"louvain: {lv.community_label.nunique()} communities found, {flagged} flagged as plausible Sybil fan-out")
 
         bfs_df = run_bfs(conn, backend, G, args.snapshot_id, args.seed_wallet_id)
         print(f"bfs: reached {len(bfs_df)} wallets from seed {args.seed_wallet_id}")
