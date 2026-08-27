@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 node_modules/
 snapshots/*.parquet
+.state/
 *.egg-info/
 .venv/
 venv/
