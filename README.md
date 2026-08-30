@@ -59,6 +59,24 @@ psql $PGDATABASE -c "SELECT wallet_id FROM wallet WHERE address = lower('0xC8a65
 python -m graph.run_analysis --snapshot-id 1 --seed-wallet-id 1
 ```
 
+## Benchmarking (Phase 5)
+
+GPU-vs-CPU/NetworkX runtime comparison for the same subgraph, across
+PageRank, Louvain, and BFS -- real numbers for this team's own hardware
+(project bible, Section 1's "no marketing claims" framing applied to
+Objective 7):
+
+```bash
+python scripts/benchmark.py --repeats 5 --output docs/benchmark_results.md
+```
+
+Runs the CPU (pandas + NetworkX) path always; adds the GPU (cudf + cugraph)
+path automatically whenever RAPIDS is importable (i.e. on the RTX 4070 /
+GTX 1650 laptops, not the Zenbook). Read-only against Postgres -- it doesn't
+write to `analysis_run` / `vertex_metric`; that's `graph/run_analysis.py`'s
+job. See `docs/benchmark_results.md` for the current CPU-only baseline
+(needs a run on a RAPIDS-capable machine to fill in the GPU column).
+
 ## Running the API (what the frontend talks to)
 
 ```bash
@@ -115,9 +133,9 @@ ingestion/     Etherscan client + BFS subgraph crawler (Phase 1)
 graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py (Phases 2-3)
 api/           FastAPI app + mock_data.json (the frontend's day-one contract)
 frontend/      index.html -- the dashboard (wallets/clusters/alerts/graph), no build step
-scripts/       verify_gpu_env.py (Phase 0 exit criterion), promote_to_main.py (test-gated dev -> main)
+scripts/       verify_gpu_env.py (Phase 0 exit criterion), benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main)
 tests/         offline unit tests -- run with `python -m pytest tests/ -v`
-docs/          ER diagram (SVG + DBML), API contract, and the full project bible
+docs/          ER diagram (SVG + DBML), API contract, benchmark_results.md, and the full project bible
 ```
 
 ## Tests
