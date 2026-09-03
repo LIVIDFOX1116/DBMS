@@ -59,6 +59,25 @@ psql $PGDATABASE -c "SELECT wallet_id FROM wallet WHERE address = lower('0xC8a65
 python -m graph.run_analysis --snapshot-id 1 --seed-wallet-id 1
 ```
 
+## Running everything at once (Phase 6)
+
+`scripts/run_pipeline.py` chains the three steps above into one command --
+it resolves the seed wallet_id and snapshot_id itself instead of you reading
+them off the terminal and pasting them into the next command by hand. Exit
+criterion: "a fresh end-to-end run (ingestion -> GPU processing -> dashboard)
+completes without manual intervention."
+
+```bash
+python scripts/run_pipeline.py                       # ingest + export + analyze, fresh
+python scripts/run_pipeline.py --skip-ingestion       # reuse what's already in Postgres
+python scripts/run_pipeline.py --hops 1 --force-cpu
+```
+
+Each stage is the exact same `python -m ...` command as above -- this only
+removes the manual hand-off between them. Ingestion is upsert-based and safe
+to re-run; export always creates a new, uniquely-named snapshot rather than
+overwriting one.
+
 ## Benchmarking (Phase 5)
 
 GPU-vs-CPU/NetworkX runtime comparison for the same subgraph, across
@@ -133,7 +152,7 @@ ingestion/     Etherscan client + BFS subgraph crawler (Phase 1)
 graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py (Phases 2-3)
 api/           FastAPI app + mock_data.json (the frontend's day-one contract)
 frontend/      index.html -- the dashboard (wallets/clusters/alerts/graph), no build step
-scripts/       verify_gpu_env.py (Phase 0 exit criterion), benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main)
+scripts/       verify_gpu_env.py (Phase 0 exit criterion), run_pipeline.py (Phase 6, one-command end-to-end run), benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main)
 tests/         offline unit tests -- run with `python -m pytest tests/ -v`
 docs/          ER diagram (SVG + DBML), API contract, benchmark_results.md, and the full project bible
 ```
