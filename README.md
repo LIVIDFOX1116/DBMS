@@ -93,23 +93,33 @@ results in it (Phase 3.5 in the bible).
 
 ## Running the frontend
 
-A single-page dashboard lives in `frontend/index.html` -- no build step, no
-npm install. It talks to the API over `fetch()`, so serve it from any local
-port (opening it as a `file://` URL also works, since the API's CORS is
-wide open -- see API_CONTRACT.md):
+Two static pages live in `frontend/` -- no build step, no npm install:
+
+- `frontend/index.html` -- a marketing-style landing page (project pitch,
+  pipeline explainer, case-study spotlight, FAQ). Links to the dashboard.
+- `frontend/dashboard.html` -- the actual single-page dashboard app. Talks to
+  the API over `fetch()`, so serve it from any local port (opening it as a
+  `file://` URL also works, since the API's CORS is wide open -- see
+  API_CONTRACT.md).
 
 ```bash
 # with the API running (see above), in another terminal:
 python -m http.server 5500 --directory frontend
-# then open http://localhost:5500
+# then open http://localhost:5500          (landing page)
+# or open  http://localhost:5500/dashboard.html   (straight to the app)
 ```
 
-Covers all four resource types: an overview status bar, a searchable/sortable
-wallet grid, a cluster explorer with member drill-down, a filterable alerts
-list, and a force-directed graph view (nodes = wallets colored by risk score,
-edges = `/snapshots/{id}/edges`) built with vis-network. Settings (gear icon)
-let you point it at a different API base URL or analysis run ID -- defaults
-to `http://localhost:8000` and run `1`, matching the mock data.
+The dashboard covers all four resource types: an overview status bar, a
+searchable/sortable wallet grid, a cluster explorer with member drill-down, a
+filterable alerts list, and a force-directed graph view (nodes = wallets
+colored by risk score, edges = `/snapshots/{id}/edges`) built with
+vis-network. Settings (gear icon) let you point it at a different API base
+URL or analysis run ID -- defaults to `http://localhost:8000` and run `1`,
+matching the mock data.
+
+Both pages share a visual design adapted from the free TemplateMo 622
+"Clearwave" template (`landing.css`/`landing.js` for the landing page; the
+dashboard's styling is inlined in `dashboard.html` as it always was).
 
 ## GPU laptop setup (RTX 4070 / GTX 1650, inside WSL2 Ubuntu only)
 
@@ -132,7 +142,7 @@ db/            schema.sql (PostgreSQL DDL) + init_db.py
 ingestion/     Etherscan client + BFS subgraph crawler (Phase 1)
 graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py (Phases 2-3)
 api/           FastAPI app + mock_data.json (the frontend's day-one contract)
-frontend/      index.html -- the dashboard (wallets/clusters/alerts/graph), no build step
+frontend/      index.html (landing page) + dashboard.html (wallets/clusters/alerts/graph), no build step
 scripts/       verify_gpu_env.py (Phase 0 exit criterion), benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main)
 tests/         offline unit tests -- run with `python -m pytest tests/ -v`
 docs/          ER diagram (SVG + DBML), API contract, benchmark_results.md, and the full project bible
