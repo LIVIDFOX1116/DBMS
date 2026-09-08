@@ -8,30 +8,31 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,500&family=Playfair+Display:ital,wght@1,600&display=swap" rel="stylesheet">
-<link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
 <style>
 :root {
-  --bg:        #ffffff;
-  --bg-sub:    #EFF8F5;
-  --bg-hover:  #E3F1EC;
-  --border:    rgba(13,30,28,0.09);
-  --text:      #0D1E1C;
-  --text-2:    #4B6B67;
-  --text-3:    #85A19D;
+  --bg:        #0D1614;
+  --bg-sub:    #070D0C;
+  --bg-hover:  #142019;
+  --bg-elevated: #16211E;
+  --border:    rgba(255,255,255,0.08);
+  --text:      #EDF6F4;
+  --text-2:    #9FB8B4;
+  --text-3:    #6C8C87;
   --accent:    #1A7A6E;
   --accent-mid:#2A9D8F;
-  --accent-soft: rgba(26,122,110,0.10);
-  --accent-border: rgba(26,122,110,0.18);
-  --low:       #1A7A6E;
-  --med:       #C0862E;
-  --high:      #C1544A;
+  --accent-glow: #35E0C7;
+  --accent-soft: rgba(53,224,199,0.12);
+  --accent-border: rgba(53,224,199,0.25);
+  --low:       #2FD9A8;
+  --med:       #E8A63D;
+  --high:      #E5675A;
   --unknown:   #8FA6A2;
   --radius:    12px;
   --radius-lg: 18px;
-  --shadow-sm: 0 1px 2px rgba(13,30,28,.04), 0 1px 4px rgba(13,30,28,.05);
-  --shadow-md: 0 8px 24px rgba(13,30,28,.08);
-  --shadow-lg: 0 24px 56px rgba(13,30,28,.16);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.3), 0 1px 6px rgba(0,0,0,.25);
+  --shadow-md: 0 10px 30px rgba(0,0,0,.4);
+  --shadow-lg: 0 28px 70px rgba(0,0,0,.55);
   --silk:      cubic-bezier(0.16, 1, 0.3, 1);
   --font:      "DM Sans", -apple-system, "Segoe UI", sans-serif;
   --serif:     "Playfair Display", serif;
@@ -47,7 +48,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 4px; }
 
 /* ── layout ── */
 .topbar {
@@ -59,12 +60,13 @@ body {
 .brand-mark {
   width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
   background: linear-gradient(135deg, var(--accent), var(--accent-mid));
+  box-shadow: 0 0 14px rgba(53,224,199,0.35);
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-size: 11px; font-weight: 700; letter-spacing: -.02em;
 }
 .brand-text { display: flex; align-items: baseline; gap: 8px; }
-.brand b { font-size: 14.5px; letter-spacing: -.02em; font-weight: 700; }
-.brand b em { font-style: italic; font-family: var(--serif); color: var(--accent); font-weight: 600; }
+.brand b { font-size: 14.5px; letter-spacing: -.02em; font-weight: 700; color: var(--text); }
+.brand b em { font-style: italic; font-family: var(--serif); color: var(--accent-glow); font-weight: 600; }
 .brand span { font-size: 12px; color: var(--text-3); }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
 .health-pill {
@@ -73,8 +75,8 @@ body {
 }
 .health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); transition: background .3s var(--silk); }
 .health-dot.ok { background: var(--low); box-shadow: 0 0 0 3px var(--accent-soft); }
-.health-dot.err { background: var(--high); box-shadow: 0 0 0 3px rgba(193,84,74,.14); }
-.health-dot.pending { background: var(--med); box-shadow: 0 0 0 3px rgba(192,134,46,.14); }
+.health-dot.err { background: var(--high); box-shadow: 0 0 0 3px rgba(229,103,90,.18); }
+.health-dot.pending { background: var(--med); box-shadow: 0 0 0 3px rgba(232,166,61,.18); }
 
 .shell { display: flex; min-height: calc(100vh - 56px); }
 .sidenav {
@@ -82,14 +84,18 @@ body {
   padding: 14px 10px;
 }
 .sidenav-item {
-  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 9px 12px; border-radius: 100px;
-  font-size: 13px; color: var(--text-2); background: none; border: none; cursor: pointer;
-  font-family: var(--font); font-weight: 500; margin-bottom: 2px; text-decoration: none;
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 14px; border-radius: var(--radius);
+  font-size: 13.5px; color: var(--text-2); background: none; border: none; cursor: pointer; position: relative;
+  font-family: var(--font); font-weight: 500; margin-bottom: 3px; text-decoration: none;
   transition: background .3s var(--silk), color .3s var(--silk);
 }
 .sidenav-item svg { flex-shrink: 0; opacity: .8; }
 .sidenav-item:hover { background: var(--bg-hover); color: var(--text); }
-.sidenav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.sidenav-item.active { background: var(--accent-soft); color: var(--accent-glow); font-weight: 600; }
+.sidenav-item.active::before {
+  content: ''; position: absolute; left: -10px; top: 9px; bottom: 9px; width: 3px; border-radius: 0 3px 3px 0;
+  background: var(--accent-glow); box-shadow: 0 0 8px rgba(53,224,199,.6);
+}
 .sidenav-item.active svg { opacity: 1; }
 .mobile-nav { display: none; }
 
@@ -97,27 +103,21 @@ body {
 .view { display: none; }
 .view.active { display: block; animation: viewIn .4s var(--silk); }
 @keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.view-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; flex-wrap: wrap; gap: 8px; }
-.view-header h1 { font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
-.view-header p { font-size: 12.5px; color: var(--text-3); margin-top: 3px; }
+.view-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 22px; flex-wrap: wrap; gap: 8px; }
+.view-header h1 { font-size: 27px; font-weight: 700; letter-spacing: -.03em; }
+.view-header p { font-size: 13px; color: var(--text-3); margin-top: 5px; }
 
 /* ── shared components ── */
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
-.kpi {
-  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px 18px; cursor: pointer;
-  box-shadow: var(--shadow-sm); transition: transform .35s var(--silk), box-shadow .35s var(--silk), border-color .35s var(--silk);
-  position: relative; overflow: hidden;
-}
-.kpi:hover { border-color: var(--accent-border); box-shadow: var(--shadow-md); transform: translateY(-2px); }
-.kpi-icon {
-  width: 30px; height: 30px; border-radius: 9px; margin-bottom: 10px;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--accent-soft); color: var(--accent);
-}
-.kpi-icon.amber { background: rgba(192,134,46,.12); color: var(--med); }
-.kpi-icon.rose  { background: rgba(193,84,74,.12); color: var(--high); }
-.kpi .kv { font-size: 24px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.kpi .kl { font-size: 11.5px; color: var(--text-2); margin-top: 3px; }
+.stat-strip { display: flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); box-shadow: var(--shadow-sm); overflow: hidden; margin-bottom: 20px; }
+.stat-cell { flex: 1 1 160px; padding: 20px 22px; border-right: 1px solid var(--border); border-bottom: 1px solid transparent; cursor: pointer; transition: background .3s var(--silk); }
+.stat-cell:last-child { border-right: none; }
+.stat-cell:hover { background: var(--bg-hover); }
+.stat-rule { width: 24px; height: 2px; border-radius: 2px; background: var(--accent-glow); box-shadow: 0 0 6px rgba(53,224,199,.5); margin-bottom: 14px; transition: width .4s var(--silk); }
+.stat-cell:hover .stat-rule { width: 40px; }
+.stat-rule.amber { background: var(--med); box-shadow: 0 0 6px rgba(232,166,61,.5); }
+.stat-rule.rose  { background: var(--high); box-shadow: 0 0 6px rgba(229,103,90,.5); }
+.stat-num { font-size: 28px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat-lbl { font-size: 12px; color: var(--text-2); margin-top: 5px; }
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
 @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
@@ -133,7 +133,7 @@ input[type=text], input[type=number], select {
   background: var(--bg); border: 1px solid var(--border); border-radius: 100px;
   padding: 7px 13px; outline: none; transition: border-color .25s var(--silk);
 }
-input[type=text]:focus, input[type=number]:focus, select:focus { border-color: var(--accent); }
+input[type=text]:focus, input[type=number]:focus, select:focus { border-color: var(--accent-glow); }
 .search input { width: 100%; }
 
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 100px; overflow: hidden; background: var(--bg); }
@@ -151,8 +151,8 @@ input[type=text]:focus, input[type=number]:focus, select:focus { border-color: v
   transition: background .3s var(--silk), border-color .3s var(--silk), transform .3s var(--silk), box-shadow .3s var(--silk);
 }
 .btn:hover { background: var(--bg-hover); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 4px 14px rgba(26,122,110,.28); }
-.btn.primary:hover { background: var(--accent-mid); transform: translateY(-1px); box-shadow: 0 6px 18px rgba(26,122,110,.35); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 4px 18px rgba(53,224,199,.3); }
+.btn.primary:hover { background: var(--accent-mid); transform: translateY(-1px); box-shadow: 0 6px 22px rgba(53,224,199,.4); }
 .icon-btn {
   width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
   border: 1px solid var(--border); border-radius: 100px; background: var(--bg); cursor: pointer; font-size: 14px;
@@ -168,32 +168,33 @@ table.dtable th {
 }
 table.dtable td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 table.dtable tbody tr { cursor: pointer; transition: background .2s var(--silk); }
-table.dtable tbody tr:hover { background: var(--bg-sub); }
+table.dtable tbody tr:hover { background: var(--bg-hover); }
 table.dtable tbody tr:last-child td { border-bottom: none; }
 .mono { font-family: var(--mono); }
 .num { font-variant-numeric: tabular-nums; }
+table.dtable a { color: var(--accent-glow); }
 .table-wrap { overflow-x: auto; max-height: 560px; overflow-y: auto; }
 
 .badge {
   display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 600;
   padding: 3px 9px; border-radius: 100px; line-height: 1.5; white-space: nowrap;
 }
-.b-risk-low     { color: var(--low);  background: rgba(26,122,110,.12); }
-.b-risk-med     { color: var(--med);  background: rgba(192,134,46,.12); }
-.b-risk-high    { color: var(--high); background: rgba(193,84,74,.12); }
+.b-risk-low     { color: var(--low);  background: rgba(47,217,168,.16); }
+.b-risk-med     { color: var(--med);  background: rgba(232,166,61,.16); }
+.b-risk-high    { color: var(--high); background: rgba(229,103,90,.16); }
 .b-risk-unknown { color: var(--unknown); background: var(--bg-sub); }
 .b-type-eoa      { color: var(--text-2); background: var(--bg-sub); }
-.b-type-contract { color: var(--accent); background: var(--accent-soft); }
-.b-cluster-sybil      { color: #A5453C; background: rgba(193,84,74,.12); }
-.b-cluster-wash_trade { color: #9C6B22; background: rgba(192,134,46,.12); }
-.b-cluster-mixer       { color: #6748A6; background: rgba(122,92,193,.12); }
-.b-cluster-peel_chain  { color: #21688C; background: rgba(46,134,171,.12); }
+.b-type-contract { color: var(--accent-glow); background: var(--accent-soft); }
+.b-cluster-sybil      { color: #F29387; background: rgba(229,103,90,.18); }
+.b-cluster-wash_trade { color: #F3C169; background: rgba(232,166,61,.18); }
+.b-cluster-mixer       { color: #C3ADF2; background: rgba(154,122,224,.18); }
+.b-cluster-peel_chain  { color: #93CDF2; background: rgba(90,169,224,.18); }
 .b-cluster-none        { color: var(--text-3); background: var(--bg-sub); }
-.b-sev-high { color: var(--high); background: rgba(193,84,74,.12); }
-.b-sev-medium { color: var(--med); background: rgba(192,134,46,.12); }
-.b-sev-low { color: var(--accent); background: var(--accent-soft); }
-.b-status-new { color: var(--accent); background: var(--accent-soft); }
-.b-status-reviewed { color: var(--low); background: rgba(26,122,110,.12); }
+.b-sev-high { color: var(--high); background: rgba(229,103,90,.18); }
+.b-sev-medium { color: var(--med); background: rgba(232,166,61,.18); }
+.b-sev-low { color: var(--accent-glow); background: var(--accent-soft); }
+.b-status-new { color: var(--accent-glow); background: var(--accent-soft); }
+.b-status-reviewed { color: var(--low); background: rgba(47,217,168,.16); }
 .b-status-dismissed { color: var(--text-3); background: var(--bg-sub); }
 
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
@@ -222,12 +223,12 @@ table.dtable tbody tr:last-child td { border-bottom: none; }
 
 /* ── modals ── */
 .modal-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(13,30,28,.38);
-  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  display: none; position: fixed; inset: 0; background: rgba(2,6,5,.68);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
   align-items: center; justify-content: center; z-index: 100; padding: 20px;
 }
 .modal-overlay.open { display: flex; }
-.modal-card { background: var(--bg); border-radius: var(--radius-lg); width: min(520px, 100%); max-height: 85vh; overflow: auto; box-shadow: var(--shadow-lg); }
+.modal-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg); width: min(520px, 100%); max-height: 85vh; overflow: auto; box-shadow: var(--shadow-lg); }
 .modal-card.wide { width: min(680px, 100%); }
 .modal-header { padding: 20px 22px 0; }
 .modal-header h3 { font-size: 16px; font-family: var(--mono); word-break: break-all; }
@@ -252,24 +253,45 @@ table.dtable tbody tr:last-child td { border-bottom: none; }
 .settings-pop .row { display: flex; gap: 6px; }
 
 /* ── graph page ── */
-.graph-toolbar { display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.graph-layout { display: grid; grid-template-columns: 1fr 240px; }
-@media (max-width: 900px) { .graph-layout { grid-template-columns: 1fr; } }
-#graphCanvas { height: 480px; background: var(--bg-sub); }
-.graph-side { border-left: 1px solid var(--border); padding: 14px 16px; }
-@media (max-width: 900px) { .graph-side { border-left: none; border-top: 1px solid var(--border); } }
-.graph-legend { display: flex; gap: 14px; align-items: center; padding: 10px 16px; font-size: 11px; color: var(--text-3); flex-wrap: wrap; border-top: 1px solid var(--border); }
+.graph-workspace {
+  display: grid; grid-template-columns: 1fr 340px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); overflow: hidden;
+  height: calc(100vh - 230px); min-height: 480px;
+}
+.graph-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
+.graph-main-toolbar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.graph-legend-inline { display: flex; gap: 14px; align-items: center; margin-left: auto; font-size: 11px; color: var(--text-3); flex-wrap: wrap; }
+.graph-legend-inline span { white-space: nowrap; }
+#graphCanvas { flex: 1; min-height: 0; background: var(--bg-sub); position: relative; overflow: hidden; }
+#graphCanvas canvas { display: block; cursor: grab; }
+#graphCanvas canvas:active { cursor: grabbing; }
+.graph-tooltip {
+  position: fixed; z-index: 500; pointer-events: none; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 12px; font-size: 11.5px; line-height: 1.7; color: var(--text);
+  box-shadow: var(--shadow-md); opacity: 0; transition: opacity .15s var(--silk); max-width: 240px;
+}
+.graph-tooltip.show { opacity: 1; }
+.graph-tooltip .gt-addr { font-family: var(--mono); font-weight: 700; color: var(--accent-glow); word-break: break-all; margin-bottom: 4px; }
+.graph-tooltip .gt-row { display: flex; justify-content: space-between; gap: 12px; color: var(--text-2); }
+.graph-inspector { padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 22px; }
+.gi-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .side-title { font-size: 11px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 9px; }
+@media (max-width: 1100px) { .graph-workspace { grid-template-columns: 1fr 280px; } }
+@media (max-width: 900px) {
+  .graph-workspace { grid-template-columns: 1fr; height: auto; }
+  .graph-main { border-right: none; border-bottom: 1px solid var(--border); }
+  #graphCanvas { height: 420px; }
+}
 
 /* ── toast ── */
 .toast-stack { position: fixed; bottom: 18px; right: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
 .toast {
-  background: var(--text); color: #fff; font-size: 12.5px; padding: 10px 16px; border-radius: 100px;
+  background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text); font-size: 12.5px; padding: 10px 16px; border-radius: 100px;
   opacity: 0; transform: translateY(6px); transition: opacity .2s var(--silk), transform .2s var(--silk); max-width: 320px;
   box-shadow: var(--shadow-md);
 }
-.toast.err { background: var(--high); }
-.toast.ok { background: var(--low); }
+.toast.err { background: var(--high); border-color: var(--high); color: #2A0906; }
+.toast.ok { background: var(--low); border-color: var(--low); color: #04241C; }
 .toast.show { opacity: 1; transform: translateY(0); }
 
 @media (max-width: 780px) {
@@ -308,7 +330,7 @@ table.dtable tbody tr:last-child td { border-bottom: none; }
       <input type="number" id="s_runId" min="1" placeholder="1" />
       <span style="font-size:11px;color:var(--text-3);">Used for PageRank rank/value on wallet details and the Graph page.</span>
     </div>
-    <a href="#" id="apiDocsLink" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent);">Open API docs →</a>
+    <a href="#" id="apiDocsLink" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent-glow);">Open API docs →</a>
   </div>
 </header>
 
@@ -335,22 +357,22 @@ table.dtable tbody tr:last-child td { border-bottom: none; }
     <section class="view active" id="view-overview">
       <div class="view-header"><div><h1>Overview</h1><p>GPU-accelerated Ethereum transaction-graph analyzer</p></div></div>
 
-      <div class="kpi-grid">
-        <div class="kpi" data-page="wallets">
-          <div class="kpi-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7H5a2 2 0 0 1 0-4h13v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h3v-4Z"/></svg></div>
-          <div class="kv" id="statWallets">–</div><div class="kl">Wallets</div>
+      <div class="stat-strip">
+        <div class="stat-cell" data-page="wallets">
+          <div class="stat-rule"></div>
+          <div class="stat-num" id="statWallets">–</div><div class="stat-lbl">Wallets</div>
         </div>
-        <div class="kpi" data-page="clusters">
-          <div class="kpi-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="3.2"/><circle cx="17" cy="6" r="2.3"/><circle cx="17.5" cy="15" r="3"/><circle cx="7" cy="16" r="2.3"/></svg></div>
-          <div class="kv" id="statClusters">–</div><div class="kl">Clusters</div>
+        <div class="stat-cell" data-page="clusters">
+          <div class="stat-rule"></div>
+          <div class="stat-num" id="statClusters">–</div><div class="stat-lbl">Clusters</div>
         </div>
-        <div class="kpi" data-page="alerts">
-          <div class="kpi-icon amber"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
-          <div class="kv" id="statAlerts">–</div><div class="kl">Alerts (<span id="statAlertsNew">0</span> new)</div>
+        <div class="stat-cell" data-page="alerts">
+          <div class="stat-rule amber"></div>
+          <div class="stat-num" id="statAlerts">–</div><div class="stat-lbl">Alerts (<span id="statAlertsNew">0</span> new)</div>
         </div>
-        <div class="kpi" data-page="alerts">
-          <div class="kpi-icon rose"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4M12 17h.01"/></svg></div>
-          <div class="kv" id="statHighSev">–</div><div class="kl">High severity</div>
+        <div class="stat-cell" data-page="alerts">
+          <div class="stat-rule rose"></div>
+          <div class="stat-num" id="statHighSev">–</div><div class="stat-lbl">High severity</div>
         </div>
       </div>
 
@@ -442,38 +464,41 @@ table.dtable tbody tr:last-child td { border-bottom: none; }
     <section class="view" id="view-graph">
       <div class="view-header"><div><h1>Wallet graph</h1><p>Force-directed view of the transaction graph</p></div></div>
 
-      <div class="kpi-grid">
-        <div class="kpi"><div class="kpi-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/></svg></div><div class="kv" id="gsNodes">–</div><div class="kl">Nodes</div></div>
-        <div class="kpi"><div class="kpi-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.9 7.4 10.3 16M17.1 7.4 13.7 16M7.3 6h9.4"/></svg></div><div class="kv" id="gsEdges">–</div><div class="kl">Edges</div></div>
-        <div class="kpi"><div class="kpi-icon amber"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></div><div class="kv" id="gsDensity">–</div><div class="kl">Density</div></div>
-        <div class="kpi"><div class="kpi-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5l-5-3-5 3M17 19l-5 3-5-3"/></svg></div><div class="kv mono" id="gsHub" style="font-size:13px;">–</div><div class="kl">Top hub (by tx count)</div></div>
-      </div>
-
-      <div class="panel" style="margin-bottom:12px;">
-        <div class="graph-toolbar">
-          <select id="snapshotSelect"></select>
-          <input type="number" id="runIdInput" min="1" value="1" style="width:90px;" title="Run ID (for PageRank ranking below)"/>
-          <button class="btn" id="graphRedrawBtn">↻ Redraw</button>
-        </div>
-        <div class="graph-layout">
+      <div class="graph-workspace">
+        <div class="graph-main">
+          <div class="graph-main-toolbar">
+            <select id="snapshotSelect"></select>
+            <input type="number" id="runIdInput" min="1" value="1" style="width:90px;" title="Run ID (for PageRank ranking below)"/>
+            <button class="btn" id="graphRedrawBtn">↻ Redraw</button>
+            <div class="graph-legend-inline">
+              <span>Color = risk tier</span>
+              <span>Size = tx count</span>
+              <span>Thickness = transfer volume</span>
+            </div>
+          </div>
           <div id="graphCanvas"></div>
-          <div class="graph-side">
+          <div class="graph-tooltip" id="graphTooltip"></div>
+        </div>
+        <aside class="graph-inspector">
+          <div class="gi-stats">
+            <div class="stat-mini"><div class="sl">Nodes</div><div class="sv" id="gsNodes">–</div></div>
+            <div class="stat-mini"><div class="sl">Edges</div><div class="sv" id="gsEdges">–</div></div>
+            <div class="stat-mini"><div class="sl">Density</div><div class="sv" id="gsDensity">–</div></div>
+            <div class="stat-mini"><div class="sl">Top hub</div><div class="sv mono" id="gsHub" style="font-size:12px;">–</div></div>
+          </div>
+          <div>
             <div class="side-title">Risk in this view</div>
-            <div id="graphRiskDist" style="margin-bottom:16px;"></div>
+            <div id="graphRiskDist"></div>
+          </div>
+          <div>
             <div class="side-title">Top by PageRank</div>
             <div class="row-list" id="graphTopWallets"></div>
           </div>
-        </div>
-        <div class="graph-legend">
-          <span>Node color = risk tier</span>
-          <span>Node size = tx count</span>
-          <span>Edge thickness = transfer volume</span>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-hdr">PageRank ranking</div>
-        <div class="panel-body" id="pagerankBars"></div>
+          <div>
+            <div class="side-title">Full PageRank ranking</div>
+            <div id="pagerankBars"></div>
+          </div>
+        </aside>
       </div>
     </section>
 
@@ -683,7 +708,7 @@ function renderSeverityBars() {
   const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
   ALERTS.forEach(a => { if (counts[a.severity] !== undefined) counts[a.severity]++; });
   const max = Math.max(1, ...Object.values(counts));
-  const colors = { HIGH: "var(--high)", MEDIUM: "var(--med)", LOW: "var(--accent)" };
+  const colors = { HIGH: "var(--high)", MEDIUM: "var(--med)", LOW: "var(--accent-glow)" };
   if (!ALERTS.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }
   box.innerHTML = Object.entries(counts).map(([k, v]) => `
     <div class="bar-row">
@@ -710,7 +735,7 @@ function renderLatestAlerts() {
   if (!top.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }
   box.innerHTML = top.map(a => `
     <div class="row-item" onclick="go('alerts')">
-      <div class="ri-left"><span class="dot" style="background:${a.severity === "HIGH" ? "var(--high)" : a.severity === "MEDIUM" ? "var(--med)" : "var(--accent)"}"></span><span class="ri-title" style="font-family:var(--font);">${a.pattern_type}</span></div>
+      <div class="ri-left"><span class="dot" style="background:${a.severity === "HIGH" ? "var(--high)" : a.severity === "MEDIUM" ? "var(--med)" : "var(--accent-glow)"}"></span><span class="ri-title" style="font-family:var(--font);">${a.pattern_type}</span></div>
       <span class="ri-sub">${(a.confidence * 100).toFixed(0)}%</span>
     </div>`).join("");
 }
@@ -848,7 +873,11 @@ function renderAlerts() {
 /* ════════════════════════════════════════
    GRAPH
 ════════════════════════════════════════ */
-let networkInstance = null;
+let graphSim = null;
+let graphResizeObserver = null;
+let graphRAF = null;
+let graphCleanup = null;
+const GRAPH_TIER_COLOR = { low: "#2FD9A8", med: "#E8A63D", high: "#E5675A", unknown: "#7C948F" };
 
 function renderSnapshotSelect() {
   const sel = document.getElementById("snapshotSelect");
@@ -868,14 +897,15 @@ function renderPagerankBars() {
     return `
     <div class="bar-row clickable" onclick="openWalletModal(${e.wallet_id})">
       <span class="mono">${w ? shortAddr(w.address) : "#" + e.wallet_id}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${e.metric_value / max * 100}%;background:var(--accent)"></div></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${e.metric_value / max * 100}%;background:var(--accent-glow)"></div></div>
       <span class="bar-value">#${e.rank_position}</span>
     </div>`;
   }).join("");
 }
 
 async function renderGraph() {
-  const canvas = document.getElementById("graphCanvas");
+  const container = document.getElementById("graphCanvas");
+  const tooltip = document.getElementById("graphTooltip");
   const snapshotId = document.getElementById("snapshotSelect").value || (SNAPSHOTS[0]?.snapshot_id ?? 1);
   document.getElementById("runIdInput").value = runId();
 
@@ -883,7 +913,7 @@ async function renderGraph() {
   try {
     edges = await api(`/snapshots/${snapshotId}/edges`, { limit: 1000 });
   } catch (err) {
-    canvas.innerHTML = "";
+    container.innerHTML = "";
     toast(`Could not load graph edges: ${err.message}`, "error");
     return;
   }
@@ -892,41 +922,6 @@ async function renderGraph() {
   edges.forEach(e => { walletIds.add(e.src_wallet_id); walletIds.add(e.dst_wallet_id); });
   WALLETS.forEach(w => walletIds.add(w.wallet_id));
   const walletsInGraph = [...walletIds].map(id => WALLETS.find(w => w.wallet_id === id)).filter(Boolean);
-
-  const nodes = [...walletIds].map(id => {
-    const w = WALLETS.find(x => x.wallet_id === id);
-    const pr = PAGERANK[id];
-    const tier = riskTier(w?.risk_score);
-    const color = { low: "#1A7A6E", med: "#C0862E", high: "#C1544A", unknown: "#8FA6A2" }[tier];
-    return {
-      id,
-      label: w ? shortAddr(w.address) : `#${id}`,
-      value: Math.max(1, w?.tx_count || 1),
-      color: { background: color, border: color, highlight: { background: color, border: "#0D1E1C" } },
-      font: { color: "#0D1E1C", size: 11, face: "ui-monospace, Consolas, monospace" },
-      title: w ? `${w.address}\nType: ${w.address_type}\nRisk: ${w.risk_score ?? "–"}\nTx count: ${w.tx_count}${pr ? `\nPageRank: #${pr.rank_position} (${pr.metric_value.toFixed(4)})` : ""}` : `wallet #${id}`,
-    };
-  });
-
-  const edgeItems = edges.map((e, i) => ({
-    id: i, from: e.src_wallet_id, to: e.dst_wallet_id, value: e.edge_weight || 1,
-    arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-    title: `${e.transfer_count} transfer${e.transfer_count !== 1 ? "s" : ""}\nweight ${e.edge_weight}`,
-    color: { color: "#C9DEDA", highlight: "#1A7A6E", hover: "#1A7A6E" },
-  }));
-
-  if (networkInstance) { networkInstance.destroy(); networkInstance = null; }
-
-  networkInstance = new vis.Network(canvas, { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edgeItems) }, {
-    autoResize: true,
-    nodes: { shape: "dot", scaling: { min: 10, max: 34 }, borderWidth: 1.5 },
-    edges: { smooth: { type: "continuous", roundness: 0.35 }, scaling: { min: 1, max: 5 } },
-    physics: { barnesHut: { gravitationalConstant: -4500, springLength: 150, springConstant: 0.045, damping: 0.4 }, stabilization: { iterations: 160 } },
-    interaction: { hover: true, tooltipDelay: 80, hideEdgesOnDrag: true },
-  });
-  // Turn physics off once the layout settles -- otherwise vis-network keeps
-  // simulating every frame indefinitely for no visual benefit.
-  networkInstance.once("stabilizationIterationsDone", () => networkInstance?.setOptions({ physics: false }));
 
   document.getElementById("gsNodes").textContent = walletIds.size;
   document.getElementById("gsEdges").textContent = edges.length;
@@ -945,6 +940,185 @@ async function renderGraph() {
       <div class="ri-left"><span class="dot" style="background:${TIER_COLOR[riskTier(w.risk_score)]}"></span><span class="ri-title">${shortAddr(w.address)}</span></div>
       <span class="ri-sub">#${PAGERANK[w.wallet_id].rank_position}</span>
     </div>`).join("") : `<div class="empty-hint">No PageRank data for run ${runId()}.</div>`;
+
+  // Tear down the previous render entirely -- simulation, observer, animation
+  // loop, and DOM listeners all get recreated fresh below.
+  if (graphSim) { graphSim.stop(); graphSim = null; }
+  if (graphResizeObserver) { graphResizeObserver.disconnect(); graphResizeObserver = null; }
+  if (graphRAF) { cancelAnimationFrame(graphRAF); graphRAF = null; }
+  if (graphCleanup) { graphCleanup(); graphCleanup = null; }
+  container.innerHTML = "";
+  tooltip.classList.remove("show");
+
+  if (!walletIds.size) { container.innerHTML = `<div class="empty-hint">No graph data for this snapshot.</div>`; return; }
+
+  const canvasEl = document.createElement("canvas");
+  container.appendChild(canvasEl);
+  const ctx = canvasEl.getContext("2d");
+
+  const nodes = [...walletIds].map(id => {
+    const w = WALLETS.find(x => x.wallet_id === id);
+    const pr = PAGERANK[id];
+    const tier = riskTier(w?.risk_score);
+    return {
+      id, w, pr, tier,
+      color: GRAPH_TIER_COLOR[tier],
+      r: 6 + Math.sqrt(Math.max(1, w?.tx_count || 1)) * 2.4,
+      label: w ? shortAddr(w.address) : `#${id}`,
+    };
+  });
+  const links = edges.map(e => ({ source: e.src_wallet_id, target: e.dst_wallet_id, weight: e.edge_weight || 1 }));
+  const maxWeight = Math.max(1, ...links.map(l => l.weight));
+  links.forEach(l => { l.norm = l.weight / maxWeight; l.particles = [Math.random(), (Math.random() * 0.5 + 0.5) % 1]; });
+
+  let width = 0, height = 0;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  let transform = d3.zoomIdentity;
+  let hovered = null;
+
+  function pointerToWorld(px, py) { return { x: (px - transform.x) / transform.k, y: (py - transform.y) / transform.k }; }
+  function nodeAt(px, py) {
+    const p = pointerToWorld(px, py);
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const dx = p.x - n.x, dy = p.y - n.y;
+      if (dx * dx + dy * dy <= (n.r + 3) * (n.r + 3)) return n;
+    }
+    return null;
+  }
+
+  function drawGrid() {
+    const step = 28;
+    ctx.fillStyle = "rgba(255,255,255,0.05)";
+    const x0 = pointerToWorld(0, 0).x, y0 = pointerToWorld(0, 0).y;
+    const x1 = pointerToWorld(width, height).x, y1 = pointerToWorld(width, height).y;
+    for (let x = Math.floor(x0 / step) * step; x < x1; x += step) {
+      for (let y = Math.floor(y0 / step) * step; y < y1; y += step) {
+        ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  function drawLink(l) {
+    const s = l.source, t = l.target;
+    const grad = ctx.createLinearGradient(s.x, s.y, t.x, t.y);
+    grad.addColorStop(0, s.color + "50");
+    grad.addColorStop(1, t.color + "50");
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 0.6 + l.norm * 2.4;
+    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+
+    const dx = t.x - s.x, dy = t.y - s.y;
+    for (let i = 0; i < l.particles.length; i++) {
+      let p = l.particles[i] + 0.0025 + l.norm * 0.006;
+      if (p > 1) p -= 1;
+      l.particles[i] = p;
+      const px = s.x + dx * p, py = s.y + dy * p;
+      ctx.save();
+      ctx.fillStyle = "#35E0C7"; ctx.shadowColor = "#35E0C7"; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawNode(n) {
+    const isHover = n === hovered;
+    const r = n.r * (isHover ? 1.12 : 1);
+    ctx.save();
+    ctx.shadowColor = n.color;
+    ctx.shadowBlur = isHover ? 26 : 14;
+    const grad = ctx.createRadialGradient(n.x - r * 0.3, n.y - r * 0.3, r * 0.1, n.x, n.y, r);
+    grad.addColorStop(0, "#ffffff");
+    grad.addColorStop(0.25, n.color);
+    grad.addColorStop(1, n.color);
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    if (isHover) {
+      ctx.beginPath(); ctx.strokeStyle = "#EDF6F4"; ctx.lineWidth = 1.5;
+      ctx.arc(n.x, n.y, r + 4, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (transform.k > 0.6) {
+      ctx.fillStyle = "rgba(237,246,244,0.75)";
+      ctx.font = "10px ui-monospace, Consolas, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(n.label, n.x, n.y + r + 12);
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.k, transform.k);
+    drawGrid();
+    links.forEach(drawLink);
+    nodes.forEach(drawNode);
+    ctx.restore();
+  }
+
+  function resize() {
+    width = container.clientWidth; height = container.clientHeight;
+    canvasEl.width = width * dpr; canvasEl.height = height * dpr;
+    canvasEl.style.width = width + "px"; canvasEl.style.height = height + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (graphSim) { graphSim.force("center", d3.forceCenter(width / 2, height / 2)); graphSim.alpha(0.3).restart(); }
+    draw();
+  }
+
+  const zoomBehavior = d3.zoom().scaleExtent([0.25, 4]).on("zoom", (event) => { transform = event.transform; });
+  d3.select(canvasEl).call(zoomBehavior);
+
+  graphSim = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d => d.id).distance(90).strength(0.5))
+    .force("charge", d3.forceManyBody().strength(-260))
+    .force("center", d3.forceCenter(0, 0))
+    .force("collide", d3.forceCollide(d => d.r + 8));
+
+  const dragBehavior = d3.drag()
+    .subject((event) => nodeAt(event.x, event.y))
+    .on("start", (event) => { if (!event.active) graphSim.alphaTarget(0.25).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; })
+    .on("drag", (event) => { const p = pointerToWorld(event.x, event.y); event.subject.fx = p.x; event.subject.fy = p.y; })
+    .on("end", (event) => { if (!event.active) graphSim.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; });
+  d3.select(canvasEl).call(dragBehavior);
+
+  function onMove(evt) {
+    const rect = canvasEl.getBoundingClientRect();
+    const n = nodeAt(evt.clientX - rect.left, evt.clientY - rect.top);
+    if (n !== hovered) { hovered = n; canvasEl.style.cursor = n ? "pointer" : "grab"; }
+    if (n) {
+      tooltip.innerHTML = `<div class="gt-addr">${n.w ? n.w.address : n.label}</div>` + (n.w ? `
+        <div class="gt-row"><span>Type</span><span>${n.w.address_type}</span></div>
+        <div class="gt-row"><span>Risk</span><span>${n.w.risk_score ?? "–"}</span></div>
+        <div class="gt-row"><span>Tx count</span><span>${n.w.tx_count}</span></div>
+        ${n.pr ? `<div class="gt-row"><span>PageRank</span><span>#${n.pr.rank_position}</span></div>` : ""}` : "");
+      tooltip.style.left = evt.clientX + 14 + "px";
+      tooltip.style.top = evt.clientY + 14 + "px";
+      tooltip.classList.add("show");
+    } else {
+      tooltip.classList.remove("show");
+    }
+  }
+  function onLeave() { hovered = null; tooltip.classList.remove("show"); }
+  function onClick(evt) {
+    const rect = canvasEl.getBoundingClientRect();
+    const n = nodeAt(evt.clientX - rect.left, evt.clientY - rect.top);
+    if (n) openWalletModal(n.id);
+  }
+  canvasEl.addEventListener("mousemove", onMove);
+  canvasEl.addEventListener("mouseleave", onLeave);
+  canvasEl.addEventListener("click", onClick);
+  graphCleanup = () => {
+    canvasEl.removeEventListener("mousemove", onMove);
+    canvasEl.removeEventListener("mouseleave", onLeave);
+    canvasEl.removeEventListener("click", onClick);
+  };
+
+  graphResizeObserver = new ResizeObserver(resize);
+  graphResizeObserver.observe(container);
+  resize();
+
+  (function loop() { draw(); graphRAF = requestAnimationFrame(loop); })();
 }
 
 document.getElementById("snapshotSelect").addEventListener("change", renderGraph);
