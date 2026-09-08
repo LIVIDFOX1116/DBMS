@@ -1,967 +1,595 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>TXGRAPH — Transaction Graph Analyzer</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
-<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-<style>
-:root {
-  --bg:        #ffffff;
-  --bg-sub:    #f6f7f9;
-  --bg-hover:  #eef0f3;
-  --border:    #e3e6ea;
-  --text:      #14171f;
-  --text-2:    #6b7280;
-  --text-3:    #9aa1ac;
-  --accent:    #2f5dfd;
-  --accent-soft: #eaefff;
-  --low:       #16a34a;
-  --med:       #d97706;
-  --high:      #dc2626;
-  --unknown:   #9aa1ac;
-  --radius:    8px;
-  --font:      "Inter", -apple-system, "Segoe UI", sans-serif;
-  --mono:      ui-monospace, "SF Mono", Consolas, "Roboto Mono", monospace;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
-body {
-  font-family: var(--font);
-  font-size: 13px;
-  color: var(--text);
-  background: var(--bg-sub);
-  -webkit-font-smoothing: antialiased;
-}
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
-/* ── layout ── */
-.topbar {
-  height: 52px; display: flex; align-items: center; justify-content: space-between;
-  padding: 0 16px; background: var(--bg); border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 30;
-}
-.brand { display: flex; align-items: baseline; gap: 8px; }
-.brand b { font-size: 14px; letter-spacing: .04em; }
-.brand span { font-size: 12px; color: var(--text-3); }
-.topbar-right { display: flex; align-items: center; gap: 10px; }
-.health-pill {
-  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2);
-  padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-sub);
-}
-.health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
-.health-dot.ok { background: var(--low); }
-.health-dot.err { background: var(--high); }
-.health-dot.pending { background: var(--med); }
-
-.shell { display: flex; min-height: calc(100vh - 52px); }
-.sidenav {
-  width: 176px; flex-shrink: 0; background: var(--bg); border-right: 1px solid var(--border);
-  padding: 12px 8px;
-}
-.sidenav-item {
-  display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px;
-  font-size: 13px; color: var(--text-2); background: none; border: none; cursor: pointer;
-  font-family: var(--font); margin-bottom: 2px; text-decoration: none;
-}
-.sidenav-item:hover { background: var(--bg-hover); color: var(--text); }
-.sidenav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.mobile-nav { display: none; }
-
-.main { flex: 1; min-width: 0; padding: 20px 24px 60px; }
-.view { display: none; }
-.view.active { display: block; }
-.view-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
-.view-header h1 { font-size: 17px; font-weight: 600; }
-.view-header p { font-size: 12px; color: var(--text-3); margin-top: 2px; }
-
-/* ── shared components ── */
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
-.kpi { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; cursor: pointer; }
-.kpi:hover { border-color: var(--accent); }
-.kpi .kv { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.kpi .kl { font-size: 11.5px; color: var(--text-2); margin-top: 2px; }
-
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-@media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
-
-.panel { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-.panel-hdr { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; }
-.panel-body { padding: 10px 14px; }
-
-.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-.search { flex: 1; min-width: 180px; }
-input[type=text], input[type=number], select {
-  font-family: var(--font); font-size: 12.5px; color: var(--text);
-  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-  padding: 6px 10px; outline: none;
-}
-input[type=text]:focus, input[type=number]:focus, select:focus { border-color: var(--accent); }
-.search input { width: 100%; }
-
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.seg button {
-  font-family: var(--font); font-size: 12px; color: var(--text-2); background: var(--bg);
-  border: none; border-right: 1px solid var(--border); padding: 6px 11px; cursor: pointer;
-}
-.seg button:last-child { border-right: none; }
-.seg button:hover { background: var(--bg-hover); }
-.seg button.on { background: var(--accent); color: #fff; }
-
-.btn {
-  font-family: var(--font); font-size: 12.5px; font-weight: 500; color: var(--text);
-  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-  padding: 6px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
-}
-.btn:hover { background: var(--bg-hover); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { opacity: .92; }
-.icon-btn {
-  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border); border-radius: 6px; background: var(--bg); cursor: pointer; font-size: 14px;
-}
-.icon-btn:hover { background: var(--bg-hover); }
-
-table.dtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-table.dtable th {
-  text-align: left; font-weight: 600; color: var(--text-2); font-size: 11px;
-  text-transform: uppercase; letter-spacing: .03em; padding: 8px 12px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: var(--bg);
-}
-table.dtable td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-table.dtable tbody tr { cursor: pointer; }
-table.dtable tbody tr:hover { background: var(--bg-sub); }
-table.dtable tbody tr:last-child td { border-bottom: none; }
-.mono { font-family: var(--mono); }
-.num { font-variant-numeric: tabular-nums; }
-.table-wrap { overflow-x: auto; max-height: 560px; overflow-y: auto; }
-
-.badge {
-  display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 600;
-  padding: 2px 7px; border-radius: 4px; line-height: 1.5; white-space: nowrap;
-}
-.b-risk-low     { color: var(--low);  background: #eafaf0; }
-.b-risk-med     { color: var(--med);  background: #fdf3e4; }
-.b-risk-high    { color: var(--high); background: #fdeaea; }
-.b-risk-unknown { color: var(--unknown); background: var(--bg-sub); }
-.b-type-eoa      { color: var(--text-2); background: var(--bg-sub); }
-.b-type-contract { color: var(--accent); background: var(--accent-soft); }
-.b-cluster-sybil      { color: #b91c1c; background: #fdeaea; }
-.b-cluster-wash_trade { color: #a16207; background: #fdf3e4; }
-.b-cluster-mixer       { color: #6d28d9; background: #f2ecfd; }
-.b-cluster-peel_chain  { color: #0e7490; background: #e6f6fa; }
-.b-cluster-none        { color: var(--text-3); background: var(--bg-sub); }
-.b-sev-high { color: var(--high); background: #fdeaea; }
-.b-sev-medium { color: var(--med); background: #fdf3e4; }
-.b-sev-low { color: var(--accent); background: var(--accent-soft); }
-.b-status-new { color: var(--accent); background: var(--accent-soft); }
-.b-status-reviewed { color: var(--low); background: #eafaf0; }
-.b-status-dismissed { color: var(--text-3); background: var(--bg-sub); }
-
-.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
-.bar-mini { display: inline-block; width: 46px; height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; vertical-align: middle; margin-left: 6px; }
-.bar-mini i { display: block; height: 100%; }
-
-.row-list { display: flex; flex-direction: column; }
-.row-item {
-  display: flex; align-items: center; justify-content: space-between; padding: 7px 0;
-  border-bottom: 1px solid var(--border); cursor: pointer; font-size: 12.5px;
-}
-.row-item:last-child { border-bottom: none; }
-.ri-left { display: flex; align-items: center; min-width: 0; }
-.ri-title { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ri-sub { color: var(--text-3); font-size: 11.5px; flex-shrink: 0; margin-left: 8px; }
-
-.bar-row { display: grid; grid-template-columns: 60px 1fr 34px; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px; }
-.bar-row.clickable { cursor: pointer; }
-.bar-track { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
-.bar-fill { height: 100%; }
-.bar-value { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
-
-.empty-hint { color: var(--text-3); font-size: 12.5px; padding: 14px 0; text-align: center; }
-
-/* ── modals ── */
-.modal-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(20,23,31,.35);
-  align-items: center; justify-content: center; z-index: 100; padding: 20px;
-}
-.modal-overlay.open { display: flex; }
-.modal-card { background: var(--bg); border-radius: 10px; width: min(520px, 100%); max-height: 85vh; overflow: auto; box-shadow: 0 20px 50px rgba(0,0,0,.18); }
-.modal-card.wide { width: min(680px, 100%); }
-.modal-header { padding: 16px 18px 0; }
-.modal-header h3 { font-size: 15px; font-family: var(--mono); word-break: break-all; }
-.modal-body { padding: 12px 18px; }
-.modal-footer { padding: 12px 18px 16px; display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid var(--border); margin-top: 8px; }
-.stat-mini-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
-.stat-mini { background: var(--bg-sub); border-radius: 6px; padding: 8px 10px; }
-.stat-mini .sl { font-size: 10.5px; color: var(--text-3); text-transform: uppercase; letter-spacing: .03em; }
-.stat-mini .sv { font-size: 15px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
-.modal-label { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .03em; margin: 10px 0 6px; }
-
-/* ── settings popover ── */
-.settings-pop {
-  display: none; position: absolute; top: 44px; right: 16px; width: 280px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 12px 30px rgba(0,0,0,.12); padding: 14px; z-index: 60;
-}
-.settings-pop.open { display: block; }
-.settings-pop h4 { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; }
-.settings-pop .field { margin-bottom: 12px; }
-.settings-pop input { width: 100%; margin-bottom: 6px; }
-.settings-pop .row { display: flex; gap: 6px; }
-
-/* ── graph page ── */
-.graph-toolbar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.graph-layout { display: grid; grid-template-columns: 1fr 240px; }
-@media (max-width: 900px) { .graph-layout { grid-template-columns: 1fr; } }
-#graphCanvas { height: 480px; background: var(--bg-sub); }
-.graph-side { border-left: 1px solid var(--border); padding: 12px 14px; }
-@media (max-width: 900px) { .graph-side { border-left: none; border-top: 1px solid var(--border); } }
-.graph-legend { display: flex; gap: 14px; align-items: center; padding: 8px 14px; font-size: 11px; color: var(--text-3); flex-wrap: wrap; border-top: 1px solid var(--border); }
-.side-title { font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 8px; }
-
-/* ── toast ── */
-.toast-stack { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
-.toast {
-  background: var(--text); color: #fff; font-size: 12.5px; padding: 9px 14px; border-radius: 6px;
-  opacity: 0; transform: translateY(6px); transition: opacity .15s, transform .15s; max-width: 320px;
-}
-.toast.err { background: var(--high); }
-.toast.ok { background: var(--low); }
-.toast.show { opacity: 1; transform: translateY(0); }
-
-@media (max-width: 780px) {
-  .sidenav { display: none; }
-  .mobile-nav { display: flex; gap: 4px; overflow-x: auto; padding: 8px 16px; background: var(--bg); border-bottom: 1px solid var(--border); }
-  .mobile-nav button { flex-shrink: 0; }
-  .main { padding: 14px 14px 50px; }
-  .stat-mini-grid { grid-template-columns: repeat(2, 1fr); }
-}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TXGraph — Transaction Graph Analyzer</title>
+  <meta name="description" content="A GPU-accelerated Ethereum transaction-graph analyzer: PageRank, Louvain clustering and BFS path-tracing over a real, well-documented case study." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A7A6E'/%3E%3Ctext x='16' y='21' font-family='DM Sans, sans-serif' font-size='13' font-weight='700' fill='white' text-anchor='middle'%3ETX%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,300&family=Playfair+Display:ital,wght@0,700;1,600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="landing.css" />
 </head>
+<body>
 
-<div class="toast-stack" id="toastStack"></div>
-
-<header class="topbar">
-  <div class="brand"><b>TXGRAPH</b><span>Transaction Graph Analyzer</span></div>
-  <div class="topbar-right">
-    <span class="health-pill"><span class="health-dot pending" id="healthDot"></span><span id="healthText">Connecting…</span></span>
-    <button class="icon-btn" id="refreshBtn" title="Refresh data">↻</button>
-    <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+  <!-- ── MOBILE MENU ── -->
+  <div class="mobile-menu" id="mobileMenu" role="dialog" aria-modal="true" aria-label="Navigation">
+    <a href="#features">Features</a>
+    <a href="#how">How it works</a>
+    <a href="#case-study">Case study</a>
+    <a href="#stack">Stack</a>
+    <a href="#faq">FAQ</a>
+    <a href="dashboard.html" class="mobile-cta btn-primary">Launch Dashboard</a>
   </div>
-  <div class="settings-pop" id="settingsPop">
-    <h4>API base URL</h4>
-    <div class="field">
-      <input type="text" id="s_apiBase" placeholder="http://localhost:8000" />
-      <div class="row">
-        <button class="btn primary" id="s_save" style="flex:1;">Save &amp; reconnect</button>
-        <button class="btn" id="s_test">Test</button>
+
+  <!-- ── NAV ── -->
+  <nav class="nav" id="mainNav" role="navigation" aria-label="Main navigation">
+    <div class="nav-inner">
+      <a href="#" class="nav-logo"><span class="nav-logo-mark">TX</span>TX<em>Graph</em></a>
+      <ul class="nav-links" role="list">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#case-study">Case study</a></li>
+        <li><a href="#stack">Stack</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+      <div class="nav-cta">
+        <a href="dashboard.html" class="btn-ghost">Dashboard</a>
+        <a href="dashboard.html" class="btn-primary">Launch Dashboard</a>
       </div>
+      <button class="nav-hamburger" id="hamburger" aria-label="Toggle menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
     </div>
-    <h4>Analysis run ID</h4>
-    <div class="field">
-      <input type="number" id="s_runId" min="1" placeholder="1" />
-      <span style="font-size:11px;color:var(--text-3);">Used for PageRank rank/value on wallet details and the Graph page.</span>
-    </div>
-    <a href="#" id="apiDocsLink" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent);">Open API docs →</a>
-  </div>
-</header>
+  </nav>
 
-<nav class="mobile-nav" id="mobileNav">
-  <button class="sidenav-item active" data-page="overview">Overview</button>
-  <button class="sidenav-item" data-page="wallets">Wallets</button>
-  <button class="sidenav-item" data-page="clusters">Clusters</button>
-  <button class="sidenav-item" data-page="alerts">Alerts</button>
-  <button class="sidenav-item" data-page="graph">Graph</button>
-</nav>
-
-<div class="shell">
-  <aside class="sidenav" id="sidenav">
-    <button class="sidenav-item active" data-page="overview">Overview</button>
-    <button class="sidenav-item" data-page="wallets">Wallets</button>
-    <button class="sidenav-item" data-page="clusters">Clusters</button>
-    <button class="sidenav-item" data-page="alerts">Alerts</button>
-    <button class="sidenav-item" data-page="graph">Graph</button>
-  </aside>
-
-  <main class="main">
-
-    <!-- OVERVIEW -->
-    <section class="view active" id="view-overview">
-      <div class="view-header"><div><h1>Overview</h1><p>GPU-accelerated Ethereum transaction-graph analyzer</p></div></div>
-
-      <div class="kpi-grid">
-        <div class="kpi" data-page="wallets"><div class="kv" id="statWallets">–</div><div class="kl">Wallets</div></div>
-        <div class="kpi" data-page="clusters"><div class="kv" id="statClusters">–</div><div class="kl">Clusters</div></div>
-        <div class="kpi" data-page="alerts"><div class="kv" id="statAlerts">–</div><div class="kl">Alerts (<span id="statAlertsNew">0</span> new)</div></div>
-        <div class="kpi" data-page="alerts"><div class="kv" id="statHighSev">–</div><div class="kl">High severity</div></div>
-      </div>
-
-      <div class="grid-2">
-        <div class="panel">
-          <div class="panel-hdr">Risk distribution</div>
-          <div class="panel-body" id="riskDist"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-hdr">Top risk wallets</div>
-          <div class="panel-body row-list" id="topRiskList"></div>
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="panel">
-          <div class="panel-hdr">Alerts by severity</div>
-          <div class="panel-body" id="severityBars"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-hdr">Latest alerts</div>
-          <div class="panel-body row-list" id="latestAlertsList"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- WALLETS -->
-    <section class="view" id="view-wallets">
-      <div class="view-header"><div><h1>Wallets</h1><p>Every wallet seen in the case-study subgraph</p></div></div>
-      <div class="toolbar">
-        <div class="search"><input type="text" id="walletSearch" placeholder="Search address…" /></div>
-        <div class="seg" id="walletFilterBar">
-          <button class="on" data-f="all">All</button>
-          <button data-f="EOA">EOA</button>
-          <button data-f="CONTRACT">Contract</button>
-          <button data-f="high-risk">High risk</button>
-        </div>
-        <select id="walletSort">
-          <option value="risk">Highest risk</option>
-          <option value="tx">Most active</option>
-          <option value="address">Address A–Z</option>
-        </select>
-      </div>
-      <div class="panel">
-        <div class="table-wrap">
-          <table class="dtable">
-            <thead><tr><th>Address</th><th>Type</th><th>Risk</th><th>Tx count</th><th>Clusters</th></tr></thead>
-            <tbody id="walletRows"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- CLUSTERS -->
-    <section class="view" id="view-clusters">
-      <div class="view-header"><div><h1>Clusters</h1><p>Louvain community-detection output</p></div></div>
-      <div class="panel">
-        <div class="table-wrap">
-          <table class="dtable">
-            <thead><tr><th>ID</th><th>Type</th><th>Risk</th><th>Members</th><th>Modularity</th></tr></thead>
-            <tbody id="clusterRows"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- ALERTS -->
-    <section class="view" id="view-alerts">
-      <div class="view-header"><div><h1>Alerts</h1><p>Pattern-detection alerts across all runs</p></div></div>
-      <div class="toolbar">
-        <div class="seg" id="alertFilterBar">
-          <button class="on" data-f="all">All</button>
-          <button data-f="NEW">New</button>
-          <button data-f="REVIEWED">Reviewed</button>
-          <button data-f="DISMISSED">Dismissed</button>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="table-wrap">
-          <table class="dtable">
-            <thead><tr><th>Pattern</th><th>Severity</th><th>Status</th><th>Confidence</th><th>Run</th><th>Wallet</th><th>Cluster</th></tr></thead>
-            <tbody id="alertRows"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- GRAPH -->
-    <section class="view" id="view-graph">
-      <div class="view-header"><div><h1>Wallet graph</h1><p>Force-directed view of the transaction graph</p></div></div>
-
-      <div class="kpi-grid">
-        <div class="kpi"><div class="kv" id="gsNodes">–</div><div class="kl">Nodes</div></div>
-        <div class="kpi"><div class="kv" id="gsEdges">–</div><div class="kl">Edges</div></div>
-        <div class="kpi"><div class="kv" id="gsDensity">–</div><div class="kl">Density</div></div>
-        <div class="kpi"><div class="kv mono" id="gsHub" style="font-size:13px;">–</div><div class="kl">Top hub (by tx count)</div></div>
-      </div>
-
-      <div class="panel" style="margin-bottom:12px;">
-        <div class="graph-toolbar">
-          <select id="snapshotSelect"></select>
-          <input type="number" id="runIdInput" min="1" value="1" style="width:90px;" title="Run ID (for PageRank ranking below)"/>
-          <button class="btn" id="graphRedrawBtn">↻ Redraw</button>
-        </div>
-        <div class="graph-layout">
-          <div id="graphCanvas"></div>
-          <div class="graph-side">
-            <div class="side-title">Risk in this view</div>
-            <div id="graphRiskDist" style="margin-bottom:16px;"></div>
-            <div class="side-title">Top by PageRank</div>
-            <div class="row-list" id="graphTopWallets"></div>
+  <!-- ── HERO ── -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-inner">
+        <div class="hero-content">
+          <div class="hero-badge reveal">
+            <div class="hero-badge-dot">✦</div>
+            <span><strong>DBMS course project</strong> — Ethereum transaction graphs</span>
+          </div>
+          <h1 class="hero-title reveal reveal-delay-1">
+            See through the<br><em>transaction graph.</em>
+          </h1>
+          <p class="hero-sub reveal reveal-delay-2">
+            TXGraph ingests a bounded Ethereum subgraph, runs PageRank, Louvain clustering and BFS
+            path-tracing over it, and turns the result into wallet risk scores and pattern alerts —
+            every number traceable back to the graph it came from.
+          </p>
+          <div class="hero-actions reveal reveal-delay-3">
+            <a href="dashboard.html" class="btn-primary-lg">
+              Launch Dashboard
+              <span class="btn-arrow">→</span>
+            </a>
+            <a href="#how" class="btn-outline-lg">
+              <span>▶</span> See how it works
+            </a>
+          </div>
+          <div class="hero-trust reveal reveal-delay-4">
+            <div class="trust-item">
+              <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/></svg>
+              PostgreSQL-backed
+            </div>
+            <div class="trust-divider"></div>
+            <div class="trust-item">
+              <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              GPU-accelerated, CPU fallback
+            </div>
+            <div class="trust-divider"></div>
+            <div class="trust-item">
+              <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 3v5h-5"/></svg>
+              Etherscan-sourced data
+            </div>
           </div>
         </div>
-        <div class="graph-legend">
-          <span>Node color = risk tier</span>
-          <span>Node size = tx count</span>
-          <span>Edge thickness = transfer volume</span>
+        <div class="hero-visual reveal reveal-delay-2">
+          <div class="hero-dashboard">
+            <div class="dashboard-bar">
+              <div class="db-dot"></div><div class="db-dot"></div><div class="db-dot"></div>
+            </div>
+            <div class="dashboard-body">
+              <div class="db-header">
+                <div class="db-title">polynetwork_2hop_v1</div>
+                <div class="db-tag">Snapshot</div>
+              </div>
+              <div class="db-chart">
+                <div class="db-bar" style="height:30%"></div>
+                <div class="db-bar active" style="height:58%"></div>
+                <div class="db-bar" style="height:24%"></div>
+                <div class="db-bar warn" style="height:70%"></div>
+                <div class="db-bar" style="height:44%"></div>
+                <div class="db-bar active" style="height:82%"></div>
+                <div class="db-bar warn" style="height:52%"></div>
+                <div class="db-bar active" style="height:95%"></div>
+              </div>
+              <div class="db-caption">Risk-score distribution across the subgraph</div>
+              <div class="db-stats">
+                <div class="db-stat">
+                  <div class="db-stat-val">19,119</div>
+                  <div class="db-stat-label">Wallets</div>
+                </div>
+                <div class="db-stat">
+                  <div class="db-stat-val">35,756</div>
+                  <div class="db-stat-label">Edges</div>
+                </div>
+                <div class="db-stat">
+                  <div class="db-stat-val">9,531</div>
+                  <div class="db-stat-label">Clusters</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="hero-float-badge">
+            <div class="float-badge-icon">⚠</div>
+            <div class="float-badge-text">
+              <strong>Pattern flagged</strong>
+              <span>SYBIL_FANOUT · high severity</span>
+            </div>
+          </div>
+          <div class="hero-float-badge-2">
+            <div class="float-badge-2-val">0.73</div>
+            <div class="float-badge-2-label">Louvain modularity</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── TICKER ── -->
+  <div class="ticker-section">
+    <div class="ticker-label">Core stack</div>
+    <div class="ticker-track-wrap">
+      <div class="ticker-track">
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6" stroke="var(--accent)" stroke-width="1.6" fill="none"/></svg></div>PostgreSQL</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><path d="M4 4h16v6H4zM4 14h10v6H4z"/></svg></div>FastAPI</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8 7l3 9M16 7l-3 9M9 6h6" stroke="var(--accent)" stroke-width="1.6"/></svg></div>NetworkX</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg></div>RAPIDS cuGraph</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/><path d="M6.9 7.4 10.3 16M17.1 7.4 13.7 16M7.3 6h9.4" stroke="var(--accent)" stroke-width="1.6"/></svg></div>vis-network</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><rect x="3" y="3" width="18" height="18" rx="3"/></svg></div>Etherscan API</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><path d="M4 20V10l8-6 8 6v10z"/></svg></div>pandas</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div>pytest + CI</div>
+        <div class="ticker-dot"></div>
+        <!-- duplicate set for seamless loop -->
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6" stroke="var(--accent)" stroke-width="1.6" fill="none"/></svg></div>PostgreSQL</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><path d="M4 4h16v6H4zM4 14h10v6H4z"/></svg></div>FastAPI</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8 7l3 9M16 7l-3 9M9 6h6" stroke="var(--accent)" stroke-width="1.6"/></svg></div>NetworkX</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg></div>RAPIDS cuGraph</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/><path d="M6.9 7.4 10.3 16M17.1 7.4 13.7 16M7.3 6h9.4" stroke="var(--accent)" stroke-width="1.6"/></svg></div>vis-network</div>
+        <div class="ticker-dot"></div>
+        <div class="ticker-item"><div class="ticker-item-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent)"><rect x="3" y="3" width="18" height="18" rx="3"/></svg></div>Etherscan API</div>
+        <div class="ticker-dot"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── FEATURES ── -->
+  <section class="features-section" id="features">
+    <div class="container">
+      <div class="features-header">
+        <div class="section-label reveal">Platform Features</div>
+        <h2 class="section-title reveal reveal-delay-1">One graph, <em>five views</em><br>into it</h2>
+        <p class="section-sub reveal reveal-delay-2">Every algorithm output lands somewhere specific in the dashboard — nothing is computed and thrown away.</p>
+      </div>
+
+      <!-- Feature 1: Risk scoring -->
+      <div class="feature-row">
+        <div class="feature-content reveal">
+          <div class="feature-number">01 — Risk Scoring</div>
+          <h3 class="feature-title">Every wallet, scored</h3>
+          <p class="feature-desc">Each wallet in the subgraph carries a 0–100 risk score, an EOA/contract classification and a transaction count — computed once per analysis run and served straight out of Postgres.</p>
+          <div class="feature-checklist">
+            <div class="feature-check"><div class="check-icon">✓</div><span>Risk tiers — low / medium / high — always shown as a badge</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>EOA vs. contract classification per wallet</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>Full tx count and cluster membership on drill-down</span></div>
+          </div>
+        </div>
+        <div class="feature-visual reveal reveal-delay-1">
+          <div class="feature-visual-inner">
+            <div class="fv-card">
+              <div class="fv-card-label">Sample wallets</div>
+              <div class="fv-list" style="margin-top:8px">
+                <div class="fv-list-item"><span class="fv-list-name">0xc8a6…9963</span><span class="fv-pill rose">HIGH · 91</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">0x7f2e…4a10</span><span class="fv-pill amber">MED · 48</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">0x24aa…1c02</span><span class="fv-pill green">LOW · 12</span></div>
+              </div>
+            </div>
+            <div class="fv-row">
+              <div class="fv-card">
+                <div class="fv-card-label">Address type</div>
+                <div class="fv-card-val">EOA / Contract</div>
+                <div class="fv-card-bar"><div class="fv-card-bar-fill" style="width:64%"></div></div>
+              </div>
+              <div class="fv-card">
+                <div class="fv-card-label">Score range</div>
+                <div class="fv-card-val">0–100</div>
+                <div class="fv-card-bar"><div class="fv-card-bar-fill" style="width:91%"></div></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-hdr">PageRank ranking</div>
-        <div class="panel-body" id="pagerankBars"></div>
+      <!-- Feature 2: Cluster detection -->
+      <div class="feature-row reverse">
+        <div class="feature-content reveal">
+          <div class="feature-number">02 — Cluster Detection</div>
+          <h3 class="feature-title">Communities the<br><em>graph reveals</em></h3>
+          <p class="feature-desc">Louvain community detection groups wallets into clusters; heuristics then triage each one into a pattern type — Sybil fan-out, wash trading, mixer, or peel chain — with a modularity score attached.</p>
+          <div class="feature-checklist">
+            <div class="feature-check"><div class="check-icon">✓</div><span>Louvain community detection over the full snapshot</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>4 heuristic cluster types, or untriaged until reviewed</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>Member drill-down with per-wallet membership score</span></div>
+          </div>
+        </div>
+        <div class="feature-visual reveal reveal-delay-1">
+          <div class="feature-visual-inner">
+            <div class="fv-row">
+              <div class="fv-card">
+                <div class="fv-card-label">Communities found</div>
+                <div class="fv-card-val">9,531</div>
+                <div class="fv-card-bar"><div class="fv-card-bar-fill" style="width:100%"></div></div>
+              </div>
+              <div class="fv-card">
+                <div class="fv-card-label">Modularity</div>
+                <div class="fv-card-val">0.73</div>
+                <div class="fv-card-bar"><div class="fv-card-bar-fill" style="width:73%"></div></div>
+              </div>
+            </div>
+            <div class="fv-card">
+              <div class="fv-card-label">Cluster types</div>
+              <div class="fv-list" style="margin-top:8px">
+                <div class="fv-list-item"><span class="fv-list-name">Cluster #14</span><span class="fv-pill rose">SYBIL</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">Cluster #52</span><span class="fv-pill amber">WASH_TRADE</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">Cluster #9</span><span class="fv-pill violet">MIXER</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-    </section>
 
-  </main>
-</div>
-
-<!-- Wallet detail -->
-<div class="modal-overlay" id="walletModal">
-  <div class="modal-card">
-    <div class="modal-header"><h3 id="wmAddress">0x…</h3><div id="wmBadges" style="margin-top:8px;"></div></div>
-    <div class="modal-body">
-      <div class="stat-mini-grid">
-        <div class="stat-mini"><div class="sl">Tx count</div><div class="sv" id="wmTxCount">–</div></div>
-        <div class="stat-mini"><div class="sl">Risk score</div><div class="sv" id="wmRisk">–</div></div>
-        <div class="stat-mini"><div class="sl">PageRank rank</div><div class="sv" id="wmRank">–</div></div>
-        <div class="stat-mini"><div class="sl">PageRank value</div><div class="sv" id="wmRankValue">–</div></div>
+      <!-- Feature 3: Pattern alerts -->
+      <div class="feature-row">
+        <div class="feature-content reveal">
+          <div class="feature-number">03 — Pattern Alerts</div>
+          <h3 class="feature-title">Nothing suspicious<br>slips by quietly</h3>
+          <p class="feature-desc">Every flagged wallet or cluster becomes an alert with a severity and a confidence score — so an analyst triages findings instead of re-deriving them from raw graph metrics.</p>
+          <div class="feature-checklist">
+            <div class="feature-check"><div class="check-icon">✓</div><span>Severity and confidence on every alert</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>Status workflow: new → reviewed → dismissed</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>Linked straight back to the wallet or cluster that triggered it</span></div>
+          </div>
+        </div>
+        <div class="feature-visual reveal reveal-delay-1">
+          <div class="feature-visual-inner">
+            <div class="fv-card">
+              <div class="fv-card-label">Alert queue</div>
+              <div class="fv-list" style="margin-top:8px">
+                <div class="fv-list-item"><span class="fv-list-name">SYBIL_FANOUT</span><span class="fv-pill rose">HIGH · 74%</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">PEEL_CHAIN</span><span class="fv-pill amber">MEDIUM · 61%</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">WASH_TRADE</span><span class="fv-pill green">LOW · 38%</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">MIXER_HOP</span><span class="fv-pill dim">DISMISSED</span></div>
+              </div>
+            </div>
+            <div class="fv-row">
+              <div class="fv-card fv-wide">
+                <div class="fv-card-label">Review status</div>
+                <div class="fv-card-val">New → Reviewed</div>
+              </div>
+              <div class="fv-card">
+                <div class="fv-card-label">Patterns</div>
+                <div class="fv-card-val">4</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div id="wmClusters"></div>
+
+      <!-- Feature 4: Graph explorer -->
+      <div class="feature-row reverse">
+        <div class="feature-content reveal">
+          <div class="feature-number">04 — Graph Explorer</div>
+          <h3 class="feature-title">The graph itself,<br>not just its <em>summary</em></h3>
+          <p class="feature-desc">A force-directed view renders every wallet and transfer edge — node size by tx count, color by risk tier, edge thickness by transfer volume — backed by PageRank computed on GPU when one's available, CPU otherwise.</p>
+          <div class="feature-checklist">
+            <div class="feature-check"><div class="check-icon">✓</div><span>PageRank on RAPIDS cuGraph or NetworkX, chosen automatically</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>Force-directed layout via vis-network, all client-side</span></div>
+            <div class="feature-check"><div class="check-icon">✓</div><span>BFS distance tracing from any seed wallet</span></div>
+          </div>
+        </div>
+        <div class="feature-visual reveal reveal-delay-1">
+          <div class="feature-visual-inner">
+            <div class="fv-row">
+              <div class="fv-card">
+                <div class="fv-card-label">PageRank (CPU median)</div>
+                <div class="fv-card-val">61.3ms</div>
+                <div class="fv-card-bar"><div class="fv-card-bar-fill" style="width:40%"></div></div>
+              </div>
+              <div class="fv-card">
+                <div class="fv-card-label">BFS traversal</div>
+                <div class="fv-card-val">0.4ms</div>
+                <div class="fv-card-bar"><div class="fv-card-bar-fill" style="width:8%"></div></div>
+              </div>
+            </div>
+            <div class="fv-card">
+              <div class="fv-card-label">19.1k-node subgraph</div>
+              <div class="fv-list" style="margin-top:8px">
+                <div class="fv-list-item"><span class="fv-list-name">load_edgelist</span><span class="fv-pill dim">158ms</span></div>
+                <div class="fv-list-item"><span class="fv-list-name">louvain</span><span class="fv-pill dim">2.46s</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="modal-footer">
-      <button class="btn primary" id="wmCopyBtn">Copy address</button>
-      <button class="btn" data-close="walletModal">Close</button>
-    </div>
-  </div>
-</div>
+  </section>
 
-<!-- Cluster detail -->
-<div class="modal-overlay" id="clusterModal">
-  <div class="modal-card wide">
-    <div class="modal-header"><h3 id="cmTitle" style="font-family:var(--font);">Cluster</h3><div id="cmBadges" style="margin-top:8px;"></div></div>
-    <div class="modal-body">
-      <div class="stat-mini-grid" style="grid-template-columns:repeat(2,1fr);">
-        <div class="stat-mini"><div class="sl">Members</div><div class="sv" id="cmMemberCount">–</div></div>
-        <div class="stat-mini"><div class="sl">Modularity</div><div class="sv" id="cmModularity">–</div></div>
+  <!-- ── STATS ── -->
+  <section class="stats-section">
+    <div class="container">
+      <div class="stats-grid">
+        <div class="stat-card reveal">
+          <div class="stat-rule"></div>
+          <div class="stat-value"><span class="stat-num" data-target="19119">0</span></div>
+          <div class="stat-label">Wallets Traced</div>
+          <div class="stat-sublabel">In the largest subgraph analyzed so far</div>
+        </div>
+        <div class="stat-card reveal reveal-delay-1">
+          <div class="stat-rule"></div>
+          <div class="stat-value"><span class="stat-num" data-target="35756">0</span></div>
+          <div class="stat-label">Transfer Edges</div>
+          <div class="stat-sublabel">Weighted by transfer count and volume</div>
+        </div>
+        <div class="stat-card reveal reveal-delay-2">
+          <div class="stat-rule"></div>
+          <div class="stat-value"><span class="stat-num" data-target="9531">0</span></div>
+          <div class="stat-label">Louvain Communities</div>
+          <div class="stat-sublabel">Detected in that same benchmark run</div>
+        </div>
+        <div class="stat-card reveal reveal-delay-3">
+          <div class="stat-rule"></div>
+          <div class="stat-value"><span class="stat-num" data-target="0.73" data-decimal="2">0</span></div>
+          <div class="stat-label">Modularity Score</div>
+          <div class="stat-sublabel">Of that Louvain partition</div>
+        </div>
       </div>
-      <div class="table-wrap" style="max-height:320px;">
-        <table class="dtable">
-          <thead><tr><th>Address</th><th>Membership</th><th>Core</th></tr></thead>
-          <tbody id="cmMembersBody"></tbody>
-        </table>
+    </div>
+  </section>
+
+  <!-- ── HOW IT WORKS ── -->
+  <section class="steps-section" id="how">
+    <div class="container">
+      <div class="steps-header">
+        <div class="section-label reveal">Pipeline</div>
+        <h2 class="section-title reveal reveal-delay-1">From raw chain data<br>to a triaged <em>alert</em></h2>
+        <p class="section-sub reveal reveal-delay-2">Five stages, each one a real script in this repo — not a diagram of something that doesn't exist yet.</p>
+      </div>
+      <div class="steps-grid">
+        <div class="step-card reveal">
+          <div class="step-num">1</div>
+          <div class="step-eyebrow">Ingest</div>
+          <div class="step-title">Etherscan → Postgres</div>
+          <p class="step-desc">A bounded BFS crawl pulls transactions and token transfers around a seed address into a normalized schema.</p>
+        </div>
+        <div class="step-card reveal reveal-delay-1">
+          <div class="step-num">2</div>
+          <div class="step-eyebrow">Snapshot</div>
+          <div class="step-title">Graph → Parquet</div>
+          <p class="step-desc">The subgraph for a block range is exported and versioned, so every analysis run points at a fixed graph.</p>
+        </div>
+        <div class="step-card reveal reveal-delay-2">
+          <div class="step-num">3</div>
+          <div class="step-eyebrow">Analyze</div>
+          <div class="step-title">PageRank · Louvain · BFS</div>
+          <p class="step-desc">RAPIDS cuGraph on a GPU laptop, pandas + NetworkX everywhere else — picked automatically at runtime.</p>
+        </div>
+        <div class="step-card reveal reveal-delay-3">
+          <div class="step-num">4</div>
+          <div class="step-eyebrow">Detect</div>
+          <div class="step-title">Heuristic alerts</div>
+          <p class="step-desc">Cluster shape and wallet behavior are checked against four pattern heuristics; matches become alerts.</p>
+        </div>
+        <div class="step-card reveal reveal-delay-4">
+          <div class="step-num">5</div>
+          <div class="step-eyebrow">Review</div>
+          <div class="step-title">Dashboard triage</div>
+          <p class="step-desc">An analyst works the alert queue, drilling into the wallet, the cluster and the graph behind every flag.</p>
+        </div>
       </div>
     </div>
-    <div class="modal-footer"><button class="btn" data-close="clusterModal">Close</button></div>
-  </div>
-</div>
+  </section>
 
-<script>
-/* ════════════════════════════════════════
-   PREFS + API LAYER
-════════════════════════════════════════ */
-const PREF_KEY = "txgraph_prefs";
-const DEFAULT_API_BASE = "http://localhost:8000";
-const loadPref = () => { try { return JSON.parse(localStorage.getItem(PREF_KEY) || "{}"); } catch { return {}; } };
-const savePref = p => localStorage.setItem(PREF_KEY, JSON.stringify(p));
-const apiBase = () => loadPref().apiBase || DEFAULT_API_BASE;
-const runId   = () => Number(loadPref().runId) || 1;
+  <!-- ── CASE STUDY ── -->
+  <section class="spotlight-section" id="case-study">
+    <div class="container">
+      <div class="spotlight-card reveal">
+        <div class="spotlight-content">
+          <div class="spotlight-label">✦ Case Study</div>
+          <h2 class="spotlight-title">The Poly Network<br>exploit, <em>traced</em></h2>
+          <p class="spotlight-body">
+            TXGraph's default seed is <span class="mono-addr">0xC8a6…8963</span> — the address behind the
+            August 2021 Poly Network exploit, one of the largest and best-documented DeFi hacks on record.
+            The on-chain trail is public and the funds were ultimately returned, and its fan-out/consolidation
+            structure gives PageRank, Louvain and BFS something real to find. Point the pipeline at a
+            different address by changing <span class="mono-addr">CASE_STUDY_ADDRESS</span> in <span class="mono-addr">.env</span> — nothing else changes.
+          </p>
+          <a href="https://www.chainalysis.com/blog/poly-network-hack-august-2021/" target="_blank" rel="noopener" class="spotlight-link">
+            Read the public writeup <span>→</span>
+          </a>
+        </div>
+        <div class="spotlight-stats">
+          <div class="spotlight-stat">
+            <div class="spotlight-stat-val">Aug 2021</div>
+            <div class="spotlight-stat-label">Poly Network exploit date</div>
+          </div>
+          <div class="spotlight-stat">
+            <div class="spotlight-stat-val">Ethereum</div>
+            <div class="spotlight-stat-label">Chain analyzed (mainnet)</div>
+          </div>
+          <div class="spotlight-stat">
+            <div class="spotlight-stat-val">Returned</div>
+            <div class="spotlight-stat-label">Public outcome of the hack</div>
+          </div>
+          <div class="spotlight-stat">
+            <div class="spotlight-stat-val">2-hop</div>
+            <div class="spotlight-stat-label">Bounded crawl around the seed</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-async function api(path, params = {}) {
-  const url = new URL(apiBase() + path);
-  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null) url.searchParams.set(k, v); });
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
-  return res.json();
-}
+  <!-- ── TECH STACK ── -->
+  <section class="stack-section" id="stack">
+    <div class="container">
+      <div class="stack-header">
+        <div class="section-label reveal">Under the Hood</div>
+        <h2 class="section-title reveal reveal-delay-1">Built on <em>tools you know</em></h2>
+        <p class="section-sub reveal reveal-delay-2">No proprietary infra — a conventional data-engineering stack, GPU-accelerated where it actually counts.</p>
+      </div>
+      <div class="stack-grid">
+        <div class="stack-tile reveal"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6" stroke="var(--accent)" stroke-width="1.6" fill="none"/></svg></div><div class="stack-name">PostgreSQL</div></div>
+        <div class="stack-tile reveal reveal-delay-1"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><rect x="4" y="4" width="16" height="10" rx="2"/></svg></div><div class="stack-name">FastAPI</div></div>
+        <div class="stack-tile reveal reveal-delay-2"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><rect x="3" y="3" width="18" height="18" rx="3"/></svg></div><div class="stack-name">Etherscan API</div></div>
+        <div class="stack-tile reveal reveal-delay-3"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/></svg></div><div class="stack-name">NetworkX</div></div>
+        <div class="stack-tile reveal"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg></div><div class="stack-name">RAPIDS cuGraph</div></div>
+        <div class="stack-tile reveal reveal-delay-1"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg></div><div class="stack-name">cuDF</div></div>
+        <div class="stack-tile reveal reveal-delay-2"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><path d="M4 20V10l8-6 8 6v10z"/></svg></div><div class="stack-name">pandas</div></div>
+        <div class="stack-tile reveal reveal-delay-3"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/></svg></div><div class="stack-name">vis-network</div></div>
+        <div class="stack-tile reveal"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div><div class="stack-name">pytest</div></div>
+        <div class="stack-tile reveal reveal-delay-1"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg></div><div class="stack-name">GitHub Actions CI</div></div>
+        <div class="stack-tile reveal reveal-delay-2"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></div><div class="stack-name">Parquet</div></div>
+        <div class="stack-tile reveal reveal-delay-3"><div class="stack-tile-icon"><svg width="13" height="13" viewBox="0 0 24 24" fill="var(--accent)"><circle cx="12" cy="12" r="9"/></svg></div><div class="stack-name">WSL2 + RAPIDS</div></div>
+      </div>
+    </div>
+  </section>
 
-/* ════════════════════════════════════════
-   TOAST
-════════════════════════════════════════ */
-function toast(msg, type = "info") {
-  const el = document.createElement("div");
-  el.className = `toast ${type === "error" ? "err" : type === "success" ? "ok" : ""}`;
-  el.textContent = msg;
-  document.getElementById("toastStack").appendChild(el);
-  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
-  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 200); }, 3200);
-}
+  <!-- ── FAQ ── -->
+  <section class="faq-section" id="faq">
+    <div class="container">
+      <div class="faq-inner">
+        <div class="faq-sidebar reveal">
+          <div class="section-label">FAQ</div>
+          <h2 class="section-title">Questions,<br><em>answered</em></h2>
+          <p class="section-sub">Straight answers, including the limitations — see <span class="mono-addr" style="font-family:ui-monospace,monospace;font-size:0.85em;color:var(--text-3)">docs/API_CONTRACT.md</span> for the full list.</p>
+          <button class="faq-toggle-all" id="faqToggleAll">
+            <span id="faqToggleIcon">+</span> Expand all</button>
+        </div>
+        <div class="faq-list reveal reveal-delay-1" id="faqList">
+          <div class="faq-item">
+            <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
+              What is TXGraph?
+              <div class="faq-icon">+</div>
+            </div>
+            <div class="faq-answer"><div class="faq-answer-inner">A GPU-accelerated Ethereum transaction-graph analyzer, built as a DBMS course project. It ingests a bounded on-chain subgraph, runs graph algorithms against it, and surfaces the results — wallet risk, clusters, pattern alerts — through this dashboard.</div></div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
+              Where does the data come from?
+              <div class="faq-icon">+</div>
+            </div>
+            <div class="faq-answer"><div class="faq-answer-inner">A BFS crawl over the Etherscan API, seeded from one address and bounded by hop count and block range. Everything lands in PostgreSQL under a documented schema before any analysis runs.</div></div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
+              Do I need a GPU to run it?
+              <div class="faq-icon">+</div>
+            </div>
+            <div class="faq-answer"><div class="faq-answer-inner">No. The graph backend falls back to pandas + NetworkX automatically whenever RAPIDS isn't installed — that's how this whole pipeline was built and unit-tested without touching a GPU. RAPIDS cuGraph only kicks in on a machine where it's actually available.</div></div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
+              What patterns does it detect?
+              <div class="faq-icon">+</div>
+            </div>
+            <div class="faq-answer"><div class="faq-answer-inner">Cluster and wallet heuristics for four pattern types — Sybil fan-out, wash trading, mixer behavior, and peel chains. Each match becomes an alert with a severity and a confidence score, not an automatic verdict.</div></div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
+              Is this a live monitoring feed?
+              <div class="faq-icon">+</div>
+            </div>
+            <div class="faq-answer"><div class="faq-answer-inner">No — it's a bounded, point-in-time snapshot for research and coursework, not a production surveillance tool. There's no auth and no write path from the frontend; treat it accordingly.</div></div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
+              Can I point it at a different case study?
+              <div class="faq-icon">+</div>
+            </div>
+            <div class="faq-answer"><div class="faq-answer-inner">Yes — set CASE_STUDY_ADDRESS in .env and re-run the ingestion and analysis pipeline. Nothing in the dashboard or API is hard-coded to the Poly Network address.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-/* ════════════════════════════════════════
-   UTILITIES
-════════════════════════════════════════ */
-function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
-function shortAddr(a) { return a && a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a; }
-function copyToClipboard(text) {
-  navigator.clipboard?.writeText(text).then(() => toast("Copied ✓", "success")).catch(() => toast("Copy failed", "error"));
-}
-function riskTier(score) {
-  if (score === null || score === undefined) return "unknown";
-  if (score >= 67) return "high";
-  if (score >= 34) return "med";
-  return "low";
-}
-const TIER_COLOR = { low: "var(--low)", med: "var(--med)", high: "var(--high)", unknown: "var(--unknown)" };
-const TIER_LABEL = { low: "Low risk", med: "Medium risk", high: "High risk", unknown: "Unknown" };
-function riskBadgeClass(score) { return `b-risk-${riskTier(score)}`; }
-function typeBadgeClass(t) { return { SYBIL: "b-cluster-sybil", WASH_TRADE: "b-cluster-wash_trade", MIXER: "b-cluster-mixer", PEEL_CHAIN: "b-cluster-peel_chain" }[t] || "b-cluster-none"; }
-function severityBadgeClass(s) { return `b-sev-${(s || "").toLowerCase()}`; }
-function statusBadgeClass(s) { return `b-status-${(s || "").toLowerCase()}`; }
+  <!-- ── CTA BANNER ── -->
+  <section class="cta-section">
+    <div class="container">
+      <div class="cta-inner reveal">
+        <div class="cta-content">
+          <div class="cta-label">✦ DBMS Course Project</div>
+          <h2 class="cta-title">Ready to explore<br><em>the graph?</em></h2>
+          <p class="cta-sub">Launch the dashboard against the mock API with zero setup, or point it at a live Postgres-backed run.</p>
+        </div>
+        <div class="cta-actions">
+          <a href="dashboard.html" class="btn-cta-primary">
+            Launch Dashboard
+            <span>→</span>
+          </a>
+          <a href="#how" class="btn-cta-ghost">How it works</a>
+        </div>
+      </div>
+    </div>
+  </section>
 
-function riskDistBlock(wallets, containerId) {
-  const tiers = { low: 0, med: 0, high: 0, unknown: 0 };
-  wallets.forEach(w => tiers[riskTier(w.risk_score)]++);
-  const total = wallets.length || 1;
-  const box = document.getElementById(containerId);
-  box.innerHTML = Object.entries(tiers).map(([k, v]) => `
-    <div class="bar-row">
-      <span>${TIER_LABEL[k]}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${v / total * 100}%;background:${TIER_COLOR[k]}"></div></div>
-      <span class="bar-value">${v}</span>
-    </div>`).join("") || `<div class="empty-hint">No data</div>`;
-}
+  <!-- ── FOOTER ── -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a href="#" class="nav-logo">TX<span style="color:var(--accent-light)">Graph</span></a>
+          <p class="footer-brand-desc">A GPU-accelerated Ethereum transaction-graph analyzer, built as a DBMS course project around a real, publicly-documented on-chain case study.</p>
+        </div>
+        <div>
+          <div class="footer-col-label">Product</div>
+          <div class="footer-links">
+            <a href="#features">Features</a>
+            <a href="#how">How it works</a>
+            <a href="#case-study">Case study</a>
+            <a href="#stack">Tech stack</a>
+          </div>
+        </div>
+        <div>
+          <div class="footer-col-label">Explore</div>
+          <div class="footer-links">
+            <a href="dashboard.html">Launch dashboard</a>
+            <a href="#faq">FAQ</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <div class="footer-copy">© 2026 TXGraph — a DBMS course project.</div>
+        <div class="footer-note">Landing page design adapted from a TemplateMo layout.</div>
+      </div>
+    </div>
+  </footer>
 
-/* ════════════════════════════════════════
-   ROUTER
-════════════════════════════════════════ */
-const PAGE_META = {
-  overview: { title: "Overview", sub: "GPU-accelerated Ethereum transaction-graph analyzer" },
-  wallets:  { title: "Wallets",  sub: "Every wallet seen in the case-study subgraph" },
-  clusters: { title: "Clusters", sub: "Louvain community-detection output" },
-  alerts:   { title: "Alerts",   sub: "Pattern-detection alerts across all runs" },
-  graph:    { title: "Wallet graph", sub: "Force-directed view of the transaction graph" },
-};
-let currentPage = "overview";
-
-function go(name) {
-  if (!PAGE_META[name]) name = "overview";
-  currentPage = name;
-  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
-  document.querySelectorAll(".sidenav-item[data-page], .mobile-nav [data-page]").forEach(a => a.classList.toggle("active", a.dataset.page === name));
-  history.replaceState(null, "", `#${name}`);
-  window.scrollTo({ top: 0 });
-  if (name === "graph" && WALLETS.length) renderGraph();
-}
-window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
-document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));
-
-/* ════════════════════════════════════════
-   STATE + LOAD
-════════════════════════════════════════ */
-let WALLETS = [], CLUSTERS = [], ALERTS = [], SNAPSHOTS = [];
-let CLUSTER_MEMBERS = {};
-let WALLET_CLUSTERS = {};
-let PAGERANK = {};
-
-function setHealth(state, text) {
-  document.getElementById("healthDot").className = `health-dot ${state}`;
-  document.getElementById("healthText").textContent = text;
-}
-
-async function loadAll() {
-  setHealth("pending", "Connecting…");
-  ["statWallets", "statClusters", "statAlerts", "statHighSev"].forEach(id => document.getElementById(id).textContent = "–");
-  try {
-    const health = await api("/health");
-
-    [WALLETS, CLUSTERS, ALERTS, SNAPSHOTS] = await Promise.all([
-      api("/wallets", { limit: 200 }),
-      api("/clusters"),
-      api("/alerts"),
-      api("/snapshots"),
-    ]);
-
-    const memberLists = await Promise.all(CLUSTERS.map(c => api(`/clusters/${c.cluster_id}/members`).catch(() => [])));
-    CLUSTER_MEMBERS = {}; WALLET_CLUSTERS = {};
-    CLUSTERS.forEach((c, i) => {
-      CLUSTER_MEMBERS[c.cluster_id] = memberLists[i];
-      memberLists[i].forEach(m => (WALLET_CLUSTERS[m.wallet_id] = WALLET_CLUSTERS[m.wallet_id] || []).push(c.cluster_id));
-    });
-
-    const pagerank = await api(`/runs/${runId()}/metrics`, { metric_name: "pagerank", limit: 200 }).catch(() => []);
-    PAGERANK = {};
-    pagerank.forEach(p => { PAGERANK[p.wallet_id] = p; });
-
-    setHealth("ok", `API healthy — ${health.mode} mode`);
-    renderAll();
-  } catch (err) {
-    setHealth("err", "API unreachable");
-    toast(`Could not reach the API (${apiBase()}): ${err.message}`, "error");
-  }
-}
-
-function renderAll() {
-  renderStatCards();
-  riskDistBlock(WALLETS, "riskDist");
-  renderTopRisk();
-  renderSeverityBars();
-  renderLatestAlerts();
-  renderWallets();
-  renderClusters();
-  renderAlerts();
-  renderSnapshotSelect();
-  if (currentPage === "graph") renderGraph();
-}
-
-/* ════════════════════════════════════════
-   OVERVIEW
-════════════════════════════════════════ */
-function renderStatCards() {
-  document.getElementById("statWallets").textContent = WALLETS.length;
-  document.getElementById("statClusters").textContent = CLUSTERS.length;
-  document.getElementById("statAlerts").textContent = ALERTS.length;
-  document.getElementById("statAlertsNew").textContent = ALERTS.filter(a => a.review_status === "NEW").length;
-  document.getElementById("statHighSev").textContent = ALERTS.filter(a => a.severity === "HIGH").length;
-}
-
-function renderSeverityBars() {
-  const box = document.getElementById("severityBars");
-  const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
-  ALERTS.forEach(a => { if (counts[a.severity] !== undefined) counts[a.severity]++; });
-  const max = Math.max(1, ...Object.values(counts));
-  const colors = { HIGH: "var(--high)", MEDIUM: "var(--med)", LOW: "var(--accent)" };
-  if (!ALERTS.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }
-  box.innerHTML = Object.entries(counts).map(([k, v]) => `
-    <div class="bar-row">
-      <span>${k}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${v / max * 100}%;background:${colors[k]}"></div></div>
-      <span class="bar-value">${v}</span>
-    </div>`).join("");
-}
-
-function renderTopRisk() {
-  const box = document.getElementById("topRiskList");
-  const top = [...WALLETS].sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0)).slice(0, 5);
-  if (!top.length) { box.innerHTML = `<div class="empty-hint">No wallet data yet.</div>`; return; }
-  box.innerHTML = top.map(w => `
-    <div class="row-item" onclick="openWalletModal(${w.wallet_id})">
-      <div class="ri-left"><span class="dot" style="background:${TIER_COLOR[riskTier(w.risk_score)]}"></span><span class="ri-title">${w.address}</span></div>
-      <span class="badge ${riskBadgeClass(w.risk_score)}">${w.risk_score ?? "–"}</span>
-    </div>`).join("");
-}
-
-function renderLatestAlerts() {
-  const box = document.getElementById("latestAlertsList");
-  const top = [...ALERTS].sort((a, b) => b.alert_id - a.alert_id).slice(0, 5);
-  if (!top.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }
-  box.innerHTML = top.map(a => `
-    <div class="row-item" onclick="go('alerts')">
-      <div class="ri-left"><span class="dot" style="background:${a.severity === "HIGH" ? "var(--high)" : a.severity === "MEDIUM" ? "var(--med)" : "var(--accent)"}"></span><span class="ri-title" style="font-family:var(--font);">${a.pattern_type}</span></div>
-      <span class="ri-sub">${(a.confidence * 100).toFixed(0)}%</span>
-    </div>`).join("");
-}
-
-/* ════════════════════════════════════════
-   WALLETS
-════════════════════════════════════════ */
-let walletSearchQ = "", walletSort = "risk", walletFilter = "all";
-
-document.getElementById("walletSearch").addEventListener("input", debounce(e => { walletSearchQ = e.target.value.toLowerCase(); renderWallets(); }, 150));
-document.getElementById("walletSort").addEventListener("change", e => { walletSort = e.target.value; renderWallets(); });
-document.getElementById("walletFilterBar").addEventListener("click", e => {
-  const btn = e.target.closest("button"); if (!btn) return;
-  walletFilter = btn.dataset.f;
-  document.querySelectorAll("#walletFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
-  renderWallets();
-});
-
-function renderWallets() {
-  const tbody = document.getElementById("walletRows");
-  let list = WALLETS.filter(w => {
-    if (walletFilter === "high-risk" && riskTier(w.risk_score) !== "high") return false;
-    if (walletFilter !== "all" && walletFilter !== "high-risk" && w.address_type !== walletFilter) return false;
-    if (walletSearchQ && !w.address.toLowerCase().includes(walletSearchQ)) return false;
-    return true;
-  });
-  if (walletSort === "risk") list.sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0));
-  else if (walletSort === "tx") list.sort((a, b) => (b.tx_count || 0) - (a.tx_count || 0));
-  else if (walletSort === "address") list.sort((a, b) => a.address.localeCompare(b.address));
-
-  if (!list.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">No matching wallets.</div></td></tr>`; return; }
-
-  tbody.innerHTML = list.map(w => {
-    const clusterCount = (WALLET_CLUSTERS[w.wallet_id] || []).length;
-    return `
-    <tr onclick="openWalletModal(${w.wallet_id})">
-      <td class="mono">${shortAddr(w.address)}</td>
-      <td><span class="badge b-type-${w.address_type.toLowerCase()}">${w.address_type}</span></td>
-      <td><span class="badge ${riskBadgeClass(w.risk_score)}">${w.risk_score ?? "–"}</span></td>
-      <td class="num">${w.tx_count}</td>
-      <td class="num">${clusterCount || "–"}</td>
-    </tr>`;
-  }).join("");
-}
-
-function openWalletModal(id) {
-  const w = WALLETS.find(x => x.wallet_id === id);
-  if (!w) return;
-  document.getElementById("wmAddress").textContent = w.address;
-  document.getElementById("wmBadges").innerHTML =
-    `<span class="badge b-type-${w.address_type.toLowerCase()}">${w.address_type}</span> ` +
-    `<span class="badge ${riskBadgeClass(w.risk_score)}">risk tier: ${riskTier(w.risk_score)}</span>`;
-  document.getElementById("wmTxCount").textContent = w.tx_count;
-  document.getElementById("wmRisk").textContent = w.risk_score ?? "–";
-  const pr = PAGERANK[id];
-  document.getElementById("wmRank").textContent = pr ? `#${pr.rank_position}` : "no data";
-  document.getElementById("wmRankValue").textContent = pr ? pr.metric_value.toFixed(4) : "no data";
-  const clusterIds = WALLET_CLUSTERS[id] || [];
-  document.getElementById("wmClusters").innerHTML = clusterIds.length
-    ? `<div class="modal-label">Member of</div>` + clusterIds.map(cid => {
-        const c = CLUSTERS.find(x => x.cluster_id === cid);
-        return `<span class="badge ${typeBadgeClass(c?.cluster_type)}" style="cursor:pointer;margin-right:4px;" onclick="closeModal('walletModal');openClusterModal(${cid})">${c?.cluster_type || "cluster #" + cid}</span>`;
-      }).join("")
-    : "";
-  document.getElementById("wmCopyBtn").onclick = () => copyToClipboard(w.address);
-  openModal("walletModal");
-}
-
-/* ════════════════════════════════════════
-   CLUSTERS
-════════════════════════════════════════ */
-function renderClusters() {
-  const tbody = document.getElementById("clusterRows");
-  if (!CLUSTERS.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">No clusters yet. Run Louvain community detection to populate this.</div></td></tr>`; return; }
-  tbody.innerHTML = CLUSTERS.map(c => `
-    <tr onclick="openClusterModal(${c.cluster_id})">
-      <td class="mono num">#${c.cluster_id}</td>
-      <td><span class="badge ${typeBadgeClass(c.cluster_type)}">${c.cluster_type || "Untriaged"}</span></td>
-      <td><span class="badge ${riskBadgeClass(c.risk_score)}">${c.risk_score ?? "–"}</span></td>
-      <td class="num">${c.member_count}</td>
-      <td class="num">${c.modularity_score?.toFixed(2) ?? "–"}</td>
-    </tr>`).join("");
-}
-
-async function openClusterModal(id) {
-  let c = CLUSTERS.find(x => x.cluster_id === id);
-  if (!c) {
-    // /clusters is capped at 100 rows when unfiltered -- a real run can produce
-    // thousands, so a specific id (e.g. from an alert) may not be in that
-    // capped list. /clusters/{id} exists for exactly this lookup.
-    try { c = await api(`/clusters/${id}`); CLUSTERS.push(c); }
-    catch (err) { toast(`Cluster #${id} not found: ${err.message}`, "error"); return; }
-  }
-  if (!CLUSTER_MEMBERS[id]) CLUSTER_MEMBERS[id] = await api(`/clusters/${id}/members`).catch(() => []);
-  document.getElementById("cmTitle").textContent = `Cluster #${c.cluster_id}`;
-  document.getElementById("cmBadges").innerHTML =
-    `<span class="badge ${typeBadgeClass(c.cluster_type)}">${c.cluster_type || "Untriaged"}</span> ` +
-    `<span class="badge ${riskBadgeClass(c.risk_score)}">risk ${c.risk_score ?? "–"}</span>`;
-  document.getElementById("cmMemberCount").textContent = c.member_count;
-  document.getElementById("cmModularity").textContent = c.modularity_score?.toFixed(3) ?? "–";
-  const members = CLUSTER_MEMBERS[id] || [];
-  document.getElementById("cmMembersBody").innerHTML = members.map(m => `
-    <tr><td class="mono">${shortAddr(m.address)}</td><td class="num">${(m.membership_score * 100).toFixed(0)}%</td><td>${m.is_core_node ? "core" : "–"}</td></tr>
-  `).join("") || `<tr><td colspan="3"><div class="empty-hint">No member data.</div></td></tr>`;
-  openModal("clusterModal");
-}
-
-/* ════════════════════════════════════════
-   ALERTS
-════════════════════════════════════════ */
-let alertFilter = "all";
-document.getElementById("alertFilterBar").addEventListener("click", e => {
-  const btn = e.target.closest("button"); if (!btn) return;
-  alertFilter = btn.dataset.f;
-  document.querySelectorAll("#alertFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
-  renderAlerts();
-});
-
-function renderAlerts() {
-  const tbody = document.getElementById("alertRows");
-  const list = ALERTS.filter(a => alertFilter === "all" || a.review_status === alertFilter);
-  if (!list.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty-hint">Nothing matches this filter.</div></td></tr>`; return; }
-  tbody.innerHTML = list.map(a => `
-    <tr>
-      <td>${a.pattern_type}</td>
-      <td><span class="badge ${severityBadgeClass(a.severity)}">${a.severity}</span></td>
-      <td><span class="badge ${statusBadgeClass(a.review_status)}">${a.review_status}</span></td>
-      <td class="num">${(a.confidence * 100).toFixed(0)}%</td>
-      <td class="num">#${a.run_id}</td>
-      <td>${a.wallet_id ? `<a href="#" class="mono" onclick="event.preventDefault();openWalletModal(${a.wallet_id})">#${a.wallet_id}</a>` : "–"}</td>
-      <td>${a.cluster_id ? `<a href="#" class="mono" onclick="event.preventDefault();openClusterModal(${a.cluster_id})">#${a.cluster_id}</a>` : "–"}</td>
-    </tr>`).join("");
-}
-
-/* ════════════════════════════════════════
-   GRAPH
-════════════════════════════════════════ */
-let networkInstance = null;
-
-function renderSnapshotSelect() {
-  const sel = document.getElementById("snapshotSelect");
-  const current = sel.value;
-  sel.innerHTML = SNAPSHOTS.map(s => `<option value="${s.snapshot_id}">${s.snapshot_name} (${s.vertex_count}v/${s.edge_count}e)</option>`).join("")
-    || `<option value="1">snapshot #1</option>`;
-  if (current && [...sel.options].some(o => o.value === current)) sel.value = current;
-}
-
-function renderPagerankBars() {
-  const box = document.getElementById("pagerankBars");
-  const entries = Object.values(PAGERANK).sort((a, b) => a.rank_position - b.rank_position).slice(0, 8);
-  if (!entries.length) { box.innerHTML = `<div class="empty-hint">No PageRank data for run ${runId()}.</div>`; return; }
-  const max = Math.max(...entries.map(e => e.metric_value)) || 1;
-  box.innerHTML = entries.map(e => {
-    const w = WALLETS.find(x => x.wallet_id === e.wallet_id);
-    return `
-    <div class="bar-row clickable" onclick="openWalletModal(${e.wallet_id})">
-      <span class="mono">${w ? shortAddr(w.address) : "#" + e.wallet_id}</span>
-      <div class="bar-track"><div class="bar-fill" style="width:${e.metric_value / max * 100}%;background:var(--accent)"></div></div>
-      <span class="bar-value">#${e.rank_position}</span>
-    </div>`;
-  }).join("");
-}
-
-async function renderGraph() {
-  const canvas = document.getElementById("graphCanvas");
-  const snapshotId = document.getElementById("snapshotSelect").value || (SNAPSHOTS[0]?.snapshot_id ?? 1);
-  document.getElementById("runIdInput").value = runId();
-
-  let edges = [];
-  try {
-    edges = await api(`/snapshots/${snapshotId}/edges`, { limit: 1000 });
-  } catch (err) {
-    canvas.innerHTML = "";
-    toast(`Could not load graph edges: ${err.message}`, "error");
-    return;
-  }
-
-  const walletIds = new Set();
-  edges.forEach(e => { walletIds.add(e.src_wallet_id); walletIds.add(e.dst_wallet_id); });
-  WALLETS.forEach(w => walletIds.add(w.wallet_id));
-  const walletsInGraph = [...walletIds].map(id => WALLETS.find(w => w.wallet_id === id)).filter(Boolean);
-
-  const nodes = [...walletIds].map(id => {
-    const w = WALLETS.find(x => x.wallet_id === id);
-    const pr = PAGERANK[id];
-    const tier = riskTier(w?.risk_score);
-    const color = { low: "#16a34a", med: "#d97706", high: "#dc2626", unknown: "#9aa1ac" }[tier];
-    return {
-      id,
-      label: w ? shortAddr(w.address) : `#${id}`,
-      value: Math.max(1, w?.tx_count || 1),
-      color: { background: color, border: color, highlight: { background: color, border: "#14171f" } },
-      font: { color: "#14171f", size: 11, face: "ui-monospace, Consolas, monospace" },
-      title: w ? `${w.address}\nType: ${w.address_type}\nRisk: ${w.risk_score ?? "–"}\nTx count: ${w.tx_count}${pr ? `\nPageRank: #${pr.rank_position} (${pr.metric_value.toFixed(4)})` : ""}` : `wallet #${id}`,
-    };
-  });
-
-  const edgeItems = edges.map((e, i) => ({
-    id: i, from: e.src_wallet_id, to: e.dst_wallet_id, value: e.edge_weight || 1,
-    arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-    title: `${e.transfer_count} transfer${e.transfer_count !== 1 ? "s" : ""}\nweight ${e.edge_weight}`,
-    color: { color: "#c7ccd4", highlight: "#2f5dfd", hover: "#2f5dfd" },
-  }));
-
-  if (networkInstance) { networkInstance.destroy(); networkInstance = null; }
-
-  networkInstance = new vis.Network(canvas, { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edgeItems) }, {
-    autoResize: true,
-    nodes: { shape: "dot", scaling: { min: 10, max: 34 }, borderWidth: 1.5 },
-    edges: { smooth: { type: "continuous", roundness: 0.35 }, scaling: { min: 1, max: 5 } },
-    physics: { barnesHut: { gravitationalConstant: -4500, springLength: 150, springConstant: 0.045, damping: 0.4 }, stabilization: { iterations: 160 } },
-    interaction: { hover: true, tooltipDelay: 80, hideEdgesOnDrag: true },
-  });
-  // Turn physics off once the layout settles -- otherwise vis-network keeps
-  // simulating every frame indefinitely for no visual benefit.
-  networkInstance.once("stabilizationIterationsDone", () => networkInstance?.setOptions({ physics: false }));
-
-  document.getElementById("gsNodes").textContent = walletIds.size;
-  document.getElementById("gsEdges").textContent = edges.length;
-  const density = walletIds.size > 1 ? (edges.length / (walletIds.size * (walletIds.size - 1)) * 100) : 0;
-  document.getElementById("gsDensity").textContent = density.toFixed(1) + "%";
-  const hub = [...walletsInGraph].sort((a, b) => (b.tx_count || 0) - (a.tx_count || 0))[0];
-  document.getElementById("gsHub").textContent = hub ? shortAddr(hub.address) : "–";
-
-  riskDistBlock(walletsInGraph, "graphRiskDist");
-  renderPagerankBars();
-
-  const topByRank = walletsInGraph.filter(w => PAGERANK[w.wallet_id])
-    .sort((a, b) => PAGERANK[a.wallet_id].rank_position - PAGERANK[b.wallet_id].rank_position).slice(0, 5);
-  document.getElementById("graphTopWallets").innerHTML = topByRank.length ? topByRank.map(w => `
-    <div class="row-item" onclick="openWalletModal(${w.wallet_id})">
-      <div class="ri-left"><span class="dot" style="background:${TIER_COLOR[riskTier(w.risk_score)]}"></span><span class="ri-title">${shortAddr(w.address)}</span></div>
-      <span class="ri-sub">#${PAGERANK[w.wallet_id].rank_position}</span>
-    </div>`).join("") : `<div class="empty-hint">No PageRank data for run ${runId()}.</div>`;
-}
-
-document.getElementById("snapshotSelect").addEventListener("change", renderGraph);
-document.getElementById("graphRedrawBtn").addEventListener("click", renderGraph);
-document.getElementById("runIdInput").addEventListener("change", async e => {
-  const p = loadPref(); p.runId = Number(e.target.value) || 1; savePref(p);
-  document.getElementById("s_runId").value = p.runId;
-  await loadAll();
-});
-
-/* ════════════════════════════════════════
-   SETTINGS POPOVER
-════════════════════════════════════════ */
-function applyPrefs() {
-  const p = loadPref();
-  document.getElementById("s_apiBase").value = p.apiBase || DEFAULT_API_BASE;
-  document.getElementById("s_runId").value = p.runId || 1;
-  document.getElementById("apiDocsLink").href = `${apiBase()}/docs`;
-}
-
-document.getElementById("settingsBtn").addEventListener("click", e => {
-  e.stopPropagation();
-  document.getElementById("settingsPop").classList.toggle("open");
-});
-document.addEventListener("click", e => {
-  const pop = document.getElementById("settingsPop");
-  if (pop.classList.contains("open") && !pop.contains(e.target) && e.target.id !== "settingsBtn") pop.classList.remove("open");
-});
-
-document.getElementById("s_save").addEventListener("click", () => {
-  const base = document.getElementById("s_apiBase").value.trim() || DEFAULT_API_BASE;
-  const rid = Number(document.getElementById("s_runId").value) || 1;
-  const p = loadPref(); p.apiBase = base; p.runId = rid; savePref(p);
-  document.getElementById("apiDocsLink").href = `${base}/docs`;
-  toast("Connection settings saved ✓", "success");
-  loadAll();
-});
-document.getElementById("s_test").addEventListener("click", async () => {
-  const base = document.getElementById("s_apiBase").value.trim() || DEFAULT_API_BASE;
-  try {
-    const res = await fetch(`${base}/health`);
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    const body = await res.json();
-    toast(`Reachable — ${body.mode} mode`, "success");
-  } catch (err) {
-    toast(`Unreachable: ${err.message}`, "error");
-  }
-});
-
-document.getElementById("refreshBtn").addEventListener("click", loadAll);
-
-/* ════════════════════════════════════════
-   MODALS
-════════════════════════════════════════ */
-function openModal(id) { document.getElementById(id).classList.add("open"); }
-function closeModal(id) { document.getElementById(id).classList.remove("open"); }
-document.querySelectorAll(".modal-overlay").forEach(m => m.addEventListener("click", e => { if (e.target === m) m.classList.remove("open"); }));
-document.querySelectorAll("[data-close]").forEach(btn => btn.addEventListener("click", () => closeModal(btn.dataset.close)));
-document.addEventListener("keydown", e => {
-  if (e.key === "Escape") document.querySelectorAll(".modal-overlay.open").forEach(m => m.classList.remove("open"));
-  if (e.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) {
-    e.preventDefault(); go("wallets"); document.getElementById("walletSearch").focus();
-  }
-});
-
-/* ════════════════════════════════════════
-   INIT
-════════════════════════════════════════ */
-applyPrefs();
-go(location.hash.slice(1) || "overview");
-loadAll();
-</script>
+  <script src="landing.js"></script>
+</body>
 </html>
