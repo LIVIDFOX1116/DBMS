@@ -40,6 +40,10 @@ dependencies:
   - psycopg2
   - python-dotenv
   - requests
+  - networkx>=3.0    # CPU graph fallback -- see graph/backend.py; also lets
+  - scipy>=1.11      # this env run the CPU-path tests, not just the GPU path
+  - pytest>=8.0
+  - httpx>=0.24      # required by fastapi.testclient.TestClient
   - pip
   - pip:
       - fastapi

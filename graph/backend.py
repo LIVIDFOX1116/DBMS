@@ -65,9 +65,18 @@ class GraphBackend:
         louvain(), bfs() below.
         """
         if self.use_gpu:
-            gdf = self._cudf.DataFrame.from_pandas(edges_df)
+            gdf = self._cudf.from_pandas(edges_df)
             G = self._cugraph.Graph(directed=True)
-            G.from_cudf_edgelist(gdf, source=src, destination=dst, edge_attr=weight, renumber=True)
+            # store_transposed=True avoids pagerank() silently making its own
+            # transposed copy of the graph at call time -- worth avoiding on
+            # the GTX 1650's 4GB VRAM budget, not just the warning it throws.
+            G.from_cudf_edgelist(gdf, source=src, destination=dst, edge_attr=weight,
+                                  renumber=True, store_transposed=True)
+            # cugraph's Graph.to_undirected() errors on weighted graphs with
+            # reciprocal edges (src size != weights size), so louvain() below
+            # rebuilds a fresh undirected graph from the original edgelist
+            # instead -- stash the column names needed to do that.
+            G._txgraph_cols = (src, dst, weight)
             return G
         else:
             G = self._networkx.from_pandas_edgelist(
@@ -95,7 +104,10 @@ class GraphBackend:
         """Returns (pandas.DataFrame[wallet_id, community_label], modularity_score)."""
         t0 = time.time()
         if self.use_gpu:
-            result, modularity = self._cugraph.louvain(G)
+            src, dst, weight = G._txgraph_cols
+            UG = self._cugraph.Graph(directed=False)
+            UG.from_cudf_edgelist(G.view_edge_list(), source=src, destination=dst, edge_attr=weight, renumber=True)
+            result, modularity = self._cugraph.louvain(UG)
             df = result.to_pandas().rename(columns={"vertex": "wallet_id", "partition": "community_label"})
         else:
             undirected = G.to_undirected()
@@ -120,6 +132,12 @@ class GraphBackend:
         t0 = time.time()
         if self.use_gpu:
             result = self._cugraph.bfs(G, start_vertex)
+            # cugraph.bfs returns a row for every vertex, using int64-max as a
+            # sentinel distance for unreached ones -- NetworkX's path below
+            # only returns reached vertices, so drop the sentinel rows to keep
+            # both backends' output identical (and not write garbage int64s
+            # into vertex_metric.metric_value for unreached wallets).
+            result = result[result["distance"] != (2 ** 63) - 1]
             df = result.to_pandas().rename(columns={"vertex": "wallet_id"})
         else:
             lengths = self._networkx.single_source_shortest_path_length(G, start_vertex)
