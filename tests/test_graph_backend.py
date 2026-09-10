@@ -1,10 +1,10 @@
 """
-Exercises the CPU (pandas + NetworkX) path of GraphBackend on a small
-synthetic edge list. This is the path that actually runs in the sandbox and
-on the Zenbook; the GPU path runs the exact same test suite unmodified on the
-GTX 1650 / RTX 4070 laptops once RAPIDS is installed (gpu_available()
-switches automatically -- nothing here is CPU-specific except the import
-availability check).
+Exercises GraphBackend on a small synthetic edge list, against both the CPU
+(pandas + NetworkX) and GPU (cudf + cugraph) paths. The CPU class always
+runs -- it's the path that actually runs in the sandbox and on the Zenbook.
+The GPU class runs the exact same test bodies unmodified and is skipped
+automatically wherever RAPIDS isn't importable (i.e. everywhere except the
+GTX 1650 / RTX 4070 laptops with the txgraph-gpu conda env active).
 """
 import pathlib
 import sys
@@ -13,7 +13,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import pandas as pd
-from graph.backend import GraphBackend
+from graph.backend import GraphBackend, gpu_available
 
 
 def synthetic_edges():
@@ -28,10 +28,16 @@ def synthetic_edges():
     ])
 
 
-class TestGraphBackendCPU(unittest.TestCase):
+class _GraphBackendTests:
+    """Shared test bodies -- mixed into the CPU and GPU TestCases below so
+    both backends are held to the exact same behavior, not just "doesn't
+    crash". Not a TestCase itself (no test_ methods would run standalone)."""
+
+    force_cpu = None  # set by subclasses
+
     def setUp(self):
-        self.backend = GraphBackend(force_cpu=True)
-        self.assertFalse(self.backend.use_gpu)
+        self.backend = GraphBackend(force_cpu=self.force_cpu)
+        self.assertEqual(self.backend.use_gpu, not self.force_cpu)
         self.G = self.backend.load_edgelist(synthetic_edges())
 
     def test_pagerank_ranks_the_hub_highest(self):
@@ -52,6 +58,26 @@ class TestGraphBackendCPU(unittest.TestCase):
         df = self.backend.bfs(self.G, 1)
         reached = set(df.wallet_id)
         self.assertTrue({1, 2}.issubset(reached))  # 1 -> 2 is a direct edge
+        # Both backends must agree on exactly who's reachable -- cugraph.bfs
+        # returns a row per vertex with an int64-max sentinel for unreached
+        # ones; GraphBackend.bfs() must filter those out on the GPU path so
+        # callers never see a backend-specific shape here.
+        self.assertEqual(reached, {1, 2})
+
+    def test_bfs_predecessor_of_start_vertex_is_sentinel(self):
+        df = self.backend.bfs(self.G, 1)
+        start_row = df[df.wallet_id == 1].iloc[0]
+        self.assertEqual(start_row.distance, 0)
+        self.assertEqual(start_row.predecessor, -1)
+
+
+class TestGraphBackendCPU(_GraphBackendTests, unittest.TestCase):
+    force_cpu = True
+
+
+@unittest.skipUnless(gpu_available(), "RAPIDS (cudf+cugraph) not installed -- expected off the GPU laptops")
+class TestGraphBackendGPU(_GraphBackendTests, unittest.TestCase):
+    force_cpu = False
 
 
 if __name__ == "__main__":
