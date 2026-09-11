@@ -8,5 +8,7 @@ snapshots/*.parquet
 *.egg-info/
 .venv/
 venv/
+.venv-win/
+/build/
 .ipynb_checkpoints/
 .claude/
