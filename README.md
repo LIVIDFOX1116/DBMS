@@ -131,10 +131,11 @@ python -m http.server 5500 --directory frontend
 The dashboard covers all four resource types: an overview status bar, a
 searchable/sortable wallet grid, a cluster explorer with member drill-down, a
 filterable alerts list, and a force-directed graph view (nodes = wallets
-colored by risk score, edges = `/snapshots/{id}/edges`) built with
-vis-network. Settings (gear icon) let you point it at a different API base
-URL or analysis run ID -- defaults to `http://localhost:8000` and run `1`,
-matching the mock data.
+colored by risk score, edges = `/snapshots/{id}/edges`) -- a hand-built
+d3-force + Canvas2D renderer (glow nodes, particle-flow edges), not a
+graph-visualization library. Settings (gear icon) let you point it at a
+different API base URL or analysis run ID -- defaults to
+`http://localhost:8000` and run `1`, matching the mock data.
 
 Both pages share a visual design adapted from the free TemplateMo 622
 "Clearwave" template (`landing.css`/`landing.js` for the landing page; the
@@ -150,26 +151,116 @@ and the "Etherscan key handoff" comment in `api/main.py`. This is additive:
 everything above (plain `uvicorn` + a browser tab) still works exactly as
 described, with or without the desktop app installed.
 
+### First-time setup, in order
+
+Every step below is required once per machine, even for `cargo tauri dev`
+-- **the frozen backend sidecar has to exist before the very first dev
+launch, not just before a release build.** Tauri's `externalBin` bundling
+(`src-tauri/tauri.conf.json`'s `bundle.externalBin`) validates the sidecar
+file exists at build-script time regardless of debug/release profile, even
+though `resolve_backend_command()` in `backend.rs` doesn't actually *run*
+it in dev mode (dev mode spawns `.venv-win`'s `api/main.py` straight from
+source instead). Skip this step and `cargo tauri dev` fails before opening
+a window at all -- see Troubleshooting below.
+
 ```bash
-python -m venv .venv-win && .venv-win\Scripts\pip install -r requirements.txt
+# 1. Rust toolchain (skip if `rustc --version` already works)
+#    https://rustup.rs -- accept the defaults; needs the MSVC linker, which
+#    Visual Studio (any edition) or the standalone "Build Tools for Visual
+#    Studio" C++ workload both provide.
+
+# 2. tauri-cli (compiles from source -- several minutes the first time)
 cargo install tauri-cli --version "^2"
+
+# 3. Backend venv, same as requirements.txt above but Windows-native
+python -m venv .venv-win && .venv-win\Scripts\pip install -r requirements.txt
+
+# 4. The sidecar -- REQUIRED before step 5, dev or release
+pip install -r requirements-build.txt
+python scripts/build_backend_sidecar.py
+# -> src-tauri/binaries/txgraph-backend-<host-triple>.exe
+#    (e.g. txgraph-backend-x86_64-pc-windows-msvc.exe on a normal 64-bit PC)
+
+# 5. Launch
 cargo tauri dev          # from src-tauri/ -- opens the real window, hot-reloads
 ```
 
-A release build needs one extra step first: `cargo tauri dev` runs
-`api/main.py` straight from source through `.venv-win`, but a release
-binary can't ship a Python interpreter's worth of source + venv, so it
-needs a frozen, single-file backend instead.
+Re-run step 4 only when `api/main.py` (or anything it imports) changes --
+dev mode never executes this file, but Tauri's build-time check only cares
+that it *exists* with the right name, so a stale one silently goes unused
+rather than erroring. There's no cheap way to tell "stale" from "current"
+short of rebuilding, so when in doubt, rebuild it.
+
+A release build needs its own, separate run of the same freeze step (the
+dev sidecar above is never bundled) plus one more command:
 
 ```bash
-pip install -r requirements-build.txt
-python scripts/build_backend_sidecar.py   # freezes api/main.py -> src-tauri/binaries/
+python scripts/build_backend_sidecar.py   # if not already fresh
 cargo tauri build                         # from src-tauri/
 ```
 
 `src-tauri/src/backend.rs`'s `resolve_backend_command()` is where dev vs.
 release diverge; it errors clearly (rather than silently doing the wrong
 thing) if you try to build a release binary before running the freeze step.
+
+### The Etherscan API key
+
+Settings (gear icon) has a key field once the app detects it's running
+inside the desktop shell (`window.__TAURI__`, not the plain browser page).
+Saving a key writes it to the OS keychain via `set_api_key` and hot-swaps
+it into the already-running backend over a loopback-only, token-authenticated
+route (`/internal/api-key` in `api/main.py`) -- it's never written to `.env`,
+localStorage, or logged. "Test" makes one real call to Etherscan to confirm
+the key works, without saving it. "Clear" removes it from the keychain.
+
+**What the app actually does with a saved key today: nothing yet.** The
+handoff plumbing is fully built and works (Rust owns the key, the backend
+receives it at spawn and can be hot-swapped without a restart), but no
+endpoint in `api/main.py` reads `_runtime_state["etherscan_api_key"]` --
+mock vs. live mode is controlled purely by the unrelated `TXGRAPH_API_MODE`
+env var (see "Running the API" above). Practically: with or without a
+saved key, the desktop app serves the same mock data as the browser version
+until something is built to actually use the key (see Backend, item 4, in
+the current work order). Save/Test/Clear all work as described above --
+"connected" from Test only confirms the key itself is valid, not that
+anything downstream consumes it yet.
+
+### Troubleshooting
+
+**`resource path 'binaries\txgraph-backend-<triple>.exe' doesn't exist`**
+(build fails around `Building [...] app`, before any window opens): the
+sidecar hasn't been built yet, in dev or release. Run step 4 above
+(`pip install -r requirements-build.txt && python scripts/build_backend_sidecar.py`)
+and retry `cargo tauri dev` / `cargo tauri build`. Cargo caches everything
+it already compiled, so the retry only rebuilds the `app` crate itself --
+seconds to a couple of minutes, not the full initial build.
+
+**Proposal (not implemented -- needs a decision, not a fix I made unilaterally):**
+a fresh clone hitting the error above is a rough first-run experience.
+Two ways to remove it:
+
+1. **Auto-build the sidecar via `beforeDevCommand`** in `tauri.conf.json`
+   (e.g. `python scripts/build_backend_sidecar.py --if-missing`, a new flag
+   to skip the ~90s PyInstaller freeze when a sidecar already exists).
+   Pro: `cargo tauri dev` just works on a fresh clone, matching how most
+   Tauri templates behave. Con: silently masks a stale sidecar the same way
+   the current design does (see the "re-run step 4" note above) --
+   "if missing" doesn't catch "exists but outdated" either, and now that
+   staleness is even less visible because the build step never fails to
+   remind you it's there.
+2. **A dev-mode flag that skips `externalBin` bundling entirely** (Tauri
+   supports per-profile bundle config) so dev builds never reference the
+   sidecar at all, matching the fact that dev mode doesn't run it. Pro:
+   removes the false dependency cleanly, no build-time freeze step needed
+   for `cargo tauri dev` ever again. Con: dev and release then diverge in
+   one more way (dev has literally no way to exercise the frozen-sidecar
+   code path), so a sidecar-specific bug (like the four found running the
+   GPU backend against real RAPIDS for the first time) could just as easily
+   go unnoticed until a release build, which is a worse time to find it.
+
+Leaning toward (2) since it's the more honest fix (dev mode genuinely
+doesn't need this file), but it trades away the only cheap way to
+sanity-check the sidecar short of a full release build -- open to either.
 
 ## GPU laptop setup (RTX 4070 / GTX 1650, inside WSL2 Ubuntu only)
 
