@@ -18,11 +18,13 @@ Run it:
 import json
 import os
 import pathlib
+import secrets
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import psycopg2
+from pydantic import BaseModel
 
 from ingestion import config
 
@@ -66,6 +68,44 @@ def rows_as_dicts(cur) -> list:
 @app.get("/health")
 def health():
     return {"status": "ok", "mode": "mock" if using_mock() else "live"}
+
+
+# ── Etherscan key handoff (desktop-app packaging, Part 2) ──────────────────
+# The Rust shell owns the key in the OS keychain and never sends it to the
+# webview -- it hands the key to *this* process once, as an env var, at
+# spawn time. Held in memory only from here on: never written to disk, never
+# logged, never echoed back. This is deliberately separate from
+# ingestion/config.py's ETHERSCAN_API_KEY (.env-sourced) -- that constant
+# stays exactly as-is for direct CLI/dev use (`python -m ingestion...`,
+# scripts/run_pipeline.py); the two are unrelated and never synced.
+#
+# TXGRAPH_INTERNAL_TOKEN is a random value Rust generates fresh per app
+# launch and passes at spawn alongside the key -- /internal/api-key requires
+# it on every call, so no other local process can silently overwrite the key
+# this process is holding just because it can reach the loopback port. Not
+# added to CORSMiddleware's allow_methods (GET-only, above) on purpose: even
+# a compromised/malicious page loaded in the webview can't reach this route
+# via fetch() -- only Rust's direct HTTP calls (not subject to CORS) can.
+_runtime_state = {
+    "etherscan_api_key": os.getenv("TXGRAPH_ETHERSCAN_API_KEY", ""),
+    "internal_token": os.getenv("TXGRAPH_INTERNAL_TOKEN", ""),
+}
+
+
+class ApiKeyUpdate(BaseModel):
+    api_key: str
+
+
+@app.post("/internal/api-key")
+def set_internal_api_key(body: ApiKeyUpdate, request: Request):
+    token = request.headers.get("x-internal-token", "")
+    expected = _runtime_state["internal_token"]
+    # constant-time compare -- this guards a loopback-only, write-only route,
+    # but there's no reason to make timing attacks even theoretically easier
+    if not expected or not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=403, detail="invalid or missing internal token")
+    _runtime_state["etherscan_api_key"] = body.api_key
+    return {"status": "ok"}
 
 
 @app.get("/wallets")

@@ -140,6 +140,37 @@ Both pages share a visual design adapted from the free TemplateMo 622
 "Clearwave" template (`landing.css`/`landing.js` for the landing page; the
 dashboard's styling is inlined in `dashboard.html` as it always was).
 
+## Desktop app (Windows, optional)
+
+`src-tauri/` wraps `dashboard.html` + the API in a native window (Tauri) so
+the app is one .exe instead of "start a Python server, then open a browser
+tab." The Etherscan API key lives in the OS keychain (Windows Credential
+Manager), never in `.env` or the webview -- see `src-tauri/src/keychain.rs`
+and the "Etherscan key handoff" comment in `api/main.py`. This is additive:
+everything above (plain `uvicorn` + a browser tab) still works exactly as
+described, with or without the desktop app installed.
+
+```bash
+python -m venv .venv-win && .venv-win\Scripts\pip install -r requirements.txt
+cargo install tauri-cli --version "^2"
+cargo tauri dev          # from src-tauri/ -- opens the real window, hot-reloads
+```
+
+A release build needs one extra step first: `cargo tauri dev` runs
+`api/main.py` straight from source through `.venv-win`, but a release
+binary can't ship a Python interpreter's worth of source + venv, so it
+needs a frozen, single-file backend instead.
+
+```bash
+pip install -r requirements-build.txt
+python scripts/build_backend_sidecar.py   # freezes api/main.py -> src-tauri/binaries/
+cargo tauri build                         # from src-tauri/
+```
+
+`src-tauri/src/backend.rs`'s `resolve_backend_command()` is where dev vs.
+release diverge; it errors clearly (rather than silently doing the wrong
+thing) if you try to build a release binary before running the freeze step.
+
 ## GPU laptop setup (RTX 4070 / GTX 1650, inside WSL2 Ubuntu only)
 
 1. Windows 11 + WSL2 Ubuntu (WSL1 does not work): https://learn.microsoft.com/windows/wsl/install
@@ -162,9 +193,10 @@ ingestion/     Etherscan client + BFS subgraph crawler (Phase 1)
 graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py (Phases 2-3)
 api/           FastAPI app + mock_data.json (the frontend's day-one contract)
 frontend/      index.html (landing page) + dashboard.html (wallets/clusters/alerts/graph), no build step
-scripts/       verify_gpu_env.py (Phase 0 exit criterion), run_pipeline.py (Phase 6, one-command end-to-end run), benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main)
+scripts/       verify_gpu_env.py (Phase 0 exit criterion), run_pipeline.py (Phase 6, one-command end-to-end run), benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main), backend_entrypoint.py + build_backend_sidecar.py (desktop app release packaging)
 tests/         offline unit tests -- run with `python -m pytest tests/ -v`
 docs/          ER diagram (SVG + DBML), API contract, benchmark_results.md, and the full project bible
+src-tauri/     optional native desktop wrapper (Windows) around the frontend + API -- see "Desktop app" above
 ```
 
 ## Tests
