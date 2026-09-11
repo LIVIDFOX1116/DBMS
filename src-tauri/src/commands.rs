@@ -15,6 +15,14 @@ pub fn get_api_base(state: tauri::State<AppState>) -> String {
     format!("http://127.0.0.1:{}", handle.port)
 }
 
+/// Recent backend stdout/stderr lines (oldest first), for a future "view
+/// logs" panel -- a runtime backend error is otherwise invisible once the
+/// app is packaged (no console in a release build).
+#[tauri::command]
+pub fn get_backend_logs(state: tauri::State<AppState>) -> Vec<String> {
+    state.0.lock().unwrap().recent_log_lines()
+}
+
 /// Deliberately a bool, not the key -- Settings never reads the stored value
 /// back out to render it, per the "write-only" requirement. The UI shows
 /// "•••• saved" from this alone.

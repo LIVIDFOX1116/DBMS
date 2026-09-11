@@ -49,7 +49,26 @@ impl Drop for BackendHandle {
         // in lib.rs so this fires even if the process exits some other way
         // (window closed, panic, etc.) without leaving an orphaned uvicorn
         // process behind -- a real annoyance during dev iteration otherwise.
+        //
+        // Neither path covers the app being force-killed (Task Manager "End
+        // task", `taskkill /F`, a hard crash) -- Windows tears the parent
+        // down without ever running Drop or Tauri's RunEvent handlers, so
+        // the child keeps running and holding its port. The correct fix is
+        // a Windows Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        // (child dies whenever the job's last handle closes, even on a hard
+        // kill of the parent), which needs an explicit `windows` crate
+        // dependency -- flagged for a decision rather than added here.
         let _ = self.child.kill();
+    }
+}
+
+impl BackendHandle {
+    /// Snapshot of the most recent backend stdout/stderr lines. Previously
+    /// captured but never read outside spawn_backend's own error path --
+    /// a runtime error after startup was invisible in a packaged (console-
+    /// less) release build. See commands::get_backend_logs.
+    pub fn recent_log_lines(&self) -> Vec<String> {
+        self.recent_log.lock().unwrap().iter().cloned().collect()
     }
 }
 
