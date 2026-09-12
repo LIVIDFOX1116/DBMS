@@ -1,0 +1,21 @@
+[package]
+name = "gpu-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone spike -- not part of the shipped app, not referenced by
+# src-tauri/. Answers one question: does GPU compute clearly win over CPU
+# for force-directed layout at our actual graph sizes? If not, this crate
+# is deleted and nothing in the app ever depended on it.
+
+[dependencies]
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+rayon = "1"
+rand = "0.8"
+rand_pcg = "0.3"
+
+[profile.release]
+opt-level = 3
