@@ -33,6 +33,14 @@ keyring = "3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Per-launch random token guarding /internal/api-key (see api/main.py).
 uuid = { version = "1", features = ["v4"] }
+# Native compute engine (see src/layout/) -- validated by the gpu-bench
+# spike: GPU wins 5x-149x over CPU on force-directed layout at >=10k nodes,
+# even on integrated graphics. CPU reference path for parity tests + the
+# "CPU (multi-threaded)" device choice.
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+rayon = "1"
 
 [target.'cfg(windows)'.dependencies]
 # GPU adapter enumeration (see src/gpu.rs) -- already compiled transitively

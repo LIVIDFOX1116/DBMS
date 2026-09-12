@@ -2,6 +2,7 @@ mod backend;
 mod commands;
 mod gpu;
 mod keychain;
+mod layout;
 
 use commands::AppState;
 use std::sync::Mutex;
