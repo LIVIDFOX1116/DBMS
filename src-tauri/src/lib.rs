@@ -1,5 +1,6 @@
 mod backend;
 mod commands;
+mod gpu;
 mod keychain;
 
 use commands::AppState;
@@ -74,6 +75,7 @@ pub fn run() {
             commands::set_api_key,
             commands::clear_api_key,
             commands::test_api_key,
+            commands::detect_gpus,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

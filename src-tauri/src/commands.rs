@@ -3,6 +3,7 @@
 //! Node/npm anywhere, deliberately, see README).
 
 use crate::backend::BackendHandle;
+use crate::gpu::{self, GpuDetectionResult};
 use crate::keychain;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -21,6 +22,16 @@ pub fn get_api_base(state: tauri::State<AppState>) -> String {
 #[tauri::command]
 pub fn get_backend_logs(state: tauri::State<AppState>) -> Vec<String> {
     state.0.lock().unwrap().recent_log_lines()
+}
+
+/// Native GPU adapter enumeration (see gpu.rs for the full rationale) --
+/// dedicated/integrated/virtual/unknown per adapter, with VRAM figures.
+/// Not passed to the Python backend: nothing there consumes it today, and
+/// piping it through would just be unused plumbing until something does
+/// (a graph-rendering path choice, a system-info panel, etc.).
+#[tauri::command]
+pub fn detect_gpus() -> GpuDetectionResult {
+    gpu::detect()
 }
 
 /// Deliberately a bool, not the key -- Settings never reads the stored value
