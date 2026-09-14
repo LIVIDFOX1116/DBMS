@@ -363,6 +363,18 @@ table.dtable a { color: var(--accent-glow); }
         <input type="checkbox" id="s_showFps" style="width:auto;margin:0;" /> Show FPS / frame time
       </label>
     </div>
+    <h4>Layout compute device</h4>
+    <div class="field">
+      <!-- Distinct from "Graph rendering" above: this picks which backend
+           runs the *physics* (run_layout), not what draws the result.
+           Auto's 2,000-node threshold is the measured CPU/GPU crossover on
+           this machine's Intel Arc iGPU (gpu-bench: CPU rayon wins below
+           ~1,400-2,000 nodes, GPU wins above) -- device-specific, not a
+           universal constant. Re-measure with gpu-bench on different
+           hardware (e.g. the GTX 1650) before trusting this default there. -->
+      <select id="s_layoutDevice" style="width:100%;"></select>
+      <span style="font-size:11px;color:var(--text-3);">Auto uses CPU below 2,000 nodes, GPU at or above -- the measured crossover on this machine only.</span>
+    </div>
     <div id="apiKeySection" style="display:none;">
       <h4>Etherscan API key</h4>
       <div class="field" id="apiKeySaved" style="display:none;">
@@ -1192,8 +1204,9 @@ async function renderGraph() {
   const layoutBadge = document.getElementById("layoutDeviceBadge");
   if (isRunningInTauriApp()) {
     try {
+      const requestedDevice = resolveLayoutDevice(myNodes.length);
       const result = await window.__TAURI__.core.invoke("run_layout", {
-        snapshotId: Number(snapshotId), maxEdges: edgeLimit, device: "gpu",
+        snapshotId: Number(snapshotId), maxEdges: edgeLimit, device: requestedDevice,
       });
       if (myGeneration !== renderGraphGeneration) return; // superseded while awaiting the Rust layout
       let applied = 0;
@@ -1202,7 +1215,11 @@ async function renderGraph() {
         const node = byId.get(Number(walletId));
         if (node) { node.x = xy[0]; node.y = xy[1]; applied++; }
       });
-      layoutBadge.textContent = `layout: ${result.device_used} · ${applied}/${result.node_count} nodes · ${result.iterations} iters · ${result.elapsed_ms}ms${result.converged ? "" : " (capped, not converged)"}`;
+      // "hit iteration budget" not "failed to converge" -- at this graph's
+      // real density, no device converges within the cap (see SettleCap's
+      // doc comment in layout.rs); this is expected, permanent behavior at
+      // this scale, not a transient error.
+      layoutBadge.textContent = `layout: ${result.device_used} · ${applied}/${result.node_count} nodes · ${result.iterations} iters · ${result.elapsed_ms}ms${result.converged ? "" : " (hit iteration budget, expected at this density)"}`;
     } catch (err) {
       if (myGeneration !== renderGraphGeneration) return; // superseded; don't touch a newer call's badge
       console.error("run_layout failed, using JS fallback layout:", err);
@@ -1329,9 +1346,51 @@ function applyPrefs() {
     ? `Detected: ${adapter.name}`
     : "WebGL2 not available in this window -- the graph view will not render";
 
+  populateLayoutDeviceOptions(p.layoutDevice || "auto");
   refreshApiKeySection();
 }
 
+// Layout compute device options: Auto + CPU always; one option per real GPU
+// adapter (via detect_gpus, DXGI+D3D12 -- see gpu.rs) only inside the
+// desktop app, since a plain browser tab has no Rust layout engine to run
+// on a specific adapter at all (renderGraph's isRunningInTauriApp() branch
+// already handles that fallback).
+async function populateLayoutDeviceOptions(selected) {
+  const sel = document.getElementById("s_layoutDevice");
+  const options = [
+    { value: "auto", label: "Auto (recommended)" },
+    { value: "cpu", label: "CPU (multi-threaded)" },
+  ];
+  if (isRunningInTauriApp()) {
+    try {
+      const result = await window.__TAURI__.core.invoke("detect_gpus");
+      (result.adapters || []).forEach((a, i) => {
+        if (a.adapter_type === "dedicated") options.push({ value: "gpu-discrete", label: `GPU: ${a.name} (dedicated)` });
+        else if (a.adapter_type === "integrated") options.push({ value: "gpu-integrated", label: `GPU: ${a.name} (integrated)` });
+        else options.push({ value: "gpu", label: `GPU: ${a.name}` });
+      });
+    } catch (err) {
+      console.error("detect_gpus failed:", err);
+    }
+  }
+  sel.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join("");
+  sel.value = options.some(o => o.value === selected) ? selected : "auto";
+}
+
+// The measured CPU/GPU crossover (gpu-bench, this machine's Intel Arc iGPU:
+// CPU rayon wins below ~1,400 nodes, GPU wins above) rounded up to 2,000 for
+// margin. Device-specific -- re-measure with gpu-bench before trusting this
+// on different hardware (e.g. the GTX 1650, never yet tested).
+const AUTO_LAYOUT_DEVICE_THRESHOLD = 2000;
+function resolveLayoutDevice(nodeCount) {
+  const pref = loadPref().layoutDevice || "auto";
+  if (pref === "auto") return nodeCount >= AUTO_LAYOUT_DEVICE_THRESHOLD ? "gpu" : "cpu";
+  return pref;
+}
+
+document.getElementById("s_layoutDevice").addEventListener("change", e => {
+  const p = loadPref(); p.layoutDevice = e.target.value; savePref(p);
+});
 document.getElementById("s_showFps").addEventListener("change", e => {
   const p = loadPref(); p.showFps = e.target.checked; savePref(p);
   if (graphRenderer) graphRenderer.setShowFps(e.target.checked);
