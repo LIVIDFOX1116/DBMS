@@ -20,7 +20,26 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+
+/// Just a HANDLE, kept alive for BackendHandle's lifetime and explicitly
+/// closed in Drop. windows::Win32::Foundation::HANDLE doesn't implement
+/// Send on its own (it's a raw pointer-sized value by convention) -- safe
+/// here since it's an opaque OS handle we never dereference, only pass back
+/// to CloseHandle from whatever thread drops BackendHandle.
+#[cfg(windows)]
+struct JobHandle(HANDLE);
+#[cfg(windows)]
+unsafe impl Send for JobHandle {}
 
 // CREATE_NO_WINDOW (winbase.h). In release builds app.exe itself has no
 // console (windows_subsystem = "windows" in main.rs), so spawning a
@@ -41,6 +60,12 @@ pub struct BackendHandle {
     /// error messages. Populated by the drain threads spawned in
     /// spawn_backend -- reading this never blocks on the child process.
     recent_log: Arc<Mutex<VecDeque<String>>>,
+    /// See create_kill_on_close_job. None if job creation/assignment failed
+    /// (e.g. Job Objects unavailable in some sandboxed/restricted
+    /// environment) -- self.child.kill() below still covers the graceful
+    /// paths in that case, same as before this existed.
+    #[cfg(windows)]
+    job: Option<JobHandle>,
 }
 
 impl Drop for BackendHandle {
@@ -49,16 +74,47 @@ impl Drop for BackendHandle {
         // in lib.rs so this fires even if the process exits some other way
         // (window closed, panic, etc.) without leaving an orphaned uvicorn
         // process behind -- a real annoyance during dev iteration otherwise.
-        //
-        // Neither path covers the app being force-killed (Task Manager "End
-        // task", `taskkill /F`, a hard crash) -- Windows tears the parent
-        // down without ever running Drop or Tauri's RunEvent handlers, so
-        // the child keeps running and holding its port. The correct fix is
-        // a Windows Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        // (child dies whenever the job's last handle closes, even on a hard
-        // kill of the parent), which needs an explicit `windows` crate
-        // dependency -- flagged for a decision rather than added here.
         let _ = self.child.kill();
+        // Covers the case Drop itself can't: the app being force-killed
+        // (Task Manager "End task", `taskkill /F`, a hard crash) tears this
+        // process down without ever running Drop or Tauri's RunEvent
+        // handlers, so `self.child.kill()` above never executes either.
+        // The child was assigned to a Job Object with
+        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE at spawn time (see
+        // create_kill_on_close_job) -- when Windows closes this process's
+        // last handle to that job (which it does unconditionally as part of
+        // process teardown, hard-killed or not), the kernel itself kills
+        // everything in the job. That's what actually closes the real gap;
+        // explicitly closing the handle here on a graceful exit is a
+        // by-the-book cleanup, not the mechanism doing the real work.
+        #[cfg(windows)]
+        if let Some(JobHandle(job)) = self.job.take() {
+            unsafe { let _ = CloseHandle(job); }
+        }
+    }
+}
+
+/// Ties the backend child's lifetime to this process's at the OS level, so
+/// a hard kill of app.exe can't orphan it. Found two real, currently-live
+/// orphaned backend processes on this machine from earlier crashes/hard
+/// kills before this existed -- this is not a theoretical gap.
+#[cfg(windows)]
+fn create_kill_on_close_job(child: &Child) -> Option<JobHandle> {
+    unsafe {
+        let job = CreateJobObjectW(None, None).ok()?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let info_ptr = &info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const std::ffi::c_void;
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            info_ptr,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .ok()?;
+        let process_handle = HANDLE(child.as_raw_handle());
+        AssignProcessToJobObject(job, process_handle).ok()?;
+        Some(JobHandle(job))
     }
 }
 
@@ -211,6 +267,8 @@ pub fn spawn_backend(api_key: &str) -> Result<BackendHandle, String> {
     cmd.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd.spawn().map_err(|e| format!("failed to spawn backend ({program}): {e}"))?;
+    #[cfg(windows)]
+    let job = create_kill_on_close_job(&child);
 
     let recent_log: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_RING_CAPACITY)));
     let stdout: ChildStdout = child.stdout.take().expect("stdout was piped");
@@ -224,7 +282,14 @@ pub fn spawn_backend(api_key: &str) -> Result<BackendHandle, String> {
         return Err(format!("{e}\n--- recent backend output ---\n{log_tail}"));
     }
 
-    Ok(BackendHandle { child, port, internal_token, recent_log })
+    Ok(BackendHandle {
+        child,
+        port,
+        internal_token,
+        recent_log,
+        #[cfg(windows)]
+        job,
+    })
 }
 
 pub fn shutdown(handle: &mut BackendHandle) {
