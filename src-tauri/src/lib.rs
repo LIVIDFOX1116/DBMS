@@ -1,6 +1,8 @@
 mod backend;
 mod commands;
-mod gpu;
+// pub so `examples/print_gpu_detection.rs` can call gpu::detect() directly
+// for end-to-end hardware verification without needing the desktop UI.
+pub mod gpu;
 mod keychain;
 // pub so `examples/bench_real_graph.rs` (a real-graph counterpart to
 // gpu-bench, run manually against a live backend) can call it directly

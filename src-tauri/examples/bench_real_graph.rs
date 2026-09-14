@@ -90,4 +90,22 @@ fn main() {
         };
         println!("  [{:>18}] per-iter: {:>10}  settle: {settle_note}{readback_note}", r.label, fmt_ms(r.per_iter_ms));
     }
+
+    // Partial IPC-cost signal: JSON-serializing a positions map the same
+    // shape run_layout returns to the webview. This measures ONLY
+    // serialization on the Rust side -- it does NOT include the actual
+    // cross-process IPC transport or the webview's JSON.parse + JS loop to
+    // apply positions, neither of which is measurable without the real
+    // webview. Treat this as a lower bound, not the full IPC cost.
+    let positions_map: std::collections::HashMap<i64, [f32; 2]> =
+        index_to_id.iter().zip(initial.iter()).map(|(&id, &p)| (id, p)).collect();
+    let t0 = std::time::Instant::now();
+    let json = serde_json::to_string(&positions_map).expect("positions map must serialize");
+    let serialize_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "\n  [serde_json::to_string only] {} entries, {} bytes, {}  (excludes IPC transport + webview JSON.parse)",
+        positions_map.len(),
+        json.len(),
+        fmt_ms(serialize_ms)
+    );
 }
