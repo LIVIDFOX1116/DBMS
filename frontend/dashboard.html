@@ -8,11 +8,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,500&family=Playfair+Display:ital,wght@1,600&display=swap" rel="stylesheet">
-<!-- graphology + sigma.js: WebGL-rendered graph view -- replaces d3's Canvas2D
-     force-directed renderer so this stays smooth well past d3's practical
-     node/edge ceiling, and runs on the GPU rather than the main thread. -->
-<script src="https://cdn.jsdelivr.net/npm/graphology@0.26.0/dist/graphology.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.3/dist/sigma.min.js"></script>
+<!-- Instanced WebGL2 graph renderer (graph-webgl.js) -- replaces sigma.js +
+     graphology. No CDN dependency (this app previously needed internet
+     access just to load the graph view); measured at 95-112fps sustained
+     on the real 19,119-node/35,756-edge graph, inside the actual Tauri
+     window, with pan/zoom live -- see spikes/webgl2-instanced/. -->
+<script src="graph-webgl.js"></script>
 <style>
 :root {
   --bg:        #0D1614;
@@ -353,11 +354,10 @@ table.dtable a { color: var(--accent-glow); }
     </div>
     <h4>Graph rendering</h4>
     <div class="field">
-      <select id="s_renderMode" style="width:100%;margin-bottom:6px;">
-        <option value="auto">Auto (prefer GPU)</option>
-        <option value="gpu">Dedicated GPU</option>
-        <option value="cpu">CPU</option>
-      </select>
+      <!-- Always the instanced-WebGL2 renderer (graph-webgl.js) -- measured
+           at 95-112fps on the real 19,119-node graph, so there's no CPU/GPU
+           choice to make here anymore. This just reports whether WebGL2 is
+           available at all in this window. -->
       <div id="s_adapterInfo" style="font-size:11px;color:var(--text-3);"></div>
       <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin-top:6px;">
         <input type="checkbox" id="s_showFps" style="width:auto;margin:0;" /> Show FPS / frame time
@@ -536,6 +536,10 @@ table.dtable a { color: var(--accent-glow); }
             <button class="btn" id="graphRedrawBtn">↻ Redraw</button>
             <button class="btn" id="graphBenchmarkBtn" title="Compare CPU single-thread, CPU rayon, and GPU on this snapshot's full graph">⚡ Benchmark layout</button>
             <span class="mono" id="layoutDeviceBadge" style="font-size:11px;color:var(--muted,#7C948F);"></span>
+            <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;" title="How many nodes to draw, ranked by tx count -- a lower cap keeps the view legible on a dense graph">
+              <span id="nodeCapIndicator" class="mono">showing – of –</span>
+              <input type="range" id="graphNodeCapSlider" min="200" max="200" value="200" style="width:140px;">
+            </label>
             <div class="graph-legend-inline">
               <span>Color = risk tier</span>
               <span>Size = tx count</span>
@@ -967,21 +971,17 @@ function renderAlerts() {
 /* ════════════════════════════════════════
    GRAPH
 ════════════════════════════════════════ */
-let sigmaInstance = null;
-let sigmaGraph = null;
+let graphRenderer = null; // the one GraphRenderer instance (graph-webgl.js) for the current view
+let userSetNodeCap = false; // true once the user drags the node-cap slider themselves
 // renderGraph() is async with several await points (edge fetch, the Rust
-// layout invoke) and mutates the shared sigmaGraph/DOM globals above -- two
+// layout invoke) and mutates shared globals (graphRenderer, DOM) -- two
 // overlapping calls (e.g. changing the edge-limit dropdown right after a
 // snapshot switch) can otherwise interleave and have a stale call's
 // continuation write over a newer call's graph. Each call captures its own
 // generation number and bails out after every await if a newer call has
 // started since.
 let renderGraphGeneration = 0;
-let graphResizeObserver = null;
-let particleRAF = null;
-let graphCleanup = null;
 const GRAPH_TIER_COLOR = { low: "#2FD9A8", med: "#E8A63D", high: "#E5675A", unknown: "#7C948F" };
-const GRAPH_TIER_GLOW = { low: "rgba(47,217,168,.85)", med: "rgba(232,166,61,.85)", high: "rgba(229,103,90,.85)", unknown: "rgba(124,148,143,.85)" };
 
 // Same fast, dependency-free force layout as the old d3.forceSimulation did
 // the job of -- no browser-ready (UMD/script-tag) build of
@@ -992,84 +992,76 @@ const GRAPH_TIER_GLOW = { low: "rgba(47,217,168,.85)", med: "rgba(232,166,61,.85
 // layout (O(n log n)) instead of freezing the tab.
 const SPRING_LAYOUT_NODE_CEILING = 800;
 
-function layoutGraph(graph) {
-  const ids = graph.nodes().filter(id => !isGhostNode(id));
-  const n = ids.length;
+// Operates on plain {id,x,y} node objects (mutated in place) and [srcId,dstId]
+// edge pairs -- no graphology dependency. Same algorithm as before the WebGL2
+// rewrite: JS position computation is unchanged, only what draws the result
+// changed (graph-webgl.js's GraphRenderer instead of sigma). The
+// SPRING_LAYOUT_NODE_CEILING fallback stays -- it exists because a 150-
+// iteration O(n^2) simulation on the main thread would freeze the tab well
+// before 19k nodes, which is a JS-computation limit independent of whichever
+// renderer draws the output; only the *renderer's* 800-node cap (sigma's)
+// was the thing this rewrite removed.
+function layoutGraph(nodes, edgePairs) {
+  const n = nodes.length;
+  const byId = new Map(nodes.map(node => [node.id, node]));
 
   let seed = 1337;
   const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-  ids.forEach((id, i) => {
+  nodes.forEach((node, i) => {
     const angle = (i / n) * Math.PI * 2;
-    graph.setNodeAttribute(id, "x", Math.cos(angle) * 500 + (rand() - 0.5) * 40);
-    graph.setNodeAttribute(id, "y", Math.sin(angle) * 500 + (rand() - 0.5) * 40);
+    node.x = Math.cos(angle) * 500 + (rand() - 0.5) * 40;
+    node.y = Math.sin(angle) * 500 + (rand() - 0.5) * 40;
   });
 
   if (n > SPRING_LAYOUT_NODE_CEILING) {
-    const ranked = [...ids].sort((a, b) => graph.degree(b) - graph.degree(a));
-    ranked.forEach((id, i) => {
+    const degree = new Map();
+    edgePairs.forEach(([a, b]) => {
+      degree.set(a, (degree.get(a) || 0) + 1);
+      degree.set(b, (degree.get(b) || 0) + 1);
+    });
+    const ranked = [...nodes].sort((a, b) => (degree.get(b.id) || 0) - (degree.get(a.id) || 0));
+    ranked.forEach((node, i) => {
       const ring = Math.sqrt((i + 1) / n);
       const angle = i * 2.399963; // golden angle -- avoids spoke artifacts
-      graph.setNodeAttribute(id, "x", Math.cos(angle) * ring * 900);
-      graph.setNodeAttribute(id, "y", Math.sin(angle) * ring * 900);
+      node.x = Math.cos(angle) * ring * 900;
+      node.y = Math.sin(angle) * ring * 900;
     });
     return;
   }
 
-  const edges = graph.edges().map(e => [graph.source(e), graph.target(e)]);
   const REPULSION = 68000, SPRING_LEN = 230, SPRING_K = 0.02, DAMPING = 0.82;
-  const vel = new Map(ids.map(id => [id, { x: 0, y: 0 }]));
+  const vel = new Map(nodes.map(node => [node.id, { x: 0, y: 0 }]));
   for (let iter = 0; iter < 150; iter++) {
-    const force = new Map(ids.map(id => [id, { x: 0, y: 0 }]));
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const a = ids[i], b = ids[j];
-        const dx = graph.getNodeAttribute(a, "x") - graph.getNodeAttribute(b, "x");
-        const dy = graph.getNodeAttribute(a, "y") - graph.getNodeAttribute(b, "y");
+    const force = new Map(nodes.map(node => [node.id, { x: 0, y: 0 }]));
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const dx = a.x - b.x, dy = a.y - b.y;
         const dist2 = dx * dx + dy * dy || 0.01;
         const dist = Math.sqrt(dist2);
         const f = REPULSION / dist2;
         const fx = (dx / dist) * f, fy = (dy / dist) * f;
-        force.get(a).x += fx; force.get(a).y += fy;
-        force.get(b).x -= fx; force.get(b).y -= fy;
+        force.get(a.id).x += fx; force.get(a.id).y += fy;
+        force.get(b.id).x -= fx; force.get(b.id).y -= fy;
       }
     }
-    edges.forEach(([a, b]) => {
-      if (a === b) return;
-      const dx = graph.getNodeAttribute(b, "x") - graph.getNodeAttribute(a, "x");
-      const dy = graph.getNodeAttribute(b, "y") - graph.getNodeAttribute(a, "y");
+    edgePairs.forEach(([aId, bId]) => {
+      if (aId === bId) return;
+      const a = byId.get(aId), b = byId.get(bId);
+      if (!a || !b) return;
+      const dx = b.x - a.x, dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
       const f = SPRING_K * (dist - SPRING_LEN);
       const fx = (dx / dist) * f, fy = (dy / dist) * f;
-      force.get(a).x += fx; force.get(a).y += fy;
-      force.get(b).x -= fx; force.get(b).y -= fy;
+      force.get(aId).x += fx; force.get(aId).y += fy;
+      force.get(bId).x -= fx; force.get(bId).y -= fy;
     });
-    ids.forEach(id => {
-      const v = vel.get(id), f = force.get(id);
+    nodes.forEach(node => {
+      const v = vel.get(node.id), f = force.get(node.id);
       v.x = (v.x + f.x) * DAMPING; v.y = (v.y + f.y) * DAMPING;
-      graph.setNodeAttribute(id, "x", graph.getNodeAttribute(id, "x") + v.x);
-      graph.setNodeAttribute(id, "y", graph.getNodeAttribute(id, "y") + v.y);
+      node.x += v.x; node.y += v.y;
     });
   }
-}
-
-// glow-<id> tracks the real node's position exactly; highlight-<id> (the
-// specular dot) sits offset toward the top-left by a fraction of the node's
-// own size, same convention the old canvas radial-gradient highlight used
-// (createRadialGradient(x - r*0.3, y - r*0.3, ...)) -- ghost nodes are never
-// independent layout participants (see layoutGraph's id filter above), only
-// ever repositioned relative to their real node, here and in the drag handler.
-function isGhostNode(id) { return id.startsWith("glow-") || id.startsWith("highlight-"); }
-function syncGhostNodePositions(graph, onlyRealId) {
-  const ids = onlyRealId ? [onlyRealId] : graph.nodes().filter(id => !isGhostNode(id));
-  ids.forEach(id => {
-    if (!graph.hasNode(id)) return;
-    const x = graph.getNodeAttribute(id, "x"), y = graph.getNodeAttribute(id, "y");
-    const size = graph.getNodeAttribute(id, "size") || 8;
-    if (graph.hasNode(`glow-${id}`)) graph.mergeNodeAttributes(`glow-${id}`, { x, y });
-    if (graph.hasNode(`highlight-${id}`)) {
-      graph.mergeNodeAttributes(`highlight-${id}`, { x: x - size * 0.32, y: y - size * 0.32 });
-    }
-  });
 }
 
 /* ════════════════════════════════════════
@@ -1093,181 +1085,6 @@ function detectGpuAdapter() {
   } catch {
     return { available: false, name: null };
   }
-}
-
-// sigma.js has no public setting for WebGL context attributes like
-// powerPreference (checked its source directly) -- but createWebGLContext()
-// is a regular class method, spreading its `options` straight into the
-// native canvas.getContext() call, so overriding it in a subclass is a
-// clean, reliable way in. Module-level (not an instance field) because the
-// base Sigma constructor calls createWebGLContext on itself *during*
-// super(), before a subclass constructor body could set `this.something`.
-//
-// `class X extends Sigma` is built lazily (on first render), not at script
-// top level: `Sigma` comes from a classic cross-origin <script src> CDN tag,
-// and evaluating `extends <undefined>` throws immediately if that hasn't
-// resolved yet by the time this line runs. Some environments don't
-// guarantee classic <script> tags finish executing before the next one
-// starts as strictly as desktop Chrome does -- this makes the ordering
-// assumption go away entirely instead of relying on it.
-let PENDING_POWER_PREFERENCE = "default";
-let PowerPrefSigmaClass = null;
-function getPowerPrefSigmaClass() {
-  if (!PowerPrefSigmaClass) {
-    PowerPrefSigmaClass = class PowerPrefSigma extends Sigma {
-      createWebGLContext(id, options) {
-        return super.createWebGLContext(id, { ...options, powerPreference: PENDING_POWER_PREFERENCE });
-      }
-    };
-  }
-  return PowerPrefSigmaClass;
-}
-
-function resolveRenderMode() {
-  const pref = loadPref().renderMode || "auto";
-  const adapter = detectGpuAdapter();
-  if (pref === "cpu") return { useGpu: false, adapter };
-  // "gpu" and "auto" both prefer GPU when a WebGL context is available at
-  // all; a context-creation failure at actual render time still falls back
-  // to CPU either way (see renderGraph's try/catch) rather than hard-failing.
-  return { useGpu: adapter.available, adapter };
-}
-
-function setActiveRenderer(kind, adapter) {
-  const el = document.getElementById("s_adapterInfo");
-  if (!el) return;
-  const label = kind === "gpu" ? "GPU (WebGL)" : "CPU (Canvas2D)";
-  el.textContent = adapter?.name ? `Active: ${label} · ${adapter.name}` : `Active: ${label}`;
-}
-
-const fpsState = { lastTime: 0, frames: 0 };
-function fpsBadge(container) {
-  let el = document.getElementById("fpsBadge");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "fpsBadge";
-    el.style.cssText = "position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);"
-      + "color:#8cffa0;font:11px ui-monospace,Consolas,monospace;padding:3px 7px;"
-      + "border-radius:6px;pointer-events:none;z-index:10;white-space:nowrap;";
-    container.appendChild(el);
-  }
-  el.style.display = document.getElementById("s_showFps")?.checked ? "" : "none";
-  return el;
-}
-// Called every frame from the existing particle-overlay loop in GPU mode
-// (piggybacking on a loop that already runs, rather than starting a second
-// one just to measure the first) -- reports a rolling FPS/frame-time
-// average every ~500ms rather than a noisy per-frame number.
-function tickFps(el) {
-  if (!el || el.style.display === "none") return;
-  const now = performance.now();
-  fpsState.frames++;
-  const dt = now - fpsState.lastTime;
-  if (dt >= 500) {
-    const fps = (fpsState.frames / dt) * 1000;
-    el.textContent = `${fps.toFixed(0)} fps · ${(dt / fpsState.frames).toFixed(1)} ms/frame`;
-    fpsState.frames = 0;
-    fpsState.lastTime = now;
-  }
-}
-
-// The CPU/software fallback: a deliberately simpler renderer (flat nodes,
-// no glow, static layout -- refit only happens on the next full redraw, not
-// continuously on window resize) rather than a pixel-perfect second copy of
-// the WebGL path. Reuses the same graphology graph + layoutGraph() output,
-// so the two modes are comparing the same computed positions, not different
-// layouts.
-function renderWithCanvas2D(graph, edges, container, tooltip) {
-  const canvasEl = document.createElement("canvas");
-  container.appendChild(canvasEl);
-  const ctx = canvasEl.getContext("2d");
-  const dpr = Math.max(1, window.devicePixelRatio || 1);
-  const w = container.clientWidth, h = container.clientHeight;
-  canvasEl.width = w * dpr; canvasEl.height = h * dpr;
-  canvasEl.style.width = w + "px"; canvasEl.style.height = h + "px";
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-  const realIds = graph.nodes().filter(id => !isGhostNode(id));
-  const xs = realIds.map(id => graph.getNodeAttribute(id, "x"));
-  const ys = realIds.map(id => graph.getNodeAttribute(id, "y"));
-  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-  const pad = 60;
-  const scale = Math.min((w - pad * 2) / Math.max(1, maxX - minX), (h - pad * 2) / Math.max(1, maxY - minY), 3);
-  const offX = pad + Math.max(0, (w - pad * 2 - (maxX - minX) * scale) / 2);
-  const offY = pad + Math.max(0, (h - pad * 2 - (maxY - minY) * scale) / 2);
-  const toScreen = (x, y) => ({ x: (x - minX) * scale + offX, y: (y - minY) * scale + offY });
-
-  const t0 = performance.now();
-  ctx.clearRect(0, 0, w, h);
-  edges.forEach(e => {
-    const from = String(e.src_wallet_id), to = String(e.dst_wallet_id);
-    if (!graph.hasNode(from) || !graph.hasNode(to)) return;
-    const s = toScreen(graph.getNodeAttribute(from, "x"), graph.getNodeAttribute(from, "y"));
-    const t = toScreen(graph.getNodeAttribute(to, "x"), graph.getNodeAttribute(to, "y"));
-    const srcW = WALLETS.find(x => x.wallet_id === e.src_wallet_id);
-    ctx.strokeStyle = GRAPH_TIER_COLOR[riskTier(srcW?.risk_score)] + "55";
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
-  });
-  const nodePositions = {};
-  realIds.forEach(id => {
-    const data = graph.getNodeAttributes(id);
-    const p = toScreen(data.x, data.y);
-    const r = Math.max(3, data.size * scale * 0.5);
-    nodePositions[id] = { ...p, r, data };
-    ctx.beginPath();
-    ctx.fillStyle = data.color;
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx.fill();
-    if (data.label) {
-      ctx.fillStyle = "#EDF6F4";
-      ctx.font = "10px ui-monospace, Consolas, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(data.label, p.x, p.y + r + 12);
-    }
-  });
-  const renderMs = performance.now() - t0;
-  const badge = fpsBadge(container);
-  badge.textContent = `CPU render: ${renderMs.toFixed(1)} ms (static -- no continuous frame loop)`;
-
-  function nodeAt(px, py) {
-    for (const id of realIds) {
-      const n = nodePositions[id];
-      const dx = px - n.x, dy = py - n.y;
-      if (dx * dx + dy * dy <= (n.r + 3) * (n.r + 3)) return id;
-    }
-    return null;
-  }
-  function onMove(evt) {
-    const rect = canvasEl.getBoundingClientRect();
-    const id = nodeAt(evt.clientX - rect.left, evt.clientY - rect.top);
-    if (id) {
-      const data = nodePositions[id].data;
-      tooltip.innerHTML = `<div class="gt-addr">${data.w ? data.w.address : data.label}</div>` + (data.w ? `
-        <div class="gt-row"><span>Type</span><span>${data.w.address_type}</span></div>
-        <div class="gt-row"><span>Risk</span><span>${data.w.risk_score ?? "–"}</span></div>
-        <div class="gt-row"><span>Tx count</span><span>${data.w.tx_count}</span></div>
-        ${data.pr ? `<div class="gt-row"><span>PageRank</span><span>#${data.pr.rank_position}</span></div>` : ""}` : "");
-      tooltip.style.left = evt.clientX + 14 + "px";
-      tooltip.style.top = evt.clientY + 14 + "px";
-      tooltip.classList.add("show");
-      canvasEl.style.cursor = "pointer";
-    } else {
-      tooltip.classList.remove("show");
-      canvasEl.style.cursor = "default";
-    }
-  }
-  function onClick(evt) {
-    const rect = canvasEl.getBoundingClientRect();
-    const id = nodeAt(evt.clientX - rect.left, evt.clientY - rect.top);
-    if (id) openWalletModal(nodePositions[id].data.walletId);
-  }
-  canvasEl.addEventListener("mousemove", onMove);
-  canvasEl.addEventListener("click", onClick);
-  graphCleanup = () => {
-    canvasEl.removeEventListener("mousemove", onMove);
-    canvasEl.removeEventListener("click", onClick);
-  };
 }
 
 function renderSnapshotSelect() {
@@ -1336,67 +1153,41 @@ async function renderGraph() {
       <span class="ri-sub">#${PAGERANK[w.wallet_id].rank_position}</span>
     </div>`).join("") : `<div class="empty-hint">No PageRank data for run ${runId()}.</div>`;
 
-  // Tear down the previous render entirely -- sigma instance, observer,
-  // particle-overlay animation loop, and DOM listeners all get recreated
-  // fresh below.
-  if (sigmaInstance) { sigmaInstance.kill(); sigmaInstance = null; }
-  if (graphResizeObserver) { graphResizeObserver.disconnect(); graphResizeObserver = null; }
-  if (particleRAF) { cancelAnimationFrame(particleRAF); particleRAF = null; }
-  if (graphCleanup) { graphCleanup(); graphCleanup = null; }
+  // Tear down the previous render entirely -- the old GraphRenderer instance
+  // (canvas, label layer, fps badge, listeners) gets recreated fresh below.
+  if (graphRenderer) { graphRenderer.destroy(); graphRenderer = null; }
   container.innerHTML = "";
   tooltip.classList.remove("show");
 
   if (!walletIds.size) { container.innerHTML = `<div class="empty-hint">No graph data for this snapshot.</div>`; return; }
 
-  sigmaGraph = new graphology.MultiDirectedGraph();
-  const maxWeight = Math.max(1, ...edges.map(e => e.edge_weight || 1));
-
-  [...walletIds].forEach(id => {
+  const nodes = [...walletIds].map(id => {
     const w = WALLETS.find(x => x.wallet_id === id);
     const pr = PAGERANK[id];
     const tier = riskTier(w?.risk_score);
     const size = 6 + Math.sqrt(Math.max(1, w?.tx_count || 1)) * 2.4;
-    // Two decorative ghost nodes per real node -- the WebGL equivalent of
-    // the old per-frame canvas gradient (soft glow behind + a bright
-    // specular dot offset toward the top-left), minus the per-frame redraw
-    // cost. Both track the real node's position (see the post-layout sync
-    // and the drag handler below) and are excluded from hit-testing via
-    // their id prefix everywhere a node id is checked.
-    sigmaGraph.addNode(`glow-${id}`, { x: 0, y: 0, size: size * 2.4, color: GRAPH_TIER_GLOW[tier], zIndex: 0, label: null });
-    sigmaGraph.addNode(String(id), {
-      x: 0, y: 0, size, type: "circle", zIndex: 1,
-      color: GRAPH_TIER_COLOR[tier], label: w ? shortAddr(w.address) : `#${id}`,
-      w, pr, walletId: id,
-    });
-    sigmaGraph.addNode(`highlight-${id}`, {
-      x: 0, y: 0, size: Math.max(1.5, size * 0.32), color: "rgba(255,255,255,.6)", zIndex: 2, label: null,
-    });
+    return { id, x: 0, y: 0, size, color: GRAPH_TIER_COLOR[tier], label: w ? shortAddr(w.address) : `#${id}`, w, pr };
   });
-  edges.forEach((e, i) => {
-    const from = String(e.src_wallet_id), to = String(e.dst_wallet_id);
-    if (!sigmaGraph.hasNode(from) || !sigmaGraph.hasNode(to)) return;
+  const nodeIdSet = new Set(nodes.map(n => n.id));
+  const edgePairs = [], edgeObjs = [];
+  edges.forEach(e => {
+    if (!nodeIdSet.has(e.src_wallet_id) || !nodeIdSet.has(e.dst_wallet_id)) return;
+    edgePairs.push([e.src_wallet_id, e.dst_wallet_id]);
     const srcW = WALLETS.find(x => x.wallet_id === e.src_wallet_id);
-    const edgeColor = GRAPH_TIER_COLOR[riskTier(srcW?.risk_score)];
-    sigmaGraph.addEdgeWithKey(`e${i}`, from, to, {
-      type: "arrow", size: 0.8 + (e.edge_weight || 1) / maxWeight * 4.6,
-      // Tinted by the *source* node's risk tier, like the web reference --
-      // sigma's edge programs are single-color (no per-edge gradient), so
-      // this loses the old two-endpoint blend; the moving particles below
-      // still carry the "flow toward target" direction cue.
-      color: edgeColor + "66",
-    });
+    edgeObjs.push({ src: e.src_wallet_id, dst: e.dst_wallet_id, color: GRAPH_TIER_COLOR[riskTier(srcW?.risk_score)], alpha: 0.35 });
   });
 
   // Seeds every node (including the up-to-200 extra WALLETS-only nodes that
   // may have no edges in this slice) with a circular/concentric position and,
   // for n <= SPRING_LAYOUT_NODE_CEILING, runs the real JS spring sim too --
-  // this is the fallback layout below overwrites on top of, not a discarded
-  // step, so isolated nodes always end up somewhere sane either way.
-  layoutGraph(sigmaGraph);
+  // the Rust layout result below overwrites this on top, not a discarded
+  // step, so isolated nodes (and the JS-fallback path) always end up
+  // somewhere sane either way.
+  layoutGraph(nodes, edgePairs);
   // Captured so the Rust layout result below (after an await) always applies
-  // to the graph THIS call built, never to whatever a newer, overlapping
-  // renderGraph() call may have since assigned to the sigmaGraph global.
-  const myGraph = sigmaGraph;
+  // to the node array THIS call built, never to whatever a newer, overlapping
+  // renderGraph() call may have since produced.
+  const myNodes = nodes;
 
   const layoutBadge = document.getElementById("layoutDeviceBadge");
   if (isRunningInTauriApp()) {
@@ -1406,191 +1197,80 @@ async function renderGraph() {
       });
       if (myGeneration !== renderGraphGeneration) return; // superseded while awaiting the Rust layout
       let applied = 0;
+      const byId = new Map(myNodes.map(n => [n.id, n]));
       Object.entries(result.positions).forEach(([walletId, xy]) => {
-        const nodeId = String(walletId);
-        if (myGraph.hasNode(nodeId)) {
-          myGraph.setNodeAttribute(nodeId, "x", xy[0]);
-          myGraph.setNodeAttribute(nodeId, "y", xy[1]);
-          applied++;
-        }
+        const node = byId.get(Number(walletId));
+        if (node) { node.x = xy[0]; node.y = xy[1]; applied++; }
       });
       layoutBadge.textContent = `layout: ${result.device_used} · ${applied}/${result.node_count} nodes · ${result.iterations} iters · ${result.elapsed_ms}ms${result.converged ? "" : " (capped, not converged)"}`;
     } catch (err) {
-      if (myGeneration !== renderGraphGeneration) return; // superseded; don't touch a newer call's badge/graph
+      if (myGeneration !== renderGraphGeneration) return; // superseded; don't touch a newer call's badge
       console.error("run_layout failed, using JS fallback layout:", err);
       layoutBadge.textContent = "layout: JS fallback (Rust command failed -- see console)";
     }
   } else {
     layoutBadge.textContent = "layout: JS (browser preview, no Tauri)";
   }
-  syncGhostNodePositions(myGraph);
+  if (myGeneration !== renderGraphGeneration) return;
 
-  const renderMode = resolveRenderMode();
-  if (!renderMode.useGpu) {
-    renderWithCanvas2D(sigmaGraph, edges, container, tooltip);
-    setActiveRenderer("cpu", renderMode.adapter);
+  const adapter = detectGpuAdapter();
+  if (!adapter.available) {
+    container.innerHTML = `<div class="empty-hint">Graph rendering requires WebGL2, which is not available in this window.</div>`;
     return;
   }
 
+  // Defaults to min(2000, total) unless the user has actually dragged the
+  // slider themselves (userSetNodeCap, set only by its own "input" listener
+  // below) -- otherwise switching from a small graph to a much bigger one
+  // would silently "inherit" the small graph's total as if it were a
+  // deliberate cap, which is confusing (found by testing this exact
+  // sequence: 987-node view, then Full graph, kept showing 987/19119
+  // instead of resetting to 2000/19119).
+  const capSlider = document.getElementById("graphNodeCapSlider");
+  capSlider.min = Math.min(200, myNodes.length);
+  capSlider.max = myNodes.length;
+  if (!userSetNodeCap || Number(capSlider.value) > myNodes.length) {
+    capSlider.value = Math.min(2000, myNodes.length);
+  }
+  const nodeCap = Number(capSlider.value);
+
   try {
-  PENDING_POWER_PREFERENCE = "high-performance";
-  let hoveredNode = null;
-  const PowerPrefSigma = getPowerPrefSigmaClass();
-  sigmaInstance = new PowerPrefSigma(sigmaGraph, container, {
-    zIndex: true,
-    defaultEdgeType: "line",
-    renderEdgeLabels: false,
-    labelColor: { color: "#EDF6F4" },
-    labelFont: "ui-monospace, Consolas, monospace",
-    labelSize: 12,
-    labelWeight: "600",
-    labelRenderedSizeThreshold: 6, // zoom-aware label visibility, same intent as the old transform.k > 0.6 check
-    // Centered below the node (web reference) instead of sigma's default
-    // "to the right of the node" placement -- see drawDiscNodeLabel in
-    // sigma's own source for the function this is modeled on. A stroked
-    // halo behind the fill keeps it legible over edges/particles.
-    defaultDrawNodeLabel: (context, data, settings) => {
-      if (!data.label) return;
-      const size = settings.labelSize, font = settings.labelFont, weight = settings.labelWeight;
-      context.font = `${weight} ${size}px ${font}`;
-      context.textAlign = "center";
-      const tx = data.x, ty = data.y + data.size + size + 4;
-      context.lineWidth = 3;
-      context.strokeStyle = "rgba(7,13,12,.85)";
-      context.strokeText(data.label, tx, ty);
-      context.fillStyle = settings.labelColor.color || "#EDF6F4";
-      context.fillText(data.label, tx, ty);
-      context.textAlign = "left";
-    },
-    nodeReducer: (node, data) => {
-      if (isGhostNode(node)) return data;
-      if (node !== hoveredNode) return data;
-      return { ...data, size: data.size * 1.15, highlighted: true };
-    },
-  });
-
-  // ---- particle-flow overlay: a plain 2D canvas layered on top of sigma's
-  // WebGL canvases, redrawing only the small moving dots every frame. Sigma
-  // itself only re-renders on interaction (camera move, node change), not
-  // continuously -- so the actual graph geometry (the part that matters for
-  // GPU rendering at scale) is never redrawn on a timer, only this cheap
-  // per-edge overlay is.
-  const particleEl = document.createElement("canvas");
-  particleEl.style.cssText = "position:absolute;inset:0;pointer-events:none;";
-  container.appendChild(particleEl);
-  const pctx = particleEl.getContext("2d");
-  const particles = edges.map(() => [Math.random(), (Math.random() * 0.5 + 0.5) % 1]);
-  const dpr = Math.max(1, window.devicePixelRatio || 1);
-
-  function resizeParticleCanvas() {
-    const w = container.clientWidth, h = container.clientHeight;
-    particleEl.width = w * dpr; particleEl.height = h * dpr;
-    particleEl.style.width = w + "px"; particleEl.style.height = h + "px";
-    pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-  resizeParticleCanvas();
-  graphResizeObserver = new ResizeObserver(resizeParticleCanvas);
-  graphResizeObserver.observe(container);
-
-  function drawParticles() {
-    tickFps(fpsBadge(container));
-    const w = container.clientWidth, h = container.clientHeight;
-    pctx.clearRect(0, 0, w, h);
-    edges.forEach((e, i) => {
-      const from = String(e.src_wallet_id), to = String(e.dst_wallet_id);
-      if (!sigmaGraph.hasNode(from) || !sigmaGraph.hasNode(to)) return;
-      const sData = sigmaInstance.getNodeDisplayData(from), tData = sigmaInstance.getNodeDisplayData(to);
-      if (!sData || !tData) return;
-      // getNodeDisplayData returns normalized graph-space coords, not
-      // viewport pixels -- framedGraphToViewport does that last conversion
-      // step (the same one sigma's own internal renderer uses for labels).
-      const s = sigmaInstance.framedGraphToViewport(sData), t = sigmaInstance.framedGraphToViewport(tData);
-      const norm = (e.edge_weight || 1) / maxWeight;
-      const dx = t.x - s.x, dy = t.y - s.y;
-      const pair = particles[i];
-      for (let k = 0; k < pair.length; k++) {
-        let p = pair[k] + 0.0025 + norm * 0.006;
-        if (p > 1) p -= 1;
-        pair[k] = p;
-        const px = s.x + dx * p, py = s.y + dy * p;
-        pctx.save();
-        pctx.fillStyle = "#35E0C7"; pctx.shadowColor = "#35E0C7"; pctx.shadowBlur = 8;
-        pctx.beginPath(); pctx.arc(px, py, 1.6, 0, Math.PI * 2); pctx.fill();
-        pctx.restore();
-      }
+    graphRenderer = new GraphRenderer(container, {
+      nodeCap,
+      showFps: !!loadPref().showFps,
+      onHover: (node, evt) => {
+        if (!node) { tooltip.classList.remove("show"); return; }
+        tooltip.innerHTML = `<div class="gt-addr">${node.w ? node.w.address : node.label}</div>` + (node.w ? `
+          <div class="gt-row"><span>Type</span><span>${node.w.address_type}</span></div>
+          <div class="gt-row"><span>Risk</span><span>${node.w.risk_score ?? "–"}</span></div>
+          <div class="gt-row"><span>Tx count</span><span>${node.w.tx_count}</span></div>
+          ${node.pr ? `<div class="gt-row"><span>PageRank</span><span>#${node.pr.rank_position}</span></div>` : ""}` : "");
+        tooltip.style.left = evt.clientX + 14 + "px";
+        tooltip.style.top = evt.clientY + 14 + "px";
+        tooltip.classList.add("show");
+      },
+      onClick: node => openWalletModal(node.id),
     });
-    particleRAF = requestAnimationFrame(drawParticles);
-  }
-  drawParticles();
-
-  // ---- hover tooltip + click-to-open-modal
-  function showTooltip(node, evt) {
-    const data = sigmaGraph.getNodeAttributes(node);
-    tooltip.innerHTML = `<div class="gt-addr">${data.w ? data.w.address : data.label}</div>` + (data.w ? `
-      <div class="gt-row"><span>Type</span><span>${data.w.address_type}</span></div>
-      <div class="gt-row"><span>Risk</span><span>${data.w.risk_score ?? "–"}</span></div>
-      <div class="gt-row"><span>Tx count</span><span>${data.w.tx_count}</span></div>
-      ${data.pr ? `<div class="gt-row"><span>PageRank</span><span>#${data.pr.rank_position}</span></div>` : ""}` : "");
-    tooltip.style.left = evt.clientX + 14 + "px";
-    tooltip.style.top = evt.clientY + 14 + "px";
-    tooltip.classList.add("show");
-  }
-  sigmaInstance.on("enterNode", ({ node, event }) => {
-    if (isGhostNode(node)) return;
-    hoveredNode = node;
-    sigmaInstance.refresh({ skipIndexation: true });
-    showTooltip(node, event.original);
-  });
-  sigmaInstance.on("leaveNode", () => {
-    hoveredNode = null;
-    sigmaInstance.refresh({ skipIndexation: true });
-    tooltip.classList.remove("show");
-  });
-  container.addEventListener("mousemove", (evt) => {
-    if (hoveredNode) { tooltip.style.left = evt.clientX + 14 + "px"; tooltip.style.top = evt.clientY + 14 + "px"; }
-  });
-  sigmaInstance.on("clickNode", ({ node }) => {
-    if (isGhostNode(node)) return;
-    openWalletModal(sigmaGraph.getNodeAttribute(node, "walletId"));
-  });
-  graphCleanup = () => { /* container.innerHTML = "" above already tears down sigma's + the particle canvas's DOM/listeners */ };
-
-  // ---- drag-to-move-node (see sigma.js's own mouse-manipulations example).
-  // Ghost nodes are tiny/offset hit targets of their own -- ignore a
-  // down-press on one entirely rather than let it start "dragging" the
-  // glow/highlight dot away from the node it belongs to.
-  let draggedNode = null;
-  sigmaInstance.on("downNode", (e) => { if (!isGhostNode(e.node)) draggedNode = e.node; });
-  sigmaInstance.on("moveBody", ({ event }) => {
-    if (!draggedNode) return;
-    const pos = sigmaInstance.viewportToGraph(event);
-    sigmaGraph.setNodeAttribute(draggedNode, "x", pos.x);
-    sigmaGraph.setNodeAttribute(draggedNode, "y", pos.y);
-    syncGhostNodePositions(sigmaGraph, draggedNode);
-    event.preventSigmaDefault();
-    event.original.preventDefault();
-    event.original.stopPropagation();
-  });
-  const stopDrag = () => { draggedNode = null; };
-  sigmaInstance.on("upNode", stopDrag);
-  sigmaInstance.on("upStage", stopDrag);
-
-  setActiveRenderer("gpu", renderMode.adapter);
+    graphRenderer.setData(myNodes, edgeObjs);
+    graphRenderer.start();
+    document.getElementById("nodeCapIndicator").textContent = `showing ${Math.min(nodeCap, myNodes.length)} of ${myNodes.length}`;
   } catch (err) {
-    // Never hard-fail on a bad/missing GPU -- degrade to the CPU path with
-    // a visible notice instead of leaving a blank canvas.
-    console.error("WebGL graph render failed, falling back to CPU:", err);
-    toast("GPU rendering unavailable — using CPU renderer instead", "error");
-    if (sigmaInstance) { sigmaInstance.kill(); sigmaInstance = null; }
-    container.innerHTML = "";
-    renderWithCanvas2D(sigmaGraph, edges, container, tooltip);
-    setActiveRenderer("cpu", renderMode.adapter);
+    console.error("WebGL2 graph render failed:", err);
+    container.innerHTML = `<div class="empty-hint">Graph rendering requires WebGL2, which is not available in this window.</div>`;
+    toast("Could not initialize the graph renderer (WebGL2 unavailable)", "error");
   }
 }
 
 document.getElementById("snapshotSelect").addEventListener("change", renderGraph);
 document.getElementById("graphRedrawBtn").addEventListener("click", renderGraph);
 document.getElementById("graphEdgeLimitSelect").addEventListener("change", renderGraph);
+document.getElementById("graphNodeCapSlider").addEventListener("input", e => {
+  userSetNodeCap = true;
+  if (!graphRenderer) return;
+  const cap = Number(e.target.value);
+  graphRenderer.setNodeCap(cap);
+  document.getElementById("nodeCapIndicator").textContent = `showing ${Math.min(cap, graphRenderer.nodesAll.length)} of ${graphRenderer.nodesAll.length}`;
+});
 document.getElementById("graphBenchmarkBtn").addEventListener("click", async () => {
   const resultEl = document.getElementById("layoutBenchmarkResult");
   if (!isRunningInTauriApp()) {
@@ -1643,24 +1323,18 @@ function applyPrefs() {
     document.getElementById("s_apiBase").value = p.apiBase || DEFAULT_API_BASE;
   }
 
-  document.getElementById("s_renderMode").value = p.renderMode || "auto";
   document.getElementById("s_showFps").checked = !!p.showFps;
   const adapter = detectGpuAdapter();
   document.getElementById("s_adapterInfo").textContent = adapter.available
     ? `Detected: ${adapter.name}`
-    : "No WebGL-capable GPU detected -- CPU only";
+    : "WebGL2 not available in this window -- the graph view will not render";
 
   refreshApiKeySection();
 }
 
-document.getElementById("s_renderMode").addEventListener("change", e => {
-  const p = loadPref(); p.renderMode = e.target.value; savePref(p);
-  if (document.getElementById("view-graph").classList.contains("active")) renderGraph();
-});
 document.getElementById("s_showFps").addEventListener("change", e => {
   const p = loadPref(); p.showFps = e.target.checked; savePref(p);
-  const badge = document.getElementById("fpsBadge");
-  if (badge) badge.style.display = e.target.checked ? "" : "none";
+  if (graphRenderer) graphRenderer.setShowFps(e.target.checked);
 });
 
 /* ---- Etherscan API key: only meaningful inside the desktop app, since the
