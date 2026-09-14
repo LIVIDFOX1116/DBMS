@@ -400,17 +400,15 @@ impl<'a> GpuLayout<'a> {
 mod tests {
     use super::*;
 
-    fn small_test_graph() -> (Graph, Vec<[f32; 2]>) {
-        // Deterministic 50-node graph, ~2 edges/node -- small enough to run
-        // fast in CI, large enough that repulsion/attraction both matter.
-        let num_nodes = 50u32;
+    /// Deterministic ring-plus-chord graph, ~2 edges/node -- no RNG
+    /// dependency, so a test failure is reproducible bit-for-bit.
+    fn test_graph(num_nodes: u32) -> (Graph, Vec<[f32; 2]>) {
         let mut edges = Vec::new();
         for i in 0..num_nodes {
             edges.push((i, (i + 1) % num_nodes));
             edges.push((i, (i + 7) % num_nodes));
         }
         let graph = Graph::from_edges(num_nodes, &edges);
-        // Deterministic initial layout (no RNG dependency) -- a circle.
         let positions = (0..num_nodes)
             .map(|i| {
                 let theta = (i as f32) / (num_nodes as f32) * std::f32::consts::TAU;
@@ -418,6 +416,16 @@ mod tests {
             })
             .collect();
         (graph, positions)
+    }
+
+    fn small_test_graph() -> (Graph, Vec<[f32; 2]>) {
+        // Small enough to run fast in CI, large enough that repulsion and
+        // attraction both matter. NOTE: at 50 nodes this is smaller than
+        // the shaders' workgroup_size(256), so it dispatches into a single
+        // workgroup and never exercises multi-workgroup global_invocation_id
+        // math -- see cpu_and_gpu_layouts_agree_at_multi_workgroup_scale
+        // below for the case that does.
+        test_graph(50)
     }
 
     #[test]
@@ -460,6 +468,42 @@ mod tests {
                 dist < TOLERANCE,
                 "node {i}: CPU {c:?} vs GPU {g:?} diverged by {dist} (tolerance {TOLERANCE}) -- \
                  a silently wrong GPU kernel would produce false analytical conclusions, so this must not be loosened casually"
+            );
+        }
+    }
+
+    #[test]
+    fn cpu_and_gpu_layouts_agree_at_multi_workgroup_scale() {
+        // The 50-node case above dispatches into a single workgroup
+        // (workgroup_size(256) in the shaders) and so never exercises
+        // global_invocation_id math across a workgroup boundary. 600 nodes
+        // forces 3 workgroups (ceil(600/256)) -- a wrong boundary
+        // computation here would show up as divergence isolated to nodes
+        // near a 256-multiple index, not spread evenly, which is exactly
+        // the class of bug the 50-node test structurally cannot catch.
+        let Some((device, queue, adapter_name)) = create_gpu_device(None) else {
+            eprintln!("SKIPPED: no GPU adapter available on this machine for the parity test");
+            return;
+        };
+        eprintln!("multi-workgroup parity test running against: {adapter_name}");
+
+        let (graph, positions) = test_graph(600);
+        let params = LayoutParams::default();
+
+        let mut cpu = CpuLayout::new(&graph, positions.clone(), params);
+        cpu.run_batch(10);
+
+        let gpu = GpuLayout::new(&device, &queue, &graph, &positions, &params);
+        gpu.run_iterations(10);
+        let gpu_positions = gpu.readback_positions();
+
+        const TOLERANCE: f32 = 1.0;
+        for (i, (c, g)) in cpu.positions().iter().zip(gpu_positions.iter()).enumerate() {
+            let dist = ((c[0] - g[0]).powi(2) + (c[1] - g[1]).powi(2)).sqrt();
+            assert!(
+                dist < TOLERANCE,
+                "node {i} (workgroup {}): CPU {c:?} vs GPU {g:?} diverged by {dist} (tolerance {TOLERANCE})",
+                i / 256
             );
         }
     }
