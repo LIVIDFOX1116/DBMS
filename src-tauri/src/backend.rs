@@ -193,9 +193,20 @@ pub fn spawn_backend(api_key: &str) -> Result<BackendHandle, String> {
         .current_dir(&cwd)
         .env("TXGRAPH_ETHERSCAN_API_KEY", api_key)
         .env("TXGRAPH_INTERNAL_TOKEN", &internal_token)
-        .env("TXGRAPH_API_MODE", std::env::var("TXGRAPH_API_MODE").unwrap_or_else(|_| "mock".into()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Only pass TXGRAPH_API_MODE through if *this* process actually has it
+    // set (e.g. `TXGRAPH_API_MODE=live cargo tauri dev`) -- unconditionally
+    // defaulting to "mock" here, as this used to, injects that value into
+    // the child's environment before it starts, which pre-empts the
+    // child's own ingestion.config::load_dotenv() (load_dotenv doesn't
+    // override an already-set var) from ever applying the real .env file's
+    // TXGRAPH_API_MODE. Found by testing: flipping .env to "live" had no
+    // effect on the actual desktop app, only on bare `uvicorn` runs that
+    // never went through this spawn path.
+    if let Ok(mode) = std::env::var("TXGRAPH_API_MODE") {
+        cmd.env("TXGRAPH_API_MODE", mode);
+    }
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
