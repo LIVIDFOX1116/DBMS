@@ -53,4 +53,13 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D12",
     "Win32_Foundation",
+    # Job Objects (see backend.rs's spawn_backend): ties the backend child's
+    # lifetime to this process's, so a hard kill (Task Manager "End task",
+    # a crash, no Drop impl runs) can't orphan it the way it could before --
+    # confirmed as a real, currently-live condition on this machine (found
+    # two pre-existing orphaned backend processes from earlier crashes/hard
+    # kills, one of them across the whole session).
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Security",
 ] }
