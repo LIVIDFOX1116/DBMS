@@ -2,7 +2,10 @@ mod backend;
 mod commands;
 mod gpu;
 mod keychain;
-mod layout;
+// pub so `examples/bench_real_graph.rs` (a real-graph counterpart to
+// gpu-bench, run manually against a live backend) can call it directly
+// instead of duplicating the settle/benchmark logic a second time.
+pub mod layout;
 
 use commands::AppState;
 use std::sync::Mutex;

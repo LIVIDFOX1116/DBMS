@@ -528,7 +528,14 @@ table.dtable a { color: var(--accent-glow); }
           <div class="graph-main-toolbar">
             <select id="snapshotSelect"></select>
             <input type="number" id="runIdInput" min="1" value="1" style="width:90px;" title="Run ID (for PageRank ranking below)"/>
+            <select id="graphEdgeLimitSelect" title="How many edges to load and lay out">
+              <option value="1000">1,000 edges (fast)</option>
+              <option value="5000">5,000 edges</option>
+              <option value="1000000">Full graph</option>
+            </select>
             <button class="btn" id="graphRedrawBtn">↻ Redraw</button>
+            <button class="btn" id="graphBenchmarkBtn" title="Compare CPU single-thread, CPU rayon, and GPU on this snapshot's full graph">⚡ Benchmark layout</button>
+            <span class="mono" id="layoutDeviceBadge" style="font-size:11px;color:var(--muted,#7C948F);"></span>
             <div class="graph-legend-inline">
               <span>Color = risk tier</span>
               <span>Size = tx count</span>
@@ -552,6 +559,10 @@ table.dtable a { color: var(--accent-glow); }
           <div>
             <div class="side-title">Top by PageRank</div>
             <div class="row-list" id="graphTopWallets"></div>
+          </div>
+          <div>
+            <div class="side-title">Layout benchmark (this snapshot's full graph)</div>
+            <div id="layoutBenchmarkResult" class="empty-hint">Click "Benchmark layout" above to run CPU single-thread, CPU rayon, and GPU on the real graph and compare.</div>
           </div>
           <div>
             <div class="side-title">Full PageRank ranking</div>
@@ -1277,9 +1288,10 @@ async function renderGraph() {
   const snapshotId = document.getElementById("snapshotSelect").value || (SNAPSHOTS[0]?.snapshot_id ?? 1);
   document.getElementById("runIdInput").value = runId();
 
+  const edgeLimit = Number(document.getElementById("graphEdgeLimitSelect").value) || 1000;
   let edges = [];
   try {
-    edges = await api(`/snapshots/${snapshotId}/edges`, { limit: 1000 });
+    edges = await api(`/snapshots/${snapshotId}/edges`, { limit: edgeLimit });
   } catch (err) {
     container.innerHTML = "";
     toast(`Could not load graph edges: ${err.message}`, "error");
@@ -1360,7 +1372,36 @@ async function renderGraph() {
     });
   });
 
+  // Seeds every node (including the up-to-200 extra WALLETS-only nodes that
+  // may have no edges in this slice) with a circular/concentric position and,
+  // for n <= SPRING_LAYOUT_NODE_CEILING, runs the real JS spring sim too --
+  // this is the fallback layout below overwrites on top of, not a discarded
+  // step, so isolated nodes always end up somewhere sane either way.
   layoutGraph(sigmaGraph);
+
+  const layoutBadge = document.getElementById("layoutDeviceBadge");
+  if (isRunningInTauriApp()) {
+    try {
+      const result = await window.__TAURI__.core.invoke("run_layout", {
+        snapshotId: Number(snapshotId), maxEdges: edgeLimit, device: "gpu",
+      });
+      let applied = 0;
+      Object.entries(result.positions).forEach(([walletId, xy]) => {
+        const nodeId = String(walletId);
+        if (sigmaGraph.hasNode(nodeId)) {
+          sigmaGraph.setNodeAttribute(nodeId, "x", xy[0]);
+          sigmaGraph.setNodeAttribute(nodeId, "y", xy[1]);
+          applied++;
+        }
+      });
+      layoutBadge.textContent = `layout: ${result.device_used} · ${applied}/${result.node_count} nodes · ${result.iterations} iters · ${result.elapsed_ms}ms${result.converged ? "" : " (capped, not converged)"}`;
+    } catch (err) {
+      console.error("run_layout failed, using JS fallback layout:", err);
+      layoutBadge.textContent = "layout: JS fallback (Rust command failed -- see console)";
+    }
+  } else {
+    layoutBadge.textContent = "layout: JS (browser preview, no Tauri)";
+  }
   syncGhostNodePositions(sigmaGraph);
 
   const renderMode = resolveRenderMode();
@@ -1528,6 +1569,34 @@ async function renderGraph() {
 
 document.getElementById("snapshotSelect").addEventListener("change", renderGraph);
 document.getElementById("graphRedrawBtn").addEventListener("click", renderGraph);
+document.getElementById("graphEdgeLimitSelect").addEventListener("change", renderGraph);
+document.getElementById("graphBenchmarkBtn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("layoutBenchmarkResult");
+  if (!isRunningInTauriApp()) {
+    resultEl.textContent = "Benchmark requires the desktop app -- not available in a plain browser preview.";
+    return;
+  }
+  const snapshotId = document.getElementById("snapshotSelect").value || (SNAPSHOTS[0]?.snapshot_id ?? 1);
+  resultEl.textContent = "Running CPU single-thread, CPU rayon, and GPU on the full graph -- this can take a while...";
+  try {
+    const result = await window.__TAURI__.core.invoke("benchmark_layout", {
+      snapshotId: Number(snapshotId), maxEdges: 1000000,
+    });
+    resultEl.innerHTML = `
+      <div style="font-size:11px;margin-bottom:6px;">n=${result.node_count} nodes, ${result.edge_count} edges</div>
+      <table class="mono" style="width:100%;font-size:11px;border-collapse:collapse;">
+        <tr><th style="text-align:left;">Device</th><th style="text-align:right;">Per-iter</th><th style="text-align:right;">Settle</th></tr>
+        ${result.rows.map(r => `
+          <tr>
+            <td>${r.label}</td>
+            <td style="text-align:right;">${r.per_iter_ms.toFixed(2)}ms</td>
+            <td style="text-align:right;">${r.converged ? "" : ">"}${r.settle_ms.toFixed(0)}ms (${r.settle_iterations}it)${r.readback_ms != null ? `<br><span style="color:var(--muted,#7C948F);">readback: ${r.readback_ms.toFixed(2)}ms</span>` : ""}</td>
+          </tr>`).join("")}
+      </table>`;
+  } catch (err) {
+    resultEl.textContent = `Benchmark failed: ${err.message || err}`;
+  }
+});
 document.getElementById("runIdInput").addEventListener("change", async e => {
   const p = loadPref(); p.runId = Number(e.target.value) || 1; savePref(p);
   document.getElementById("s_runId").value = p.runId;
