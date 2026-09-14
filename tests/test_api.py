@@ -2,13 +2,23 @@
 Tests for api/main.py in mock mode -- this is the contract the frontend is
 built against (docs/API_CONTRACT.md), so every shape here matters.
 
-Runs against api/mock_data.json, not Postgres -- TXGRAPH_API_MODE is unset,
-which defaults to "mock" (api/main.py:using_mock()).
+Runs against api/mock_data.json, not Postgres. Forced explicitly, not just
+relying on TXGRAPH_API_MODE being unset -- a developer's own .env can (and,
+on the machine this was found on, does) set it to "live" for their own
+Postgres-backed dev work, which would otherwise leak in via
+ingestion.config's load_dotenv() and silently point this suite at a real
+database. Must be set before importing api.main (transitively imports
+ingestion.config, which calls load_dotenv()) -- load_dotenv() doesn't
+override an already-set env var, so this wins.
 """
-from fastapi.testclient import TestClient
+import os
 
-from api import main as api_main
-from api.main import app, load_mock
+os.environ["TXGRAPH_API_MODE"] = "mock"
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from api import main as api_main  # noqa: E402
+from api.main import app, load_mock  # noqa: E402
 
 client = TestClient(app)
 

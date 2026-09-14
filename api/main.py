@@ -197,6 +197,39 @@ def get_cluster(cluster_id: int):
         conn.close()
 
 
+@app.get("/cluster-membership")
+def cluster_membership(cluster_ids: str):
+    """wallet_id -> [cluster_id, ...] for the given clusters, in one round
+    trip. Replaces a frontend loop that called /clusters/{id}/members once
+    per cluster (100 requests on every dashboard load against real data --
+    invisible against mock's single cluster, ~48s against a real DB)."""
+    try:
+        ids = [int(x) for x in cluster_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(422, "cluster_ids must be a comma-separated list of integers")
+    if not ids:
+        return {}
+    if using_mock():
+        result: dict[int, list[int]] = {}
+        for c in load_mock()["clusters"]:
+            if c["cluster_id"] not in ids:
+                continue
+            for m in c.get("members", []):
+                result.setdefault(m["wallet_id"], []).append(c["cluster_id"])
+        return result
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT wallet_id, array_agg(cluster_id ORDER BY cluster_id)
+                   FROM cluster_member WHERE cluster_id = ANY(%s) GROUP BY wallet_id""",
+                (ids,),
+            )
+            return {wallet_id: member_cluster_ids for wallet_id, member_cluster_ids in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 @app.get("/clusters/{cluster_id}/members")
 def cluster_members(cluster_id: int):
     if using_mock():
