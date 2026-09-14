@@ -20,7 +20,7 @@ use rand_pcg::Pcg64;
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
-const SIZES: [u32; 4] = [1_000, 10_000, 50_000, 200_000];
+const SIZES: [u32; 7] = [1_000, 2_000, 4_000, 6_000, 10_000, 50_000, 200_000];
 // Matches this project's own case-study snapshot (35,756 edges / 19,119
 // vertices from docs/benchmark_results.md) rather than an arbitrary density.
 const EDGE_RATIO: f32 = 1.87;
