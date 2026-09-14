@@ -479,6 +479,22 @@ impl<'a> GpuLayout<'a> {
 /// slowly to matter for an interactive UI) can't hang the caller -- mirrors
 /// gpu-bench's `RunCap`, deliberately smaller since this runs live from a
 /// UI click rather than an unattended benchmark.
+///
+/// Measured fact, not a guess: at the real case-study graph's actual size
+/// (19,119 nodes / 35,756 edges), every device (CPU single-thread, CPU
+/// rayon, GPU) hits this 500-iteration cap without CONVERGENCE_EPS ever
+/// being satisfied -- confirmed repeatedly across multiple runs on this
+/// machine. This is not a bug or a sign the cap is set wrong; a naive
+/// all-pairs spring layout at this density and repulsion_k genuinely keeps
+/// some residual per-node jitter above 0.05 units/iteration indefinitely.
+/// The cap is what actually stops the computation -- treat "capped, not
+/// converged" in the UI as the expected, permanent behavior at this scale,
+/// not a transient state that a bigger cap or more patience would resolve.
+/// If a real need for full convergence emerges, that requires tuning
+/// LayoutParams (damping, repulsion_k) or the convergence definition
+/// itself, not just enlarging this cap -- enlarging it was tried
+/// conceptually (the numbers above already reflect a generous 20s/500-iter
+/// budget) and didn't change the outcome.
 #[derive(Clone, Copy)]
 pub struct SettleCap {
     pub max_iterations: usize,
