@@ -77,6 +77,8 @@ pub fn run() {
             commands::clear_api_key,
             commands::test_api_key,
             commands::detect_gpus,
+            commands::run_layout,
+            commands::benchmark_layout,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

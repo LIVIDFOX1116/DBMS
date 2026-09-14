@@ -18,6 +18,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use rayon::prelude::*;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +71,48 @@ impl Graph {
     }
 }
 
+fn dense_index(id: i64, index_of: &mut HashMap<i64, u32>, index_to_id: &mut Vec<i64>) -> u32 {
+    if let Some(&idx) = index_of.get(&id) {
+        idx
+    } else {
+        let idx = index_to_id.len() as u32;
+        index_of.insert(id, idx);
+        index_to_id.push(id);
+        idx
+    }
+}
+
+/// Remaps arbitrary external ids (e.g. Postgres `wallet_id`, which is sparse
+/// and not 0-based) to the dense 0..n indices `Graph` requires. Returns the
+/// inverse mapping (index -> original id) so callers can translate computed
+/// positions back to whatever key the caller's data is keyed by. First-seen
+/// order, so the same edge list always produces the same mapping.
+pub fn build_graph_from_id_pairs(edges: &[(i64, i64)]) -> (Graph, Vec<i64>) {
+    let mut index_of = HashMap::new();
+    let mut index_to_id = Vec::new();
+    let mut dense_edges = Vec::with_capacity(edges.len());
+    for &(a, b) in edges {
+        let ia = dense_index(a, &mut index_of, &mut index_to_id);
+        let ib = dense_index(b, &mut index_of, &mut index_to_id);
+        dense_edges.push((ia, ib));
+    }
+    let graph = Graph::from_edges(index_to_id.len() as u32, &dense_edges);
+    (graph, index_to_id)
+}
+
+/// Deterministic starting layout (a circle) -- same shape the JS fallback
+/// (`layoutGraph` in dashboard.html) seeds from, so a GPU/CPU run and the JS
+/// fallback aren't visually jarring if a caller switches between them.
+pub fn initial_circle_positions(n: usize) -> Vec<[f32; 2]> {
+    (0..n.max(1))
+        .map(|i| {
+            let theta = (i as f32 / n.max(1) as f32) * std::f32::consts::TAU;
+            [theta.cos() * 500.0, theta.sin() * 500.0]
+        })
+        .take(n)
+        .collect()
+}
+
 #[inline]
 fn force_for_node(i: usize, positions: &[[f32; 2]], graph: &Graph, p: &LayoutParams) -> [f32; 2] {
     let pi = positions[i];
@@ -98,6 +142,17 @@ fn force_for_node(i: usize, positions: &[[f32; 2]], graph: &Graph, p: &LayoutPar
     f
 }
 
+/// Which CPU code path `CpuLayout::step` takes. `Multi` is the "CPU
+/// (multi-threaded)" device choice in the settings UI (step 3); `Single` only
+/// exists so the benchmark comparison (see `run_benchmark`) can show what
+/// rayon is actually buying over a plain loop, on the real graph, not just
+/// gpu-bench's synthetic one.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CpuMode {
+    Single,
+    Multi,
+}
+
 /// CPU reference implementation -- also the "CPU (multi-threaded)" device
 /// choice in the settings UI (step 3), not just a test fixture.
 pub struct CpuLayout<'g> {
@@ -106,12 +161,24 @@ pub struct CpuLayout<'g> {
     positions: Vec<[f32; 2]>,
     velocities: Vec<[f32; 2]>,
     forces: Vec<[f32; 2]>,
+    mode: CpuMode,
 }
 
 impl<'g> CpuLayout<'g> {
+    /// Defaults to `CpuMode::Multi` -- existing callers (including every
+    /// test written before `CpuMode` existed) get the same behavior as before.
+    /// Only exercised by tests today (production code goes through
+    /// `run_cpu_to_settle`/`run_benchmark`, which need to pick the mode
+    /// explicitly) -- kept as the obvious constructor for any future direct
+    /// caller that doesn't care about mode.
+    #[allow(dead_code)]
     pub fn new(graph: &'g Graph, initial_positions: Vec<[f32; 2]>, params: LayoutParams) -> Self {
+        Self::with_mode(graph, initial_positions, params, CpuMode::Multi)
+    }
+
+    pub fn with_mode(graph: &'g Graph, initial_positions: Vec<[f32; 2]>, params: LayoutParams, mode: CpuMode) -> Self {
         let n = initial_positions.len();
-        Self { graph, params, positions: initial_positions, velocities: vec![[0.0; 2]; n], forces: vec![[0.0; 2]; n] }
+        Self { graph, params, positions: initial_positions, velocities: vec![[0.0; 2]; n], forces: vec![[0.0; 2]; n], mode }
     }
 
     pub fn positions(&self) -> &[[f32; 2]] {
@@ -123,10 +190,19 @@ impl<'g> CpuLayout<'g> {
         let positions = &self.positions;
         let graph = self.graph;
         let params = &self.params;
-        self.forces
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, f)| *f = force_for_node(i, positions, graph, params));
+        match self.mode {
+            CpuMode::Multi => {
+                self.forces
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(i, f)| *f = force_for_node(i, positions, graph, params));
+            }
+            CpuMode::Single => {
+                for i in 0..self.forces.len() {
+                    self.forces[i] = force_for_node(i, positions, graph, params);
+                }
+            }
+        }
 
         let mut max_disp = 0f32;
         for i in 0..self.positions.len() {
@@ -141,6 +217,9 @@ impl<'g> CpuLayout<'g> {
         max_disp
     }
 
+    /// Test-only convenience today -- production code uses
+    /// `run_cpu_to_settle`'s convergence loop instead of a fixed batch.
+    #[allow(dead_code)]
     pub fn run_batch(&mut self, iterations: usize) -> f32 {
         let mut last = 0.0;
         for _ in 0..iterations {
@@ -396,6 +475,163 @@ impl<'a> GpuLayout<'a> {
     }
 }
 
+/// Bounds a settle loop so a graph that never converges (or converges too
+/// slowly to matter for an interactive UI) can't hang the caller -- mirrors
+/// gpu-bench's `RunCap`, deliberately smaller since this runs live from a
+/// UI click rather than an unattended benchmark.
+#[derive(Clone, Copy)]
+pub struct SettleCap {
+    pub max_iterations: usize,
+    pub max_wall_clock: Duration,
+}
+
+impl Default for SettleCap {
+    fn default() -> Self {
+        Self { max_iterations: 500, max_wall_clock: Duration::from_secs(20) }
+    }
+}
+
+const CONVERGENCE_EPS: f32 = 0.05;
+
+pub struct SettleOutcome {
+    pub positions: Vec<[f32; 2]>,
+    pub iterations: usize,
+    pub elapsed: Duration,
+    pub converged: bool,
+}
+
+/// Runs `CpuLayout` until max per-node displacement drops below
+/// `CONVERGENCE_EPS` or `cap` is hit, whichever first -- same convergence
+/// definition gpu-bench used, so settle numbers here are comparable to it.
+pub fn run_cpu_to_settle(graph: &Graph, initial_positions: Vec<[f32; 2]>, params: LayoutParams, mode: CpuMode, cap: SettleCap) -> SettleOutcome {
+    let mut layout = CpuLayout::with_mode(graph, initial_positions, params, mode);
+    let t0 = Instant::now();
+    let mut iterations = 0;
+    let mut converged = false;
+    while iterations < cap.max_iterations && t0.elapsed() < cap.max_wall_clock {
+        let max_disp = layout.step();
+        iterations += 1;
+        if max_disp < CONVERGENCE_EPS {
+            converged = true;
+            break;
+        }
+    }
+    SettleOutcome { positions: layout.positions().to_vec(), iterations, elapsed: t0.elapsed(), converged }
+}
+
+/// GPU equivalent of `run_cpu_to_settle` -- batches iterations in VRAM with
+/// one readback per batch (not per iteration) to check convergence, exactly
+/// the "periodic, not every frame" pattern gpu-bench validated.
+pub fn run_gpu_to_settle(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    graph: &Graph,
+    initial_positions: &[[f32; 2]],
+    params: LayoutParams,
+    cap: SettleCap,
+) -> SettleOutcome {
+    let gpu = GpuLayout::new(device, queue, graph, initial_positions, &params);
+    const BATCH: usize = 20;
+    let t0 = Instant::now();
+    let mut iterations = 0;
+    let mut converged = false;
+    let mut prev: Option<Vec<[f32; 2]>> = None;
+    let mut last_positions = initial_positions.to_vec();
+    while iterations < cap.max_iterations && t0.elapsed() < cap.max_wall_clock {
+        gpu.run_iterations(BATCH);
+        iterations += BATCH;
+        let positions = gpu.readback_positions();
+        if let Some(prev_positions) = &prev {
+            let max_disp = positions
+                .iter()
+                .zip(prev_positions.iter())
+                .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt())
+                .fold(0f32, f32::max);
+            if max_disp / (BATCH as f32) < CONVERGENCE_EPS {
+                converged = true;
+                last_positions = positions;
+                break;
+            }
+        }
+        last_positions = positions.clone();
+        prev = Some(positions);
+    }
+    SettleOutcome { positions: last_positions, iterations, elapsed: t0.elapsed(), converged }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct BenchRow {
+    pub label: String,
+    pub per_iter_ms: f64,
+    pub settle_ms: f64,
+    pub settle_iterations: usize,
+    pub converged: bool,
+    pub readback_ms: Option<f64>,
+}
+
+/// The real-graph counterpart to gpu-bench: same methodology (steady-state
+/// per-iteration timing from a fresh warmed-up instance, settle timing from
+/// another fresh instance, GPU readback measured separately from compute),
+/// run against whatever graph the caller passes in rather than a synthetic
+/// one. `timing_iterations` mirrors gpu-bench's `TIMING_ITERATIONS`.
+pub fn run_benchmark(
+    graph: &Graph,
+    initial_positions: &[[f32; 2]],
+    params: LayoutParams,
+    gpu: Option<(&wgpu::Device, &wgpu::Queue, &str)>,
+    timing_iterations: usize,
+    cap: SettleCap,
+) -> Vec<BenchRow> {
+    let mut rows = Vec::new();
+
+    let mut bench_cpu = |label: String, mode: CpuMode| {
+        let mut warm = CpuLayout::with_mode(graph, initial_positions.to_vec(), params, mode);
+        warm.step();
+        let mut timed = CpuLayout::with_mode(graph, initial_positions.to_vec(), params, mode);
+        let t0 = Instant::now();
+        for _ in 0..timing_iterations {
+            timed.step();
+        }
+        let per_iter_ms = t0.elapsed().as_secs_f64() * 1000.0 / timing_iterations as f64;
+
+        let outcome = run_cpu_to_settle(graph, initial_positions.to_vec(), params, mode, cap);
+        rows.push(BenchRow {
+            label,
+            per_iter_ms,
+            settle_ms: outcome.elapsed.as_secs_f64() * 1000.0,
+            settle_iterations: outcome.iterations,
+            converged: outcome.converged,
+            readback_ms: None,
+        });
+    };
+    bench_cpu("CPU single-thread".to_string(), CpuMode::Single);
+    bench_cpu(format!("CPU rayon ({}T)", rayon::current_num_threads()), CpuMode::Multi);
+
+    if let Some((device, queue, name)) = gpu {
+        let warm = GpuLayout::new(device, queue, graph, initial_positions, &params);
+        warm.run_iterations(1);
+        let timed = GpuLayout::new(device, queue, graph, initial_positions, &params);
+        let t0 = Instant::now();
+        timed.run_iterations(timing_iterations);
+        let per_iter_ms = t0.elapsed().as_secs_f64() * 1000.0 / timing_iterations as f64;
+        let readback_t0 = Instant::now();
+        let _ = timed.readback_positions();
+        let readback_ms = readback_t0.elapsed().as_secs_f64() * 1000.0;
+
+        let outcome = run_gpu_to_settle(device, queue, graph, initial_positions, params, cap);
+        rows.push(BenchRow {
+            label: format!("GPU ({name})"),
+            per_iter_ms,
+            settle_ms: outcome.elapsed.as_secs_f64() * 1000.0,
+            settle_iterations: outcome.iterations,
+            converged: outcome.converged,
+            readback_ms: Some(readback_ms),
+        });
+    }
+
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +662,46 @@ mod tests {
         // math -- see cpu_and_gpu_layouts_agree_at_multi_workgroup_scale
         // below for the case that does.
         test_graph(50)
+    }
+
+    #[test]
+    fn build_graph_from_id_pairs_dedupes_and_preserves_first_seen_order() {
+        // Sparse, non-zero-based, out-of-order ids -- like real Postgres
+        // wallet_id values -- must map to dense 0..n indices.
+        let edges = [(500i64, 12i64), (12, 99), (500, 99)];
+        let (graph, index_to_id) = build_graph_from_id_pairs(&edges);
+        assert_eq!(graph.num_nodes, 3);
+        assert_eq!(index_to_id, vec![500, 12, 99], "first-seen order: 500, then 12, then 99");
+        // 500 -> index 0 has two edges (to 12 and to 99)
+        assert_eq!(graph.adj_offsets[1] - graph.adj_offsets[0], 2);
+    }
+
+    #[test]
+    fn initial_circle_positions_returns_exactly_n_finite_points() {
+        let positions = initial_circle_positions(37);
+        assert_eq!(positions.len(), 37);
+        assert!(positions.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
+        assert_eq!(initial_circle_positions(0).len(), 0);
+    }
+
+    #[test]
+    fn run_cpu_to_settle_terminates_and_stays_finite() {
+        let (graph, positions) = test_graph(120);
+        let cap = SettleCap { max_iterations: 50, max_wall_clock: Duration::from_secs(5) };
+        let outcome = run_cpu_to_settle(&graph, positions, LayoutParams::default(), CpuMode::Multi, cap);
+        assert!(outcome.iterations > 0 && outcome.iterations <= cap.max_iterations);
+        assert!(outcome.positions.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
+    }
+
+    #[test]
+    fn run_benchmark_cpu_only_produces_two_rows_in_order() {
+        let (graph, positions) = test_graph(120);
+        let cap = SettleCap { max_iterations: 20, max_wall_clock: Duration::from_secs(5) };
+        let rows = run_benchmark(&graph, &positions, LayoutParams::default(), None, 3, cap);
+        assert_eq!(rows.len(), 2, "no GPU passed in, so only the two CPU rows");
+        assert_eq!(rows[0].label, "CPU single-thread");
+        assert!(rows[1].label.starts_with("CPU rayon"));
+        assert!(rows.iter().all(|r| r.readback_ms.is_none()));
     }
 
     #[test]
