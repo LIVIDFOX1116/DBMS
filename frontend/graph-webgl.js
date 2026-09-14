@@ -384,6 +384,16 @@ class GraphRenderer {
   }
 
   render() {
+    // Measures the render() call's own CPU-side duration (draw submission +
+    // driver overhead), not just wall-clock time between rAF callbacks.
+    // requestAnimationFrame is vsync-throttled, so "still 60fps" alone can't
+    // tell a genuinely cheap frame (2ms of work, 14.6ms idle) apart from one
+    // that's using the whole budget (16ms of work, 0 margin) -- both read as
+    // a clean 60fps. This is a lower bound on true GPU cost, not a forced
+    // sync (no gl.finish() -- that would stall the pipeline and distort
+    // normal operation just to measure it), but for a two-shader scene like
+    // this, CPU-side submission is typically the dominant cost anyway.
+    const renderT0 = performance.now();
     this._resize();
     const gl = this.gl;
     gl.clearColor(0.027, 0.051, 0.047, 1);
@@ -403,6 +413,8 @@ class GraphRenderer {
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.nodesShown.length);
 
     this._updateLabels();
+    this._lastRenderMs = performance.now() - renderT0;
+    this._worstRenderMs = Math.max(this._worstRenderMs || 0, this._lastRenderMs);
   }
 
   setShowFps(show) {
@@ -417,9 +429,10 @@ class GraphRenderer {
     const dt = now - this._fpsLastT;
     if (dt >= 500) {
       const fps = (this._fpsFrames / dt) * 1000;
-      this.fpsBadge.textContent = `${fps.toFixed(0)} fps · ${(dt / this._fpsFrames).toFixed(2)} ms/frame`;
+      this.fpsBadge.textContent = `${fps.toFixed(0)} fps · ${(dt / this._fpsFrames).toFixed(2)} ms/frame (cadence) · render() ${this._lastRenderMs.toFixed(2)}ms, worst ${this._worstRenderMs.toFixed(2)}ms`;
       this._fpsFrames = 0;
       this._fpsLastT = now;
+      this._worstRenderMs = 0;
     }
   }
 
