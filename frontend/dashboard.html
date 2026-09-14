@@ -750,12 +750,16 @@ async function loadAll() {
       api("/snapshots"),
     ]);
 
-    const memberLists = await Promise.all(CLUSTERS.map(c => api(`/clusters/${c.cluster_id}/members`).catch(() => [])));
-    CLUSTER_MEMBERS = {}; WALLET_CLUSTERS = {};
-    CLUSTERS.forEach((c, i) => {
-      CLUSTER_MEMBERS[c.cluster_id] = memberLists[i];
-      memberLists[i].forEach(m => (WALLET_CLUSTERS[m.wallet_id] = WALLET_CLUSTERS[m.wallet_id] || []).push(c.cluster_id));
-    });
+    // One bulk call instead of one request per cluster (was 100 sequential
+    // /clusters/{id}/members calls -- ~48s against a real DB, invisible
+    // against mock's single cluster). CLUSTER_MEMBERS (full per-cluster
+    // member rows, with membership_score/is_core_node) is populated lazily
+    // per-cluster on modal open instead -- see openClusterModal below.
+    CLUSTER_MEMBERS = {};
+    const clusterIds = CLUSTERS.map(c => c.cluster_id);
+    WALLET_CLUSTERS = clusterIds.length
+      ? await api("/cluster-membership", { cluster_ids: clusterIds.join(",") }).catch(() => ({}))
+      : {};
 
     const pagerank = await api(`/runs/${runId()}/metrics`, { metric_name: "pagerank", limit: 200 }).catch(() => []);
     PAGERANK = {};
@@ -965,6 +969,14 @@ function renderAlerts() {
 ════════════════════════════════════════ */
 let sigmaInstance = null;
 let sigmaGraph = null;
+// renderGraph() is async with several await points (edge fetch, the Rust
+// layout invoke) and mutates the shared sigmaGraph/DOM globals above -- two
+// overlapping calls (e.g. changing the edge-limit dropdown right after a
+// snapshot switch) can otherwise interleave and have a stale call's
+// continuation write over a newer call's graph. Each call captures its own
+// generation number and bails out after every await if a newer call has
+// started since.
+let renderGraphGeneration = 0;
 let graphResizeObserver = null;
 let particleRAF = null;
 let graphCleanup = null;
@@ -1283,6 +1295,7 @@ function renderPagerankBars() {
 }
 
 async function renderGraph() {
+  const myGeneration = ++renderGraphGeneration;
   const container = document.getElementById("graphCanvas");
   const tooltip = document.getElementById("graphTooltip");
   const snapshotId = document.getElementById("snapshotSelect").value || (SNAPSHOTS[0]?.snapshot_id ?? 1);
@@ -1293,10 +1306,12 @@ async function renderGraph() {
   try {
     edges = await api(`/snapshots/${snapshotId}/edges`, { limit: edgeLimit });
   } catch (err) {
+    if (myGeneration !== renderGraphGeneration) return; // superseded while the fetch was in flight
     container.innerHTML = "";
     toast(`Could not load graph edges: ${err.message}`, "error");
     return;
   }
+  if (myGeneration !== renderGraphGeneration) return; // a newer renderGraph() call started while we awaited
 
   const walletIds = new Set();
   edges.forEach(e => { walletIds.add(e.src_wallet_id); walletIds.add(e.dst_wallet_id); });
@@ -1378,6 +1393,10 @@ async function renderGraph() {
   // this is the fallback layout below overwrites on top of, not a discarded
   // step, so isolated nodes always end up somewhere sane either way.
   layoutGraph(sigmaGraph);
+  // Captured so the Rust layout result below (after an await) always applies
+  // to the graph THIS call built, never to whatever a newer, overlapping
+  // renderGraph() call may have since assigned to the sigmaGraph global.
+  const myGraph = sigmaGraph;
 
   const layoutBadge = document.getElementById("layoutDeviceBadge");
   if (isRunningInTauriApp()) {
@@ -1385,24 +1404,26 @@ async function renderGraph() {
       const result = await window.__TAURI__.core.invoke("run_layout", {
         snapshotId: Number(snapshotId), maxEdges: edgeLimit, device: "gpu",
       });
+      if (myGeneration !== renderGraphGeneration) return; // superseded while awaiting the Rust layout
       let applied = 0;
       Object.entries(result.positions).forEach(([walletId, xy]) => {
         const nodeId = String(walletId);
-        if (sigmaGraph.hasNode(nodeId)) {
-          sigmaGraph.setNodeAttribute(nodeId, "x", xy[0]);
-          sigmaGraph.setNodeAttribute(nodeId, "y", xy[1]);
+        if (myGraph.hasNode(nodeId)) {
+          myGraph.setNodeAttribute(nodeId, "x", xy[0]);
+          myGraph.setNodeAttribute(nodeId, "y", xy[1]);
           applied++;
         }
       });
       layoutBadge.textContent = `layout: ${result.device_used} · ${applied}/${result.node_count} nodes · ${result.iterations} iters · ${result.elapsed_ms}ms${result.converged ? "" : " (capped, not converged)"}`;
     } catch (err) {
+      if (myGeneration !== renderGraphGeneration) return; // superseded; don't touch a newer call's badge/graph
       console.error("run_layout failed, using JS fallback layout:", err);
       layoutBadge.textContent = "layout: JS fallback (Rust command failed -- see console)";
     }
   } else {
     layoutBadge.textContent = "layout: JS (browser preview, no Tauri)";
   }
-  syncGhostNodePositions(sigmaGraph);
+  syncGhostNodePositions(myGraph);
 
   const renderMode = resolveRenderMode();
   if (!renderMode.useGpu) {
