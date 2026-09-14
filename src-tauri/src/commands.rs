@@ -193,15 +193,25 @@ pub fn run_layout(snapshot_id: i64, max_edges: usize, device: String, state: tau
     let params = LayoutParams::default();
     let cap = SettleCap::default();
 
-    let (dense_positions, device_used, iterations, elapsed_ms, converged) = if device == "gpu" {
-        match layout::create_gpu_device(None) {
+    // "gpu" = any adapter, "gpu-discrete"/"gpu-integrated" = a specific one
+    // (for the Settings device picker on a hybrid machine with both), "cpu"
+    // (or anything else) = CPU rayon. Auto-mode threshold resolution happens
+    // in JS (dashboard.html's resolveLayoutDevice) since it needs the node
+    // count being laid out, which this command doesn't otherwise need.
+    let prefer_discrete = match device.as_str() {
+        "gpu-discrete" => Some(true),
+        "gpu-integrated" => Some(false),
+        _ => None,
+    };
+    let (dense_positions, device_used, iterations, elapsed_ms, converged) = if device.starts_with("gpu") {
+        match layout::create_gpu_device(prefer_discrete) {
             Some((gpu_device, queue, name)) => {
                 let outcome = layout::run_gpu_to_settle(&gpu_device, &queue, &graph, &initial, params, cap);
                 (outcome.positions, format!("gpu: {name}"), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
             }
             None => {
                 let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap);
-                (outcome.positions, "cpu (no GPU adapter found, fell back)".to_string(), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
+                (outcome.positions, "cpu (no matching GPU adapter found, fell back)".to_string(), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
             }
         }
     } else {
