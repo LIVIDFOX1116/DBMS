@@ -1,0 +1,189 @@
+<!doctype html>
+<!--
+  Evaluation viewer for the cluster-visibility fix (see src-tauri/examples/
+  cluster_aware_layout_spike.rs). Loads before.json / after.json (real
+  positions, real cluster 32769 membership) and highlights that cluster's
+  3,408 real members in a distinct color against the rest of the real graph,
+  so the before/after difference is visible directly, not just in the
+  maxDist number.
+
+  Usage: serve this directory over HTTP, then open
+  ?file=before.json or ?file=after.json
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Cluster-aware forces evaluation</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #070d0c; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  #hud {
+    position: fixed; top: 8px; left: 8px; color: #EDF6F4; background: rgba(7,13,12,.85);
+    font: 12px ui-monospace, Consolas, monospace; padding: 10px 12px; border-radius: 6px;
+    line-height: 1.6; white-space: pre; z-index: 10;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">loading…</div>
+<script>
+const params = new URLSearchParams(location.search);
+const file = params.get('file') || 'before.json';
+const CLUSTER_MEMBERS_URL = 'members.json';
+
+function vertexShaderSrc(type) { return `#version 300 es
+  layout(location=0) in vec2 aQuadPos;
+  layout(location=1) in vec2 aInstancePos;
+  layout(location=2) in vec4 aInstanceColor;
+  uniform vec4 uView;
+  uniform float uNodeRadiusPx;
+  uniform vec2 uCanvasSize;
+  out vec2 vLocal;
+  out vec4 vColor;
+  void main() {
+    vec2 world = aInstancePos;
+    vec2 centered = (world - uView.xy) * uView.z;
+    ${type === 'node' ? `
+    vec2 offsetPx = aQuadPos * uNodeRadiusPx;
+    vec2 offsetClip = offsetPx / uCanvasSize * 2.0;
+    vLocal = aQuadPos;
+    vColor = aInstanceColor;
+    gl_Position = vec4(centered.x * uView.w + offsetClip.x, centered.y + offsetClip.y, 0.0, 1.0);
+    ` : `
+    vLocal = vec2(0.0);
+    vColor = aInstanceColor;
+    gl_Position = vec4(centered.x * uView.w, centered.y, 0.0, 1.0);
+    `}
+  }`;
+}
+const nodeFragSrc = `#version 300 es
+  precision mediump float;
+  in vec2 vLocal; in vec4 vColor; out vec4 outColor;
+  void main() {
+    float d = length(vLocal);
+    if (d > 1.0) discard;
+    outColor = vec4(vColor.rgb, vColor.a * smoothstep(1.0, 0.82, d));
+  }`;
+const edgeFragSrc = `#version 300 es
+  precision mediump float;
+  in vec4 vColor; out vec4 outColor;
+  void main() { outColor = vColor; }`;
+
+function compile(gl, type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function link(gl, vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+async function main() {
+  const [data, memberIds] = await Promise.all([
+    fetch(file).then(r => r.json()),
+    fetch(CLUSTER_MEMBERS_URL).then(r => r.json()).catch(() => []),
+  ]);
+  const memberSet = new Set(memberIds);
+  const nodes = data.nodes;
+  const indexOf = new Map(); nodes.forEach((n, i) => indexOf.set(n.id, i));
+
+  const positions = new Float32Array(nodes.length * 2);
+  const colors = new Float32Array(nodes.length * 4);
+  nodes.forEach((n, i) => {
+    positions[i*2] = n.x; positions[i*2+1] = n.y;
+    const inCluster = memberSet.has(n.id);
+    const [r,g,b,a] = inCluster ? [1.0, 0.42, 0.0, 1.0] : [0.184, 0.851, 0.686, 0.35];
+    colors[i*4]=r; colors[i*4+1]=g; colors[i*4+2]=b; colors[i*4+3]=a;
+  });
+
+  const validEdges = data.edges.filter(([a,b]) => indexOf.has(a) && indexOf.has(b));
+  const edgePos = new Float32Array(validEdges.length*4);
+  const edgeColor = new Float32Array(validEdges.length*8);
+  validEdges.forEach(([a,b], i) => {
+    const ia = indexOf.get(a), ib = indexOf.get(b);
+    edgePos[i*4]=positions[ia*2]; edgePos[i*4+1]=positions[ia*2+1];
+    edgePos[i*4+2]=positions[ib*2]; edgePos[i*4+3]=positions[ib*2+1];
+    const bothInCluster = memberSet.has(a) && memberSet.has(b);
+    const [r,g,b2,al] = bothInCluster ? [1.0,0.42,0.0,0.5] : [0.486,0.580,0.561,0.15];
+    for (let v=0;v<2;v++){edgeColor[i*8+v*4]=r;edgeColor[i*8+v*4+1]=g;edgeColor[i*8+v*4+2]=b2;edgeColor[i*8+v*4+3]=al;}
+  });
+
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for (const idx of memberSet.size ? [...memberSet].map(id=>indexOf.get(id)).filter(x=>x!==undefined) : nodes.map((_,i)=>i)) {
+    minX=Math.min(minX,positions[idx*2]); maxX=Math.max(maxX,positions[idx*2]);
+    minY=Math.min(minY,positions[idx*2+1]); maxY=Math.max(maxY,positions[idx*2+1]);
+  }
+  const centerX=(minX+maxX)/2, centerY=(minY+maxY)/2;
+  const extent = Math.max(maxX-minX, maxY-minY) || 1;
+
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', {antialias:true});
+  const nodeProgram = link(gl, vertexShaderSrc('node'), nodeFragSrc);
+  const edgeProgram = link(gl, vertexShaderSrc('edge'), edgeFragSrc);
+
+  const quadBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]), gl.STATIC_DRAW);
+  const posBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+  const colorBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuf); gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+  const nodeVao = gl.createVertexArray();
+  gl.bindVertexArray(nodeVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,2,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(1,1);
+  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuf); gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,4,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(2,1);
+  gl.bindVertexArray(null);
+
+  const edgePosBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, edgePosBuf); gl.bufferData(gl.ARRAY_BUFFER, edgePos, gl.STATIC_DRAW);
+  const edgeColorBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, edgeColorBuf); gl.bufferData(gl.ARRAY_BUFFER, edgeColor, gl.STATIC_DRAW);
+  const edgeVao = gl.createVertexArray();
+  gl.bindVertexArray(edgeVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, edgePosBuf); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,2,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, edgeColorBuf); gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,4,gl.FLOAT,false,0,0);
+  gl.bindVertexArray(null);
+
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  // Optional overrides so before/after can be screenshotted at the exact
+  // same camera (otherwise each auto-fits to its own cluster extent, which
+  // differ, making a direct visual comparison misleading).
+  let scale = params.has('scale') ? Number(params.get('scale')) : 1.6/extent;
+  let panX = params.has('panx') ? Number(params.get('panx')) : centerX;
+  let panY = params.has('pany') ? Number(params.get('pany')) : centerY;
+  function resize(){ const dpr=devicePixelRatio||1; canvas.width=canvas.clientWidth*dpr; canvas.height=canvas.clientHeight*dpr; gl.viewport(0,0,canvas.width,canvas.height); }
+  window.addEventListener('resize', resize); resize();
+  let dragging=false,lastX=0,lastY=0;
+  canvas.addEventListener('mousedown',e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;});
+  window.addEventListener('mouseup',()=>dragging=false);
+  window.addEventListener('mousemove',e=>{ if(!dragging)return; const dx=e.clientX-lastX,dy=e.clientY-lastY; lastX=e.clientX;lastY=e.clientY;
+    panX -= dx/(canvas.height/2)/scale; panY += dy/(canvas.height/2)/scale; });
+  canvas.addEventListener('wheel',e=>{e.preventDefault(); scale *= Math.exp(-e.deltaY*0.001);},{passive:false});
+
+  const hud = document.getElementById('hud');
+  function render(){
+    resize();
+    gl.clearColor(0.027,0.051,0.047,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const aspect = canvas.height/canvas.width;
+    const view = [panX,panY,scale,aspect];
+    gl.useProgram(edgeProgram); gl.uniform4fv(gl.getUniformLocation(edgeProgram,'uView'),view);
+    gl.bindVertexArray(edgeVao); gl.drawArrays(gl.LINES,0,validEdges.length*2);
+    gl.useProgram(nodeProgram); gl.uniform4fv(gl.getUniformLocation(nodeProgram,'uView'),view);
+    gl.uniform1f(gl.getUniformLocation(nodeProgram,'uNodeRadiusPx'), 3.5*devicePixelRatio);
+    gl.uniform2f(gl.getUniformLocation(nodeProgram,'uCanvasSize'), canvas.width, canvas.height);
+    gl.bindVertexArray(nodeVao); gl.drawArraysInstanced(gl.TRIANGLES,0,6,nodes.length);
+    hud.textContent = `${file}\ncluster 32769: ${memberSet.size} members (orange)\ntotal: ${nodes.length} nodes, ${validEdges.length} edges\ndrag to pan, wheel to zoom`;
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+}
+main().catch(e => { document.getElementById('hud').textContent = 'ERROR: ' + e.message; console.error(e); });
+</script>
+</body>
+</html>
