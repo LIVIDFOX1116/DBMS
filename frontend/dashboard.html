@@ -552,6 +552,7 @@ table.dtable a { color: var(--accent-glow); }
               <span id="nodeCapIndicator" class="mono">showing – of –</span>
               <input type="range" id="graphNodeCapSlider" min="200" max="200" value="200" style="width:140px;">
             </label>
+            <button class="btn" id="graphClearFocusBtn" title="Restore normal view after 'Focus in graph' from a cluster">✕ Clear focus</button>
             <div class="graph-legend-inline">
               <span>Color = risk tier</span>
               <span>Size = tx count</span>
@@ -627,7 +628,10 @@ table.dtable a { color: var(--accent-glow); }
         </table>
       </div>
     </div>
-    <div class="modal-footer"><button class="btn" data-close="clusterModal">Close</button></div>
+    <div class="modal-footer">
+      <button class="btn" id="cmFocusBtn">Focus in graph</button>
+      <button class="btn" data-close="clusterModal">Close</button>
+    </div>
   </div>
 </div>
 
@@ -950,8 +954,40 @@ async function openClusterModal(id) {
   document.getElementById("cmMembersBody").innerHTML = members.map(m => `
     <tr><td class="mono">${shortAddr(m.address)}</td><td class="num">${(m.membership_score * 100).toFixed(0)}%</td><td>${m.is_core_node ? "core" : "–"}</td></tr>
   `).join("") || `<tr><td colspan="3"><div class="empty-hint">No member data.</div></td></tr>`;
+  currentModalClusterId = id;
   openModal("clusterModal");
 }
+
+// "Focus in graph": fit-to-cluster zoom + dim non-members (see
+// GraphRenderer.focusCluster). Useful independent of whichever
+// cluster-visibility layout fix (if any) lands later -- this works with
+// whatever positions the layout already produced.
+let currentModalClusterId = null;
+document.getElementById("cmFocusBtn").addEventListener("click", async () => {
+  const id = currentModalClusterId;
+  if (id == null) return;
+  closeModal("clusterModal");
+  const alreadyOnGraph = document.getElementById("view-graph")?.classList.contains("active");
+  if (!alreadyOnGraph) {
+    go("graph");
+    // go("graph") fires its own renderGraph() without awaiting it (see `go`
+    // above), which destroys and rebuilds graphRenderer asynchronously.
+    // Awaiting our own renderGraph() call here supersedes that in-flight one
+    // via renderGraphGeneration and blocks until the rebuild actually
+    // settles -- without this, focusCluster() below raced the rebuild and
+    // had its focus state silently wiped a moment later when the new
+    // renderer replaced the old one (confirmed via CDP: focusedIds came
+    // back empty right after the rebuild finished).
+    if (WALLETS.length) await renderGraph();
+  }
+  if (!graphRenderer) { toast("Load the graph first (click Redraw), then Focus in graph.", "error"); return; }
+  const members = CLUSTER_MEMBERS[id] || await api(`/clusters/${id}/members`).catch(() => []);
+  const memberIds = members.map(m => m.wallet_id);
+  if (!memberIds.length) { toast(`Cluster #${id} has no member data to focus on.`, "error"); return; }
+  graphRenderer.focusCluster(memberIds);
+  updateNodeCapIndicator();
+  toast(`Focused on cluster #${id} (${memberIds.length} members)`, "success");
+});
 
 /* ════════════════════════════════════════
    ALERTS
@@ -1270,7 +1306,7 @@ async function renderGraph() {
     });
     graphRenderer.setData(myNodes, edgeObjs);
     graphRenderer.start();
-    document.getElementById("nodeCapIndicator").textContent = `showing ${Math.min(nodeCap, myNodes.length)} of ${myNodes.length}`;
+    updateNodeCapIndicator();
   } catch (err) {
     console.error("WebGL2 graph render failed:", err);
     container.innerHTML = `<div class="empty-hint">Graph rendering requires WebGL2, which is not available in this window.</div>`;
@@ -1278,15 +1314,29 @@ async function renderGraph() {
   }
 }
 
+// Single source of truth for the "showing N of M" text -- reads the
+// renderer's actual shown count rather than recomputing min(cap, total),
+// because a cluster focus adds every member on top of the cap (see
+// GraphRenderer._recomputeLod), so the true shown count can exceed the cap
+// slider's value while focused.
+function updateNodeCapIndicator() {
+  if (!graphRenderer) return;
+  document.getElementById("nodeCapIndicator").textContent =
+    `showing ${graphRenderer.nodesShown.length} of ${graphRenderer.nodesAll.length}`;
+}
 document.getElementById("snapshotSelect").addEventListener("change", renderGraph);
 document.getElementById("graphRedrawBtn").addEventListener("click", renderGraph);
 document.getElementById("graphEdgeLimitSelect").addEventListener("change", renderGraph);
 document.getElementById("graphNodeCapSlider").addEventListener("input", e => {
   userSetNodeCap = true;
   if (!graphRenderer) return;
-  const cap = Number(e.target.value);
-  graphRenderer.setNodeCap(cap);
-  document.getElementById("nodeCapIndicator").textContent = `showing ${Math.min(cap, graphRenderer.nodesAll.length)} of ${graphRenderer.nodesAll.length}`;
+  graphRenderer.setNodeCap(Number(e.target.value));
+  updateNodeCapIndicator();
+});
+document.getElementById("graphClearFocusBtn").addEventListener("click", () => {
+  if (!graphRenderer) return;
+  graphRenderer.clearFocus();
+  updateNodeCapIndicator();
 });
 document.getElementById("graphBenchmarkBtn").addEventListener("click", async () => {
   const resultEl = document.getElementById("layoutBenchmarkResult");
