@@ -142,6 +142,90 @@ fn force_for_node(i: usize, positions: &[[f32; 2]], graph: &Graph, p: &LayoutPar
     f
 }
 
+/// Optional cluster-aware attraction: each node is additionally pulled
+/// toward its cluster's current centroid (recomputed every iteration from
+/// live positions), on top of the existing pairwise repulsion + edge
+/// attraction. A cluster's members can otherwise end up scattered across
+/// the whole layout -- force layout optimizes edge length, Louvain
+/// (upstream, see graph/run_analysis.py) optimizes modularity, and the two
+/// have no reason to agree spatially.
+///
+/// Validated via a standalone spike (examples/cluster_aware_layout_spike.rs)
+/// against real cluster 32769 (3,408 members, snapshot 1): k=40 cut that
+/// cluster's spread (max distance from its own centroid) from 69,480 to
+/// ~12,400 world units, settling in the same time as an unmodified layout.
+/// k=300 (7.5x stronger) only reached ~12,500 -- barely better -- at 3x the
+/// settle time, because intra-cluster repulsion is unchanged and sets an
+/// equilibrium radius attraction alone can't push through much further;
+/// tightening past ~5.6x would mean reducing intra-cluster repulsion too,
+/// not just raising k. The same spike also measured stale (recomputed every
+/// N>1 iterations) centroids: even N=5 was 34% worse than recomputing every
+/// iteration, so this is deliberately NOT a batched/periodic update on
+/// either backend, despite the CPU<->GPU sync cost that implies for GPU
+/// (see `run_gpu_to_settle`) -- staleness was measured to cost more in
+/// quality than it saves in sync overhead, and CPU/GPU parity requires both
+/// backends to compute it the same way regardless.
+///
+/// `cluster_of[i]` is a dense 0..num_clusters group id for node i (every
+/// node belongs to exactly one group; an unclustered node gets its own
+/// singleton group, which makes the added term a no-op for it -- same as
+/// the 99.3% of real clusters that are already singletons, so the common
+/// case costs an O(n) scan and nothing else).
+#[derive(Clone)]
+pub struct ClusterForces {
+    pub cluster_of: Vec<u32>,
+    pub num_clusters: u32,
+    pub attraction_k: f32,
+}
+
+impl ClusterForces {
+    /// Every node its own singleton cluster -- the added term becomes a
+    /// no-op (centroid == self) for every node. Used whenever the caller has
+    /// no real cluster data, or wants cluster-aware attraction off (k <= 0
+    /// short-circuits `add_forces` before this even matters).
+    pub fn none(num_nodes: usize) -> Self {
+        Self { cluster_of: (0..num_nodes as u32).collect(), num_clusters: num_nodes as u32, attraction_k: 0.0 }
+    }
+
+    /// Per-cluster centroids and sizes from current positions, in one O(n)
+    /// pass (`sum`/`count` indexed by dense cluster group, not per-node) --
+    /// recomputed by the caller every iteration, deliberately not cached
+    /// (see this struct's doc comment on why staleness was rejected).
+    fn centroids(&self, positions: &[[f32; 2]]) -> (Vec<[f32; 2]>, Vec<u32>) {
+        let mut sum = vec![[0f32; 2]; self.num_clusters as usize];
+        let mut count = vec![0u32; self.num_clusters as usize];
+        for (i, &g) in self.cluster_of.iter().enumerate() {
+            sum[g as usize][0] += positions[i][0];
+            sum[g as usize][1] += positions[i][1];
+            count[g as usize] += 1;
+        }
+        let centroids = sum
+            .iter()
+            .zip(count.iter())
+            .map(|(s, &c)| if c == 0 { [0.0, 0.0] } else { [s[0] / c as f32, s[1] / c as f32] })
+            .collect();
+        (centroids, count)
+    }
+
+    /// Adds the centroid-attraction term into `forces` in place. Singleton
+    /// clusters (count <= 1, the common case) are skipped: their centroid is
+    /// themselves, so the term is exactly zero, not just numerically tiny.
+    fn add_forces(&self, positions: &[[f32; 2]], forces: &mut [[f32; 2]]) {
+        if self.attraction_k <= 0.0 {
+            return;
+        }
+        let (centroids, count) = self.centroids(positions);
+        for (i, &g) in self.cluster_of.iter().enumerate() {
+            if count[g as usize] <= 1 {
+                continue;
+            }
+            let c = centroids[g as usize];
+            forces[i][0] += (c[0] - positions[i][0]) * self.attraction_k;
+            forces[i][1] += (c[1] - positions[i][1]) * self.attraction_k;
+        }
+    }
+}
+
 /// Which CPU code path `CpuLayout::step` takes. `Multi` is the "CPU
 /// (multi-threaded)" device choice in the settings UI (step 3); `Single` only
 /// exists so the benchmark comparison (see `run_benchmark`) can show what
@@ -162,6 +246,7 @@ pub struct CpuLayout<'g> {
     velocities: Vec<[f32; 2]>,
     forces: Vec<[f32; 2]>,
     mode: CpuMode,
+    cluster: ClusterForces,
 }
 
 impl<'g> CpuLayout<'g> {
@@ -178,7 +263,22 @@ impl<'g> CpuLayout<'g> {
 
     pub fn with_mode(graph: &'g Graph, initial_positions: Vec<[f32; 2]>, params: LayoutParams, mode: CpuMode) -> Self {
         let n = initial_positions.len();
-        Self { graph, params, positions: initial_positions, velocities: vec![[0.0; 2]; n], forces: vec![[0.0; 2]; n], mode }
+        Self {
+            graph,
+            params,
+            positions: initial_positions,
+            velocities: vec![[0.0; 2]; n],
+            forces: vec![[0.0; 2]; n],
+            mode,
+            cluster: ClusterForces::none(n),
+        }
+    }
+
+    /// Enables cluster-aware attraction (see `ClusterForces`) on top of
+    /// whatever mode/params this layout already has.
+    pub fn with_cluster_forces(mut self, cluster: ClusterForces) -> Self {
+        self.cluster = cluster;
+        self
     }
 
     pub fn positions(&self) -> &[[f32; 2]] {
@@ -203,6 +303,7 @@ impl<'g> CpuLayout<'g> {
                 }
             }
         }
+        self.cluster.add_forces(positions, &mut self.forces);
 
         let mut max_disp = 0f32;
         for i in 0..self.positions.len() {
@@ -519,8 +620,17 @@ pub struct SettleOutcome {
 /// Runs `CpuLayout` until max per-node displacement drops below
 /// `CONVERGENCE_EPS` or `cap` is hit, whichever first -- same convergence
 /// definition gpu-bench used, so settle numbers here are comparable to it.
-pub fn run_cpu_to_settle(graph: &Graph, initial_positions: Vec<[f32; 2]>, params: LayoutParams, mode: CpuMode, cap: SettleCap) -> SettleOutcome {
-    let mut layout = CpuLayout::with_mode(graph, initial_positions, params, mode);
+/// Pass `ClusterForces::none(initial_positions.len())` for the pre-existing,
+/// cluster-unaware behavior.
+pub fn run_cpu_to_settle(
+    graph: &Graph,
+    initial_positions: Vec<[f32; 2]>,
+    params: LayoutParams,
+    mode: CpuMode,
+    cap: SettleCap,
+    cluster: ClusterForces,
+) -> SettleOutcome {
+    let mut layout = CpuLayout::with_mode(graph, initial_positions, params, mode).with_cluster_forces(cluster);
     let t0 = Instant::now();
     let mut iterations = 0;
     let mut converged = false;
@@ -610,7 +720,7 @@ pub fn run_benchmark(
         }
         let per_iter_ms = t0.elapsed().as_secs_f64() * 1000.0 / timing_iterations as f64;
 
-        let outcome = run_cpu_to_settle(graph, initial_positions.to_vec(), params, mode, cap);
+        let outcome = run_cpu_to_settle(graph, initial_positions.to_vec(), params, mode, cap, ClusterForces::none(initial_positions.len()));
         rows.push(BenchRow {
             label,
             per_iter_ms,
@@ -701,10 +811,84 @@ mod tests {
     }
 
     #[test]
+    fn cluster_forces_none_is_a_true_no_op() {
+        // Every node its own singleton group -- centroid == self, so the
+        // term must be exactly zero, not just numerically negligible.
+        let n = 10;
+        let cluster = ClusterForces::none(n);
+        let positions: Vec<[f32; 2]> = (0..n).map(|i| [i as f32, -(i as f32)]).collect();
+        let mut forces = vec![[1.0f32, -1.0]; n]; // pre-seeded with a sentinel value
+        cluster.add_forces(&positions, &mut forces);
+        assert_eq!(forces, vec![[1.0, -1.0]; n], "singleton groups must not add any force");
+    }
+
+    #[test]
+    fn cluster_forces_pulls_members_toward_their_own_centroid_only() {
+        // Two groups: {0,1,2} and {3,4} (group ids 0 and 1). Group 0's
+        // centroid is at x=1 (mean of 0,1,2); node 0 (x=0) should be pulled
+        // in +x, node 2 (x=2) pulled in -x. Group 1 is untouched by group 0.
+        let cluster_of = vec![0u32, 0, 0, 1, 1];
+        let cluster = ClusterForces { cluster_of, num_clusters: 2, attraction_k: 10.0 };
+        let positions = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [5.0, 5.0], [7.0, 5.0]];
+        let mut forces = vec![[0.0, 0.0]; 5];
+        cluster.add_forces(&positions, &mut forces);
+
+        assert!(forces[0][0] > 0.0, "node 0 (x=0, centroid x=1) must be pulled toward +x");
+        assert_eq!(forces[1], [0.0, 0.0], "node 1 sits exactly on its own group centroid: zero added force");
+        assert!(forces[2][0] < 0.0, "node 2 (x=2, centroid x=1) must be pulled toward -x");
+        // Group 1's centroid is (6,5); node 3 pulled toward +x, node 4 toward -x.
+        assert!(forces[3][0] > 0.0);
+        assert!(forces[4][0] < 0.0);
+    }
+
+    #[test]
+    fn cluster_forces_tightens_a_scattered_group_over_iterations() {
+        // Same qualitative claim the cluster_aware_layout_spike measured on
+        // the real graph (69,480 -> ~12,400 world units for cluster 32769):
+        // adding cluster-aware attraction must make a designated group's own
+        // spread shrink relative to running the identical layout without it.
+        let (graph, positions) = test_graph(120);
+        // Nodes 0..40 (arbitrary, not adjacency-related) are "one cluster";
+        // everything else is its own singleton -- deliberately not aligned
+        // with the ring/chord edges so any tightening is attributable to the
+        // added force, not to the graph's own structure.
+        // Nodes 40..120 keep their own original index as their (singleton)
+        // group id -- simplest way to get 80 distinct unused-elsewhere group
+        // ids without a separate remapping pass; num_clusters just needs to
+        // be large enough to cover the biggest id used (120 nodes -> ids fit
+        // in 0..120 already).
+        let mut cluster_of: Vec<u32> = (0..120u32).collect();
+        for slot in cluster_of.iter_mut().take(40) {
+            *slot = 0;
+        }
+        let cluster = ClusterForces { cluster_of, num_clusters: 120, attraction_k: 40.0 };
+
+        fn spread(positions: &[[f32; 2]], members: &std::ops::Range<usize>) -> f32 {
+            let n = members.len() as f32;
+            let cx: f32 = members.clone().map(|i| positions[i][0]).sum::<f32>() / n;
+            let cy: f32 = members.clone().map(|i| positions[i][1]).sum::<f32>() / n;
+            members.clone().map(|i| ((positions[i][0] - cx).powi(2) + (positions[i][1] - cy).powi(2)).sqrt()).fold(0f32, f32::max)
+        }
+
+        let mut without = CpuLayout::with_mode(&graph, positions.clone(), LayoutParams::default(), CpuMode::Multi);
+        without.run_batch(60);
+        let spread_without = spread(without.positions(), &(0..40));
+
+        let mut with = CpuLayout::with_mode(&graph, positions, LayoutParams::default(), CpuMode::Multi).with_cluster_forces(cluster);
+        with.run_batch(60);
+        let spread_with = spread(with.positions(), &(0..40));
+
+        assert!(
+            spread_with < spread_without * 0.9,
+            "cluster-aware attraction must measurably tighten the group: without={spread_without}, with={spread_with}"
+        );
+    }
+
+    #[test]
     fn run_cpu_to_settle_terminates_and_stays_finite() {
         let (graph, positions) = test_graph(120);
         let cap = SettleCap { max_iterations: 50, max_wall_clock: Duration::from_secs(5) };
-        let outcome = run_cpu_to_settle(&graph, positions, LayoutParams::default(), CpuMode::Multi, cap);
+        let outcome = run_cpu_to_settle(&graph, positions.clone(), LayoutParams::default(), CpuMode::Multi, cap, ClusterForces::none(positions.len()));
         assert!(outcome.iterations > 0 && outcome.iterations <= cap.max_iterations);
         assert!(outcome.positions.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
     }

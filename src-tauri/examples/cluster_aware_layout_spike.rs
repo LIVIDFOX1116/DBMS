@@ -12,15 +12,14 @@
 //! require committing to it in the real engine first.
 //!
 //! Usage: cargo run --release --example cluster_aware_layout_spike --
-//!   <backend_base_url> <snapshot_id> <cluster_id> <cluster_attraction_k> <out_prefix>
+//!   <backend_base_url> <snapshot_id> <cluster_id> <cluster_attraction_k> <out_prefix> [recompute_interval]
 //! e.g.:
 //!   cargo run --release --example cluster_aware_layout_spike -- \
-//!     http://127.0.0.1:8801 1 32769 40.0 cluster32769
+//!     http://127.0.0.1:8801 1 32769 40.0 cluster32769 5
 
 use app_lib::layout::{self, Graph, LayoutParams};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 #[derive(Deserialize)]
 struct EdgeRow {
@@ -81,31 +80,47 @@ fn force_for_node(i: usize, positions: &[[f32; 2]], graph: &Graph, p: &LayoutPar
 /// order) -- used to generate the "before" dump with this same code path
 /// as the "after" one, so the comparison isn't confounded by any other
 /// difference.
+/// `recompute_interval` controls how often the cluster centroid is
+/// refreshed from current positions (every iteration when 1). Answers the
+/// question of whether a GPU implementation can get away with computing
+/// centroids CPU-side and uploading them only every N iterations (avoiding
+/// a per-iteration CPU<->GPU sync) without visibly hurting the settled
+/// result -- see the recompute-interval sweep this spike was extended for.
 fn run_layout(
     graph: &Graph,
     mut positions: Vec<[f32; 2]>,
     params: LayoutParams,
     iterations: usize,
-    cluster_members: &HashSet<usize>,
+    cluster_members: &[usize],
     cluster_attraction_k: f32,
+    recompute_interval: usize,
 ) -> Vec<[f32; 2]> {
     let n = positions.len();
     let mut velocities = vec![[0f32; 2]; n];
-    for _ in 0..iterations {
+    let mut centroid = [0f32; 2];
+    for iter in 0..iterations {
         let mut forces: Vec<[f32; 2]> = (0..n).into_par_iter().map(|i| force_for_node(i, &positions, graph, &params)).collect();
 
         if cluster_attraction_k > 0.0 && !cluster_members.is_empty() {
-            let mut cx = 0f32;
-            let mut cy = 0f32;
-            for &i in cluster_members {
-                cx += positions[i][0];
-                cy += positions[i][1];
+            if iter % recompute_interval == 0 {
+                // Summed in `cluster_members`'s fixed slice order (not a
+                // HashSet's randomly-seeded-per-process iteration order) so
+                // floating-point rounding is identical run to run -- this
+                // sim is a chaotic dynamical system over 300 iterations, and
+                // even tiny summation-order rounding differences compound
+                // into materially different settled layouts, which made an
+                // earlier version of this sweep non-reproducible.
+                let mut cx = 0f32;
+                let mut cy = 0f32;
+                for &i in cluster_members {
+                    cx += positions[i][0];
+                    cy += positions[i][1];
+                }
+                centroid = [cx / cluster_members.len() as f32, cy / cluster_members.len() as f32];
             }
-            cx /= cluster_members.len() as f32;
-            cy /= cluster_members.len() as f32;
             for &i in cluster_members {
-                forces[i][0] += (cx - positions[i][0]) * cluster_attraction_k;
-                forces[i][1] += (cy - positions[i][1]) * cluster_attraction_k;
+                forces[i][0] += (centroid[0] - positions[i][0]) * cluster_attraction_k;
+                forces[i][1] += (centroid[1] - positions[i][1]) * cluster_attraction_k;
             }
         }
 
@@ -126,6 +141,7 @@ fn main() {
     let cluster_id: i64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(32769);
     let cluster_attraction_k: f32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(40.0);
     let out_prefix = args.get(5).cloned().unwrap_or_else(|| "cluster_spike".to_string());
+    let recompute_interval: usize = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(1);
 
     let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(60)).build().unwrap();
 
@@ -155,7 +171,14 @@ fn main() {
     let (graph, index_to_id) = layout::build_graph_from_id_pairs(&edges);
     let id_to_index: std::collections::HashMap<i64, usize> =
         index_to_id.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-    let cluster_indices: HashSet<usize> = members.iter().filter_map(|id| id_to_index.get(id).copied()).collect();
+    // A Vec, not a HashSet: iteration order feeds the per-iteration centroid
+    // summation inside run_layout, and a HashSet's randomly-seeded-per-
+    // process order made otherwise-identical runs non-reproducible (see
+    // run_layout's comment). Sorted + deduped so repeated ids in `members`
+    // (shouldn't happen, but cheap to guard) can't double-count.
+    let mut cluster_indices: Vec<usize> = members.iter().filter_map(|id| id_to_index.get(id).copied()).collect();
+    cluster_indices.sort_unstable();
+    cluster_indices.dedup();
     println!("cluster members found among graph nodes: {}", cluster_indices.len());
 
     let initial = layout::initial_circle_positions(index_to_id.len());
@@ -163,16 +186,16 @@ fn main() {
     const ITERATIONS: usize = 300;
 
     let t0 = std::time::Instant::now();
-    let baseline = run_layout(&graph, initial.clone(), params, ITERATIONS, &cluster_indices, 0.0);
+    let baseline = run_layout(&graph, initial.clone(), params, ITERATIONS, &cluster_indices, 0.0, 1);
     println!("baseline settled in {:.2?}", t0.elapsed());
 
     let t0 = std::time::Instant::now();
-    let cluster_aware = run_layout(&graph, initial, params, ITERATIONS, &cluster_indices, cluster_attraction_k);
-    println!("cluster-aware (k={cluster_attraction_k}) settled in {:.2?}", t0.elapsed());
+    let cluster_aware = run_layout(&graph, initial, params, ITERATIONS, &cluster_indices, cluster_attraction_k, recompute_interval);
+    println!("cluster-aware (k={cluster_attraction_k}, recompute_interval={recompute_interval}) settled in {:.2?}", t0.elapsed());
 
     // Report the cluster's own spread in both, the concrete number the
     // fix is meant to shrink.
-    fn cluster_spread(positions: &[[f32; 2]], members: &HashSet<usize>) -> f32 {
+    fn cluster_spread(positions: &[[f32; 2]], members: &[usize]) -> f32 {
         if members.is_empty() {
             return 0.0;
         }
