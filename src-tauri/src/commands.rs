@@ -140,6 +140,86 @@ struct EdgeRow {
     dst_wallet_id: i64,
 }
 
+#[derive(Deserialize)]
+struct ClusterIdRow {
+    cluster_id: i64,
+}
+
+/// wallet_id -> cluster_id for every wallet clustered under `run_id`, used
+/// to build a `layout::ClusterForces` (see its doc comment). Two-step,
+/// mirroring the frontend's own pattern for the same data (dashboard.html's
+/// cluster modal): list every cluster for the run, then batch-fetch
+/// membership. Batched at 500 ids/request rather than one huge query string
+/// -- a real run can have close to as many clusters as nodes (99.3% of real
+/// clusters are singletons), and a single comma-joined list of that many
+/// ids risks exceeding typical HTTP request-line/header size limits.
+fn fetch_cluster_membership(port: u16, run_id: i64) -> Result<HashMap<i64, i64>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let cluster_ids: Vec<i64> = client
+        .get(format!("http://127.0.0.1:{port}/clusters"))
+        .query(&[("run_id", run_id.to_string())])
+        .send()
+        .map_err(|e| format!("could not reach backend for clusters: {e}"))?
+        .json::<Vec<ClusterIdRow>>()
+        .map_err(|e| format!("malformed clusters response: {e}"))?
+        .into_iter()
+        .map(|c| c.cluster_id)
+        .collect();
+
+    let mut wallet_to_cluster = HashMap::new();
+    for chunk in cluster_ids.chunks(500) {
+        let ids_param = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+        let membership: HashMap<i64, Vec<i64>> = client
+            .get(format!("http://127.0.0.1:{port}/cluster-membership"))
+            .query(&[("cluster_ids", ids_param)])
+            .send()
+            .map_err(|e| format!("could not reach backend for cluster membership: {e}"))?
+            .json()
+            .map_err(|e| format!("malformed cluster-membership response: {e}"))?;
+        for (wallet_id, clusters) in membership {
+            // Louvain (graph/run_analysis.py) assigns each wallet to exactly
+            // one community -- the array is defensive schema generality
+            // (see api/main.py's /cluster-membership), not a real overlap
+            // case. The first (only, in practice) entry is what matters.
+            if let Some(&cluster_id) = clusters.first() {
+                wallet_to_cluster.insert(wallet_id, cluster_id);
+            }
+        }
+    }
+    Ok(wallet_to_cluster)
+}
+
+/// Remaps raw DB cluster_ids (sparse, arbitrary) to the dense 0..num_clusters
+/// group ids `ClusterForces` needs to size its per-iteration centroid/count
+/// buffers. A wallet with no cluster assignment (fetch failed, or genuinely
+/// unclustered) gets its own singleton group -- the same no-op behavior a
+/// real singleton cluster already has (see `ClusterForces::none`).
+fn build_cluster_forces(index_to_id: &[i64], wallet_to_cluster: &HashMap<i64, i64>, attraction_k: f32) -> layout::ClusterForces {
+    let mut group_of_cluster_id: HashMap<i64, u32> = HashMap::new();
+    let mut cluster_of = Vec::with_capacity(index_to_id.len());
+    let mut next_group = 0u32;
+    for &wallet_id in index_to_id {
+        let group = match wallet_to_cluster.get(&wallet_id) {
+            Some(&cluster_id) => *group_of_cluster_id.entry(cluster_id).or_insert_with(|| {
+                let g = next_group;
+                next_group += 1;
+                g
+            }),
+            None => {
+                let g = next_group;
+                next_group += 1;
+                g
+            }
+        };
+        cluster_of.push(group);
+    }
+    layout::ClusterForces { cluster_of, num_clusters: next_group, attraction_k }
+}
+
 /// Shared by `run_layout` and `benchmark_layout` -- both need the same real
 /// edge set from the same already-running backend the rest of the app talks
 /// to (see `get_api_base`), not a separate DB connection from Rust.
@@ -180,9 +260,23 @@ pub struct LayoutResult {
 /// requesting "gpu" on a machine/build with no adapter falls back to CPU
 /// automatically -- `device_used` tells the caller which one actually ran,
 /// so a UI can be honest about it instead of silently lying about what
-/// rendered the graph.
+/// rendered the graph. `cluster_attraction_k` <= 0 disables cluster-aware
+/// forces entirely (skips the membership fetch); `run_id` identifies which
+/// clustering to pull membership from (see `fetch_cluster_membership`) and
+/// is only used when `cluster_attraction_k` > 0.
+///
+/// GPU currently ignores `cluster_attraction_k` and always lays out
+/// cluster-unaware -- wiring cluster-aware forces into the GPU path (with
+/// CPU/GPU parity preserved) is the next step, not yet done.
 #[tauri::command]
-pub fn run_layout(snapshot_id: i64, max_edges: usize, device: String, state: tauri::State<AppState>) -> Result<LayoutResult, String> {
+pub fn run_layout(
+    snapshot_id: i64,
+    max_edges: usize,
+    device: String,
+    run_id: i64,
+    cluster_attraction_k: f32,
+    state: tauri::State<AppState>,
+) -> Result<LayoutResult, String> {
     let port = state.0.lock().unwrap().port;
     let edges = fetch_snapshot_edges(port, snapshot_id, max_edges)?;
     if edges.is_empty() {
@@ -192,6 +286,22 @@ pub fn run_layout(snapshot_id: i64, max_edges: usize, device: String, state: tau
     let initial = layout::initial_circle_positions(index_to_id.len());
     let params = LayoutParams::default();
     let cap = SettleCap::default();
+
+    let cluster = if cluster_attraction_k > 0.0 {
+        match fetch_cluster_membership(port, run_id) {
+            Ok(membership) => build_cluster_forces(&index_to_id, &membership, cluster_attraction_k),
+            Err(e) => {
+                // Degrade to the cluster-unaware layout rather than failing
+                // the whole render -- the base layout is still useful
+                // without the cluster fix, and this fetch is a nice-to-have
+                // on top of it, not a hard dependency of laying out at all.
+                log::warn!("cluster membership fetch failed for run {run_id}, laying out without cluster-aware forces: {e}");
+                layout::ClusterForces::none(index_to_id.len())
+            }
+        }
+    } else {
+        layout::ClusterForces::none(index_to_id.len())
+    };
 
     // "gpu" = any adapter, "gpu-discrete"/"gpu-integrated" = a specific one
     // (for the Settings device picker on a hybrid machine with both), "cpu"
@@ -210,12 +320,12 @@ pub fn run_layout(snapshot_id: i64, max_edges: usize, device: String, state: tau
                 (outcome.positions, format!("gpu: {name}"), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
             }
             None => {
-                let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap);
+                let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap, cluster.clone());
                 (outcome.positions, "cpu (no matching GPU adapter found, fell back)".to_string(), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
             }
         }
     } else {
-        let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap);
+        let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap, cluster.clone());
         (outcome.positions, "cpu".to_string(), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
     };
 

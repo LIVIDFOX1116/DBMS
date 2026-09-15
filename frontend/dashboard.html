@@ -553,6 +553,10 @@ table.dtable a { color: var(--accent-glow); }
               <input type="range" id="graphNodeCapSlider" min="200" max="200" value="200" style="width:140px;">
             </label>
             <button class="btn" id="graphClearFocusBtn" title="Restore normal view after 'Focus in graph' from a cluster">✕ Clear focus</button>
+            <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;" title="Extra attraction pulling each wallet toward its own cluster's centroid every layout iteration, so a cluster's members land near each other instead of scattered across the whole graph. 0 disables it. Changing this re-runs the layout.">
+              <span id="clusterAttractionIndicator" class="mono">cluster pull: 40</span>
+              <input type="range" id="clusterAttractionSlider" min="0" max="200" step="5" value="40" style="width:120px;">
+            </label>
             <div class="graph-legend-inline">
               <span>Color = risk tier</span>
               <span>Size = tx count</span>
@@ -1241,8 +1245,10 @@ async function renderGraph() {
   if (isRunningInTauriApp()) {
     try {
       const requestedDevice = resolveLayoutDevice(myNodes.length);
+      const clusterAttractionK = Number(document.getElementById("clusterAttractionSlider").value);
       const result = await window.__TAURI__.core.invoke("run_layout", {
         snapshotId: Number(snapshotId), maxEdges: edgeLimit, device: requestedDevice,
+        runId: Number(runId()), clusterAttractionK,
       });
       if (myGeneration !== renderGraphGeneration) return; // superseded while awaiting the Rust layout
       let applied = 0;
@@ -1338,6 +1344,12 @@ document.getElementById("graphClearFocusBtn").addEventListener("click", () => {
   graphRenderer.clearFocus();
   updateNodeCapIndicator();
 });
+document.getElementById("clusterAttractionSlider").addEventListener("input", e => {
+  document.getElementById("clusterAttractionIndicator").textContent = `cluster pull: ${e.target.value}`;
+});
+// "change" (drag released), not "input" (every tick) -- this re-runs the
+// whole Rust layout (edge fetch + settle), not just a cheap camera update.
+document.getElementById("clusterAttractionSlider").addEventListener("change", renderGraph);
 document.getElementById("graphBenchmarkBtn").addEventListener("click", async () => {
   const resultEl = document.getElementById("layoutBenchmarkResult");
   if (!isRunningInTauriApp()) {
