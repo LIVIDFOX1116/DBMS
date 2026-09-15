@@ -196,10 +196,42 @@ class GraphRenderer {
 
   _recomputeLod() {
     const ranked = [...this.nodesAll].sort((a, b) => (b.size || 1) - (a.size || 1));
-    this.nodesShown = ranked.slice(0, this.nodeCap);
+    let shown = ranked.slice(0, this.nodeCap);
+    // A focused set (see focusCluster) must always be visible regardless of
+    // the LOD cap -- a cluster's members are often low-size/low-degree
+    // nodes that a pure top-N-by-size cap would otherwise drop, defeating
+    // the whole point of focusing on them.
+    if (this.focusedIds && this.focusedIds.size) {
+      const shownIds = new Set(shown.map(n => n.id));
+      const missingFocused = this.nodesAll.filter(n => this.focusedIds.has(n.id) && !shownIds.has(n.id));
+      shown = [...missingFocused, ...shown];
+    }
+    this.nodesShown = shown;
     const shownIds = new Set(this.nodesShown.map(n => n.id));
     this.edgesShown = this._edgesAll.filter(e => shownIds.has(e.src) && shownIds.has(e.dst));
     this._uploadBuffers();
+  }
+
+  /** Fits the camera to `memberIds` and dims everything else. Pass an empty
+   * array/clearFocus() to restore normal display. */
+  focusCluster(memberIds) {
+    this.focusedIds = new Set(memberIds);
+    this._recomputeLod();
+    const members = this.nodesAll.filter(n => this.focusedIds.has(n.id));
+    if (!members.length) return;
+    const cx = members.reduce((s, n) => s + n.x, 0) / members.length;
+    const cy = members.reduce((s, n) => s + n.y, 0) / members.length;
+    let maxDist = 1;
+    for (const n of members) maxDist = Math.max(maxDist, Math.hypot(n.x - cx, n.y - cy));
+    this.panX = cx;
+    this.panY = cy;
+    this.scale = 1.6 / maxDist;
+  }
+
+  clearFocus() {
+    this.focusedIds = null;
+    this._recomputeLod();
+    this._fitCamera();
   }
 
   _uploadBuffers() {
@@ -214,7 +246,10 @@ class GraphRenderer {
       positions[i * 2] = node.x; positions[i * 2 + 1] = node.y;
       sizes[i] = node.size || 4;
       const [r, g, b] = hexToRgba(node.color || "#7C948F", 1);
-      colors[i * 4] = r; colors[i * 4 + 1] = g; colors[i * 4 + 2] = b; colors[i * 4 + 3] = node.alpha ?? 0.92;
+      const isFocused = !this.focusedIds || this.focusedIds.has(node.id);
+      const baseAlpha = node.alpha ?? 0.92;
+      colors[i * 4] = r; colors[i * 4 + 1] = g; colors[i * 4 + 2] = b;
+      colors[i * 4 + 3] = isFocused ? baseAlpha : baseAlpha * 0.12;
     });
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instancePosBuf);
@@ -250,10 +285,12 @@ class GraphRenderer {
       const pa = this.nodesShown[ia], pb = this.nodesShown[ib];
       edgePos[i * 4] = pa.x; edgePos[i * 4 + 1] = pa.y;
       edgePos[i * 4 + 2] = pb.x; edgePos[i * 4 + 3] = pb.y;
-      const [r, g, b] = hexToRgba(e.color || "#7C948F", e.alpha ?? 0.35);
+      const bothFocused = !this.focusedIds || (this.focusedIds.has(e.src) && this.focusedIds.has(e.dst));
+      const edgeAlpha = (e.alpha ?? 0.35) * (bothFocused ? 1 : 0.08);
+      const [r, g, b] = hexToRgba(e.color || "#7C948F", edgeAlpha);
       for (let v = 0; v < 2; v++) {
         edgeColor[i * 8 + v * 4] = r; edgeColor[i * 8 + v * 4 + 1] = g;
-        edgeColor[i * 8 + v * 4 + 2] = b; edgeColor[i * 8 + v * 4 + 3] = e.alpha ?? 0.35;
+        edgeColor[i * 8 + v * 4 + 2] = b; edgeColor[i * 8 + v * 4 + 3] = edgeAlpha;
       }
     });
     gl.bindBuffer(gl.ARRAY_BUFFER, this.edgePosBuf);
