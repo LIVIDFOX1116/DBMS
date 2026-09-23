@@ -679,11 +679,19 @@ pub struct SettleOutcome {
     pub converged: bool,
 }
 
+/// How often (in iterations) a settle loop reports intermediate positions to
+/// `on_progress`, when one is given -- shared by both backends so a caller
+/// streaming to the UI sees a consistent cadence regardless of device.
+const PROGRESS_INTERVAL: usize = 20;
+
 /// Runs `CpuLayout` until max per-node displacement drops below
 /// `CONVERGENCE_EPS` or `cap` is hit, whichever first -- same convergence
 /// definition gpu-bench used, so settle numbers here are comparable to it.
 /// Pass `ClusterForces::none(initial_positions.len())` for the pre-existing,
-/// cluster-unaware behavior.
+/// cluster-unaware behavior. `on_progress`, if given, is called with the
+/// current (dense-index) positions every `PROGRESS_INTERVAL` iterations --
+/// e.g. so a caller can stream them to a UI and let the graph visibly settle
+/// instead of appearing only once at the end.
 pub fn run_cpu_to_settle(
     graph: &Graph,
     initial_positions: Vec<[f32; 2]>,
@@ -691,6 +699,7 @@ pub fn run_cpu_to_settle(
     mode: CpuMode,
     cap: SettleCap,
     cluster: ClusterForces,
+    mut on_progress: Option<&mut dyn FnMut(&[[f32; 2]])>,
 ) -> SettleOutcome {
     let mut layout = CpuLayout::with_mode(graph, initial_positions, params, mode).with_cluster_forces(cluster);
     let t0 = Instant::now();
@@ -699,6 +708,11 @@ pub fn run_cpu_to_settle(
     while iterations < cap.max_iterations && t0.elapsed() < cap.max_wall_clock {
         let max_disp = layout.step();
         iterations += 1;
+        if let Some(cb) = on_progress.as_mut() {
+            if iterations % PROGRESS_INTERVAL == 0 {
+                cb(layout.positions());
+            }
+        }
         if max_disp < CONVERGENCE_EPS {
             converged = true;
             break;
@@ -729,11 +743,12 @@ pub fn run_gpu_to_settle(
     params: LayoutParams,
     cap: SettleCap,
     cluster: &ClusterForces,
+    mut on_progress: Option<&mut dyn FnMut(&[[f32; 2]])>,
 ) -> SettleOutcome {
     let gpu = GpuLayout::new(device, queue, graph, initial_positions, &params, cluster);
 
     if cluster.attraction_k <= 0.0 {
-        const BATCH: usize = 20;
+        const BATCH: usize = 20; // == PROGRESS_INTERVAL, so every batch's already-fetched readback also serves as a progress report at no extra cost
         let t0 = Instant::now();
         let mut iterations = 0;
         let mut converged = false;
@@ -743,6 +758,9 @@ pub fn run_gpu_to_settle(
             gpu.run_iterations(BATCH);
             iterations += BATCH;
             let positions = gpu.readback_positions();
+            if let Some(cb) = on_progress.as_mut() {
+                cb(&positions);
+            }
             if let Some(prev_positions) = &prev {
                 let max_disp = positions
                     .iter()
@@ -774,7 +792,15 @@ pub fn run_gpu_to_settle(
         gpu.upload_centroids(&centroids);
         gpu.run_iterations(1);
         iterations += 1;
+        // Already reading back every iteration for the next centroid anyway
+        // (see this fn's doc comment) -- reporting progress from it here is
+        // free, unlike the fast path above where BATCH stands in for it.
         let positions = gpu.readback_positions();
+        if let Some(cb) = on_progress.as_mut() {
+            if iterations % PROGRESS_INTERVAL == 0 {
+                cb(&positions);
+            }
+        }
         let max_disp = positions
             .iter()
             .zip(prev_positions.iter())
@@ -825,7 +851,7 @@ pub fn run_benchmark(
         }
         let per_iter_ms = t0.elapsed().as_secs_f64() * 1000.0 / timing_iterations as f64;
 
-        let outcome = run_cpu_to_settle(graph, initial_positions.to_vec(), params, mode, cap, ClusterForces::none(initial_positions.len()));
+        let outcome = run_cpu_to_settle(graph, initial_positions.to_vec(), params, mode, cap, ClusterForces::none(initial_positions.len()), None);
         rows.push(BenchRow {
             label,
             per_iter_ms,
@@ -852,7 +878,7 @@ pub fn run_benchmark(
         let _ = timed.readback_positions();
         let readback_ms = readback_t0.elapsed().as_secs_f64() * 1000.0;
 
-        let outcome = run_gpu_to_settle(device, queue, graph, initial_positions, params, cap, &no_cluster);
+        let outcome = run_gpu_to_settle(device, queue, graph, initial_positions, params, cap, &no_cluster, None);
         rows.push(BenchRow {
             label: format!("GPU ({name})"),
             per_iter_ms,
@@ -996,9 +1022,51 @@ mod tests {
     fn run_cpu_to_settle_terminates_and_stays_finite() {
         let (graph, positions) = test_graph(120);
         let cap = SettleCap { max_iterations: 50, max_wall_clock: Duration::from_secs(5) };
-        let outcome = run_cpu_to_settle(&graph, positions.clone(), LayoutParams::default(), CpuMode::Multi, cap, ClusterForces::none(positions.len()));
+        let outcome = run_cpu_to_settle(&graph, positions.clone(), LayoutParams::default(), CpuMode::Multi, cap, ClusterForces::none(positions.len()), None);
         assert!(outcome.iterations > 0 && outcome.iterations <= cap.max_iterations);
         assert!(outcome.positions.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
+    }
+
+    #[test]
+    fn run_cpu_to_settle_reports_progress_every_interval_not_every_iteration() {
+        // Guards the streaming-layout feature's cadence contract: too
+        // frequent and every Tauri emit call adds real IPC/serialization
+        // cost for no visual benefit; too infrequent and it doesn't look
+        // like it's streaming at all.
+        let (graph, seed_positions) = test_graph(120);
+        // test_graph's own circular seed is already near force-equilibrium
+        // for this ring+chord graph (converges in 1 iteration) -- useless
+        // for exercising a 20-iteration cadence. Exactly-coincident points
+        // (tried first) don't work either: the repulsion term's direction
+        // vector is (0,0) there, so it nets to zero force despite the huge
+        // magnitude, and nothing moves. Scaling the same seed down 1000x
+        // keeps every point distinct (so real, directional repulsion
+        // applies) while starting far tighter than equilibrium, guaranteeing
+        // many iterations of gradual expansion before convergence.
+        let positions: Vec<[f32; 2]> = seed_positions.iter().map(|p| [p[0] * 0.001, p[1] * 0.001]).collect();
+        let cap = SettleCap { max_iterations: 47, max_wall_clock: Duration::from_secs(5) };
+        let mut calls = 0usize;
+        let mut last_seen: Option<Vec<[f32; 2]>> = None;
+        let mut on_progress = |p: &[[f32; 2]]| {
+            calls += 1;
+            last_seen = Some(p.to_vec());
+        };
+        let outcome = run_cpu_to_settle(
+            &graph,
+            positions,
+            LayoutParams::default(),
+            CpuMode::Multi,
+            cap,
+            ClusterForces::none(120),
+            Some(&mut on_progress),
+        );
+        assert!(outcome.iterations >= 40, "need enough iterations for the cadence assertion below to mean anything, got {}", outcome.iterations);
+        assert_eq!(
+            calls,
+            outcome.iterations / 20,
+            "must report exactly once per PROGRESS_INTERVAL (20) iterations, not once per iteration and not more/fewer times"
+        );
+        assert!(last_seen.unwrap().iter().all(|p| p[0].is_finite() && p[1].is_finite()));
     }
 
     #[test]
@@ -1141,8 +1209,8 @@ mod tests {
         let cluster = ClusterForces { cluster_of, num_clusters: 600, attraction_k: 2.0 };
         let cap = SettleCap { max_iterations: 10, max_wall_clock: Duration::from_secs(30) };
 
-        let cpu_outcome = run_cpu_to_settle(&graph, positions.clone(), params, CpuMode::Multi, cap, cluster.clone());
-        let gpu_outcome = run_gpu_to_settle(&device, &queue, &graph, &positions, params, cap, &cluster);
+        let cpu_outcome = run_cpu_to_settle(&graph, positions.clone(), params, CpuMode::Multi, cap, cluster.clone(), None);
+        let gpu_outcome = run_gpu_to_settle(&device, &queue, &graph, &positions, params, cap, &cluster, None);
 
         assert_eq!(cpu_outcome.iterations, 10, "must run the full 10 iterations (not converge early) for a fair comparison");
         assert_eq!(gpu_outcome.iterations, 10, "must run the full 10 iterations (not converge early) for a fair comparison");

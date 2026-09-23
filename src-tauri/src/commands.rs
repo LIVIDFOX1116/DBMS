@@ -9,6 +9,7 @@ use crate::layout::{self, BenchRow, CpuMode, LayoutParams, SettleCap};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use tauri::Emitter;
 
 pub struct AppState(pub Mutex<BackendHandle>);
 
@@ -271,6 +272,14 @@ pub struct LayoutResult {
 /// cluster_aware_layout_spike example) to cost more in layout quality than
 /// it saves in sync overhead, and CPU/GPU parity requires both backends to
 /// compute this identically.
+///
+/// Emits a "layout-progress" event (payload: the same wallet_id -> [f32;2]
+/// shape as this command's own `positions` field) every ~20 iterations while
+/// settling, so the frontend can show the graph visibly settling instead of
+/// only appearing once at the very end -- see layout.rs's PROGRESS_INTERVAL.
+/// Reuses readbacks the settle loops already do for their own convergence
+/// checks (see run_gpu_to_settle's doc comment), so this adds no new GPU
+/// sync cost on top of what cluster-aware forces already pay.
 #[tauri::command]
 pub fn run_layout(
     snapshot_id: i64,
@@ -279,6 +288,7 @@ pub fn run_layout(
     run_id: i64,
     cluster_attraction_k: f32,
     state: tauri::State<AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<LayoutResult, String> {
     let port = state.0.lock().unwrap().port;
     let edges = fetch_snapshot_edges(port, snapshot_id, max_edges)?;
@@ -289,6 +299,13 @@ pub fn run_layout(
     let initial = layout::initial_circle_positions(index_to_id.len());
     let params = LayoutParams::default();
     let cap = SettleCap::default();
+
+    // Best-effort: a dropped progress event should never abort the layout
+    // itself, so emit errors are swallowed rather than propagated.
+    let mut emit_progress = |positions: &[[f32; 2]]| {
+        let payload: HashMap<i64, [f32; 2]> = index_to_id.iter().zip(positions.iter()).map(|(&id, &p)| (id, p)).collect();
+        let _ = app_handle.emit("layout-progress", &payload);
+    };
 
     let cluster = if cluster_attraction_k > 0.0 {
         match fetch_cluster_membership(port, run_id) {
@@ -319,16 +336,16 @@ pub fn run_layout(
     let (dense_positions, device_used, iterations, elapsed_ms, converged) = if device.starts_with("gpu") {
         match layout::create_gpu_device(prefer_discrete) {
             Some((gpu_device, queue, name)) => {
-                let outcome = layout::run_gpu_to_settle(&gpu_device, &queue, &graph, &initial, params, cap, &cluster);
+                let outcome = layout::run_gpu_to_settle(&gpu_device, &queue, &graph, &initial, params, cap, &cluster, Some(&mut emit_progress));
                 (outcome.positions, format!("gpu: {name}"), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
             }
             None => {
-                let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap, cluster.clone());
+                let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap, cluster.clone(), Some(&mut emit_progress));
                 (outcome.positions, "cpu (no matching GPU adapter found, fell back)".to_string(), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
             }
         }
     } else {
-        let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap, cluster.clone());
+        let outcome = layout::run_cpu_to_settle(&graph, initial, params, CpuMode::Multi, cap, cluster.clone(), Some(&mut emit_progress));
         (outcome.positions, "cpu".to_string(), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
     };
 
