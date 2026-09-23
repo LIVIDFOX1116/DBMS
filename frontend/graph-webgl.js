@@ -194,6 +194,22 @@ class GraphRenderer {
     this._recomputeLod();
   }
 
+  /** Applies newly-arrived positions (id -> [x,y]) without touching the
+   * node/edge SET (no LOD recompute) -- used while layout iterations stream
+   * in from the Rust "layout-progress" event, so the graph visibly settles
+   * instead of jumping into place only once at the very end. Re-fits the
+   * camera each call too: the seed layout's extent is usually nowhere near
+   * the final settled extent (which can be orders of magnitude larger), so
+   * without this most nodes would simply drift off-screen mid-animation. */
+  applyPositionUpdates(positionsById) {
+    for (const node of this.nodesAll) {
+      const p = positionsById[node.id];
+      if (p) { node.x = p[0]; node.y = p[1]; }
+    }
+    this._fitCamera();
+    this._uploadBuffers();
+  }
+
   _recomputeLod() {
     const ranked = [...this.nodesAll].sort((a, b) => (b.size || 1) - (a.size || 1));
     let shown = ranked.slice(0, this.nodeCap);

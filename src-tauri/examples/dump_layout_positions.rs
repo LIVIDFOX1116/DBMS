@@ -54,7 +54,7 @@ fn main() {
     let (device, queue, name) = layout::create_gpu_device(None).expect("no GPU adapter found");
     println!("running layout on: {name}");
     let no_cluster = layout::ClusterForces::none(index_to_id.len());
-    let outcome = layout::run_gpu_to_settle(&device, &queue, &graph, &initial, params, cap, &no_cluster);
+    let outcome = layout::run_gpu_to_settle(&device, &queue, &graph, &initial, params, cap, &no_cluster, None);
     println!("settled: {} iterations, converged={}, elapsed={:.2?}", outcome.iterations, outcome.converged, outcome.elapsed);
 
     let nodes: Vec<NodeOut> = index_to_id.iter().zip(outcome.positions.iter()).map(|(&id, &[x, y])| NodeOut { id, x, y }).collect();

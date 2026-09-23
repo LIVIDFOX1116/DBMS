@@ -1241,37 +1241,11 @@ async function renderGraph() {
   // renderGraph() call may have since produced.
   const myNodes = nodes;
 
-  const layoutBadge = document.getElementById("layoutDeviceBadge");
-  if (isRunningInTauriApp()) {
-    try {
-      const requestedDevice = resolveLayoutDevice(myNodes.length);
-      const clusterAttractionK = Number(document.getElementById("clusterAttractionSlider").value);
-      const result = await window.__TAURI__.core.invoke("run_layout", {
-        snapshotId: Number(snapshotId), maxEdges: edgeLimit, device: requestedDevice,
-        runId: Number(runId()), clusterAttractionK,
-      });
-      if (myGeneration !== renderGraphGeneration) return; // superseded while awaiting the Rust layout
-      let applied = 0;
-      const byId = new Map(myNodes.map(n => [n.id, n]));
-      Object.entries(result.positions).forEach(([walletId, xy]) => {
-        const node = byId.get(Number(walletId));
-        if (node) { node.x = xy[0]; node.y = xy[1]; applied++; }
-      });
-      // "hit iteration budget" not "failed to converge" -- at this graph's
-      // real density, no device converges within the cap (see SettleCap's
-      // doc comment in layout.rs); this is expected, permanent behavior at
-      // this scale, not a transient error.
-      layoutBadge.textContent = `layout: ${result.device_used} · ${applied}/${result.node_count} nodes · ${result.iterations} iters · ${result.elapsed_ms}ms${result.converged ? "" : " (hit iteration budget, expected at this density)"}`;
-    } catch (err) {
-      if (myGeneration !== renderGraphGeneration) return; // superseded; don't touch a newer call's badge
-      console.error("run_layout failed, using JS fallback layout:", err);
-      layoutBadge.textContent = "layout: JS fallback (Rust command failed -- see console)";
-    }
-  } else {
-    layoutBadge.textContent = "layout: JS (browser preview, no Tauri)";
-  }
-  if (myGeneration !== renderGraphGeneration) return;
-
+  // WebGL2 + renderer construction now happens BEFORE the Rust layout
+  // invoke, seeded with layoutGraph()'s rough JS positions -- lets the
+  // "layout-progress" event (see below) stream real layout iterations onto
+  // an already-visible graph, so it settles into place instead of only
+  // appearing once the whole invoke resolves 2-20s later.
   const adapter = detectGpuAdapter();
   if (!adapter.available) {
     container.innerHTML = `<div class="empty-hint">Graph rendering requires WebGL2, which is not available in this window.</div>`;
@@ -1317,6 +1291,52 @@ async function renderGraph() {
     console.error("WebGL2 graph render failed:", err);
     container.innerHTML = `<div class="empty-hint">Graph rendering requires WebGL2, which is not available in this window.</div>`;
     toast("Could not initialize the graph renderer (WebGL2 unavailable)", "error");
+    return;
+  }
+
+  const layoutBadge = document.getElementById("layoutDeviceBadge");
+  if (isRunningInTauriApp()) {
+    let unlisten = null;
+    try {
+      // Applies each streamed batch of positions (~every 20 iterations, see
+      // layout.rs's PROGRESS_INTERVAL) directly to the already-visible
+      // renderer. Generation-guarded like every other await point in this
+      // function: a stale event from a superseded call must not touch
+      // whatever renderGraph() call (and GraphRenderer) is current now.
+      if (window.__TAURI__.event) {
+        unlisten = await window.__TAURI__.event.listen("layout-progress", event => {
+          if (myGeneration !== renderGraphGeneration || !graphRenderer) return;
+          graphRenderer.applyPositionUpdates(event.payload);
+        });
+      }
+      const requestedDevice = resolveLayoutDevice(myNodes.length);
+      const clusterAttractionK = Number(document.getElementById("clusterAttractionSlider").value);
+      const result = await window.__TAURI__.core.invoke("run_layout", {
+        snapshotId: Number(snapshotId), maxEdges: edgeLimit, device: requestedDevice,
+        runId: Number(runId()), clusterAttractionK,
+      });
+      if (myGeneration !== renderGraphGeneration) return; // superseded while awaiting the Rust layout
+      // graphRenderer.applyPositionUpdates below already mutates myNodes'
+      // x/y (same node objects, see setData) -- this pass is just counting
+      // how many wallet_ids the result actually covered, for the badge.
+      const myIds = new Set(myNodes.map(n => n.id));
+      let applied = 0;
+      Object.keys(result.positions).forEach(walletId => { if (myIds.has(Number(walletId))) applied++; });
+      graphRenderer.applyPositionUpdates(result.positions);
+      // "hit iteration budget" not "failed to converge" -- at this graph's
+      // real density, no device converges within the cap (see SettleCap's
+      // doc comment in layout.rs); this is expected, permanent behavior at
+      // this scale, not a transient error.
+      layoutBadge.textContent = `layout: ${result.device_used} · ${applied}/${result.node_count} nodes · ${result.iterations} iters · ${result.elapsed_ms}ms${result.converged ? "" : " (hit iteration budget, expected at this density)"}`;
+    } catch (err) {
+      if (myGeneration !== renderGraphGeneration) return; // superseded; don't touch a newer call's badge
+      console.error("run_layout failed, using JS fallback layout:", err);
+      layoutBadge.textContent = "layout: JS fallback (Rust command failed -- see console)";
+    } finally {
+      if (unlisten) unlisten();
+    }
+  } else {
+    layoutBadge.textContent = "layout: JS (browser preview, no Tauri)";
   }
 }
 
