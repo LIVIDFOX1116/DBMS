@@ -348,6 +348,15 @@ struct IntegrateParamsGpu {
     _pad: u32,
 }
 
+/// Padded to 16 bytes to satisfy uniform buffer alignment (same reason
+/// `IntegrateParamsGpu` carries `_pad`) even though only one field is real.
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct ClusterParamsGpu {
+    cluster_attraction_k: f32,
+    _pad: [u32; 3],
+}
+
 /// Picks a real GPU adapter (never the software/CPU fallback), preferring
 /// discrete when `prefer_discrete` is true, integrated when false, or
 /// whatever's first when None. Returns None (never panics) if no matching
@@ -366,11 +375,18 @@ pub fn create_gpu_device(prefer_discrete: Option<bool>) -> Option<(wgpu::Device,
         }
     })?;
     let info = adapter.get_info();
+    // The adapter's own real limits, not downlevel_defaults() (a WebGL2-
+    // compatible floor that caps max_storage_buffers_per_shader_stage at 4)
+    // -- this is a native desktop compute engine, never a browser/WebGL2
+    // target, and cluster-aware forces' extra bindings (cluster_of,
+    // centroids, cluster_params -- see forces.wgsl) push the force shader's
+    // storage buffer count to 6, which downlevel_defaults() cannot satisfy
+    // even on hardware that supports it fine.
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("txgraph-layout"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            required_limits: adapter.limits(),
             memory_hints: wgpu::MemoryHints::Performance,
         },
         None,
@@ -399,6 +415,11 @@ pub struct GpuLayout<'a> {
     force_params_buf: wgpu::Buffer,
     #[allow(dead_code)]
     int_params_buf: wgpu::Buffer,
+    #[allow(dead_code)]
+    cluster_of_buf: wgpu::Buffer,
+    centroids_buf: wgpu::Buffer,
+    #[allow(dead_code)]
+    cluster_params_buf: wgpu::Buffer,
     force_pipeline: wgpu::ComputePipeline,
     force_bind_group: wgpu::BindGroup,
     int_pipeline: wgpu::ComputePipeline,
@@ -414,6 +435,7 @@ impl<'a> GpuLayout<'a> {
         graph: &Graph,
         initial_positions: &[[f32; 2]],
         params: &LayoutParams,
+        cluster: &ClusterForces,
     ) -> Self {
         let n = graph.num_nodes;
         let pos_bytes = (initial_positions.len() * std::mem::size_of::<[f32; 2]>()) as u64;
@@ -466,6 +488,29 @@ impl<'a> GpuLayout<'a> {
             mapped_at_creation: false,
         });
 
+        // Always created, even when cluster.attraction_k == 0 -- one fixed
+        // pipeline/bind-group-layout for both the cluster-aware and
+        // cluster-unaware cases (see forces.wgsl's ClusterParams comment).
+        // centroids_buf is COPY_DST because upload_centroids rewrites it
+        // every iteration from host-computed centroids (see
+        // run_gpu_to_settle) -- it is never computed on the GPU itself.
+        let cluster_of_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cluster_of"),
+            contents: bytemuck::cast_slice(&cluster.cluster_of),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let centroids_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("centroids"),
+            size: (cluster.num_clusters.max(1) as u64) * std::mem::size_of::<[f32; 2]>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let cluster_params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cluster_params"),
+            contents: bytemuck::bytes_of(&ClusterParamsGpu { cluster_attraction_k: cluster.attraction_k, _pad: [0; 3] }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
         let force_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("forces"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/forces.wgsl").into()),
@@ -500,6 +545,9 @@ impl<'a> GpuLayout<'a> {
                 wgpu::BindGroupEntry { binding: 2, resource: adj_offsets_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: adj_indices_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: force_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: cluster_of_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: centroids_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: cluster_params_buf.as_entire_binding() },
             ],
         });
         let int_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -524,6 +572,9 @@ impl<'a> GpuLayout<'a> {
             adj_indices_buf,
             force_params_buf,
             int_params_buf,
+            cluster_of_buf,
+            centroids_buf,
+            cluster_params_buf,
             force_pipeline,
             force_bind_group,
             int_pipeline,
@@ -573,6 +624,17 @@ impl<'a> GpuLayout<'a> {
         drop(data);
         self.staging_buf.unmap();
         positions
+    }
+
+    /// Rewrites the per-cluster centroid buffer the shader reads (see
+    /// forces.wgsl). Called every iteration from `run_gpu_to_settle` when
+    /// cluster-aware forces are active -- this is the CPU<->GPU sync point
+    /// whose cost that function measures against the cluster-unaware
+    /// baseline (staleness was measured, on CPU, to cost more in quality
+    /// than it saves here -- see ClusterForces's doc comment -- so this is
+    /// deliberately not batched/periodic).
+    pub fn upload_centroids(&self, centroids: &[[f32; 2]]) {
+        self.queue.write_buffer(&self.centroids_buf, 0, bytemuck::cast_slice(centroids));
     }
 }
 
@@ -645,9 +707,20 @@ pub fn run_cpu_to_settle(
     SettleOutcome { positions: layout.positions().to_vec(), iterations, elapsed: t0.elapsed(), converged }
 }
 
-/// GPU equivalent of `run_cpu_to_settle` -- batches iterations in VRAM with
-/// one readback per batch (not per iteration) to check convergence, exactly
-/// the "periodic, not every frame" pattern gpu-bench validated.
+/// GPU equivalent of `run_cpu_to_settle`. With cluster-aware forces off
+/// (`cluster.attraction_k <= 0`), batches iterations in VRAM with one
+/// readback per batch (not per iteration) to check convergence, exactly the
+/// "periodic, not every frame" pattern gpu-bench validated -- unchanged from
+/// before cluster-aware forces existed, so this case pays no new cost.
+///
+/// With cluster-aware forces on, centroids must be recomputed from every
+/// node's position every iteration (see ClusterForces's doc comment for why
+/// staleness was rejected), and the GPU can't reduce across arbitrary
+/// cluster groups internally without atomics WGSL doesn't reliably support
+/// for f32 -- so this path reads positions back, computes centroids on the
+/// CPU, and re-uploads them, once per iteration. That per-iteration
+/// CPU<->GPU sync is real (see `upload_centroids`'s doc comment) and is
+/// exactly what distinguishes this path's throughput from the batched one.
 pub fn run_gpu_to_settle(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -655,32 +728,64 @@ pub fn run_gpu_to_settle(
     initial_positions: &[[f32; 2]],
     params: LayoutParams,
     cap: SettleCap,
+    cluster: &ClusterForces,
 ) -> SettleOutcome {
-    let gpu = GpuLayout::new(device, queue, graph, initial_positions, &params);
-    const BATCH: usize = 20;
+    let gpu = GpuLayout::new(device, queue, graph, initial_positions, &params, cluster);
+
+    if cluster.attraction_k <= 0.0 {
+        const BATCH: usize = 20;
+        let t0 = Instant::now();
+        let mut iterations = 0;
+        let mut converged = false;
+        let mut prev: Option<Vec<[f32; 2]>> = None;
+        let mut last_positions = initial_positions.to_vec();
+        while iterations < cap.max_iterations && t0.elapsed() < cap.max_wall_clock {
+            gpu.run_iterations(BATCH);
+            iterations += BATCH;
+            let positions = gpu.readback_positions();
+            if let Some(prev_positions) = &prev {
+                let max_disp = positions
+                    .iter()
+                    .zip(prev_positions.iter())
+                    .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt())
+                    .fold(0f32, f32::max);
+                if max_disp / (BATCH as f32) < CONVERGENCE_EPS {
+                    converged = true;
+                    last_positions = positions;
+                    break;
+                }
+            }
+            last_positions = positions.clone();
+            prev = Some(positions);
+        }
+        return SettleOutcome { positions: last_positions, iterations, elapsed: t0.elapsed(), converged };
+    }
+
     let t0 = Instant::now();
     let mut iterations = 0;
     let mut converged = false;
-    let mut prev: Option<Vec<[f32; 2]>> = None;
-    let mut last_positions = initial_positions.to_vec();
+    let mut prev_positions = initial_positions.to_vec();
+    let mut last_positions = prev_positions.clone();
     while iterations < cap.max_iterations && t0.elapsed() < cap.max_wall_clock {
-        gpu.run_iterations(BATCH);
-        iterations += BATCH;
+        // Centroids from the state BEFORE this step -- same timing as the
+        // CPU path, which computes forces (including the cluster term) from
+        // `self.positions` before velocity integration advances them.
+        let (centroids, _) = cluster.centroids(&prev_positions);
+        gpu.upload_centroids(&centroids);
+        gpu.run_iterations(1);
+        iterations += 1;
         let positions = gpu.readback_positions();
-        if let Some(prev_positions) = &prev {
-            let max_disp = positions
-                .iter()
-                .zip(prev_positions.iter())
-                .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt())
-                .fold(0f32, f32::max);
-            if max_disp / (BATCH as f32) < CONVERGENCE_EPS {
-                converged = true;
-                last_positions = positions;
-                break;
-            }
-        }
+        let max_disp = positions
+            .iter()
+            .zip(prev_positions.iter())
+            .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt())
+            .fold(0f32, f32::max);
         last_positions = positions.clone();
-        prev = Some(positions);
+        if max_disp < CONVERGENCE_EPS {
+            converged = true;
+            break;
+        }
+        prev_positions = positions;
     }
     SettleOutcome { positions: last_positions, iterations, elapsed: t0.elapsed(), converged }
 }
@@ -734,9 +839,12 @@ pub fn run_benchmark(
     bench_cpu(format!("CPU rayon ({}T)", rayon::current_num_threads()), CpuMode::Multi);
 
     if let Some((device, queue, name)) = gpu {
-        let warm = GpuLayout::new(device, queue, graph, initial_positions, &params);
+        // Pure device-speed comparison -- deliberately cluster-unaware, same
+        // as the CPU rows above, so all three rows measure the same work.
+        let no_cluster = ClusterForces::none(initial_positions.len());
+        let warm = GpuLayout::new(device, queue, graph, initial_positions, &params, &no_cluster);
         warm.run_iterations(1);
-        let timed = GpuLayout::new(device, queue, graph, initial_positions, &params);
+        let timed = GpuLayout::new(device, queue, graph, initial_positions, &params, &no_cluster);
         let t0 = Instant::now();
         timed.run_iterations(timing_iterations);
         let per_iter_ms = t0.elapsed().as_secs_f64() * 1000.0 / timing_iterations as f64;
@@ -744,7 +852,7 @@ pub fn run_benchmark(
         let _ = timed.readback_positions();
         let readback_ms = readback_t0.elapsed().as_secs_f64() * 1000.0;
 
-        let outcome = run_gpu_to_settle(device, queue, graph, initial_positions, params, cap);
+        let outcome = run_gpu_to_settle(device, queue, graph, initial_positions, params, cap, &no_cluster);
         rows.push(BenchRow {
             label: format!("GPU ({name})"),
             per_iter_ms,
@@ -929,7 +1037,8 @@ mod tests {
         let mut cpu = CpuLayout::new(&graph, positions.clone(), params);
         cpu.run_batch(30);
 
-        let gpu = GpuLayout::new(&device, &queue, &graph, &positions, &params);
+        let no_cluster = ClusterForces::none(positions.len());
+        let gpu = GpuLayout::new(&device, &queue, &graph, &positions, &params, &no_cluster);
         gpu.run_iterations(30);
         let gpu_positions = gpu.readback_positions();
 
@@ -969,7 +1078,8 @@ mod tests {
         let mut cpu = CpuLayout::new(&graph, positions.clone(), params);
         cpu.run_batch(10);
 
-        let gpu = GpuLayout::new(&device, &queue, &graph, &positions, &params);
+        let no_cluster = ClusterForces::none(positions.len());
+        let gpu = GpuLayout::new(&device, &queue, &graph, &positions, &params, &no_cluster);
         gpu.run_iterations(10);
         let gpu_positions = gpu.readback_positions();
 
@@ -980,6 +1090,70 @@ mod tests {
                 dist < TOLERANCE,
                 "node {i} (workgroup {}): CPU {c:?} vs GPU {g:?} diverged by {dist} (tolerance {TOLERANCE})",
                 i / 256
+            );
+        }
+    }
+
+    #[test]
+    fn cpu_and_gpu_layouts_agree_with_cluster_aware_forces() {
+        // Extends the multi-workgroup parity test to the cluster-aware
+        // path, which is a structurally different GPU code path
+        // (per-iteration CPU<->GPU sync via run_gpu_to_settle, not a single
+        // batched GpuLayout::run_iterations call) -- the batched path's
+        // parity being fine says nothing about whether the per-iteration
+        // centroid recompute is wired correctly on both backends.
+        let Some((device, queue, adapter_name)) = create_gpu_device(None) else {
+            eprintln!("SKIPPED: no GPU adapter available on this machine for the parity test");
+            return;
+        };
+        eprintln!("cluster-aware parity test running against: {adapter_name}");
+
+        let (graph, positions) = test_graph(600);
+        let params = LayoutParams::default();
+
+        // Non-trivial cluster structure -- one 100-member cluster, one
+        // 200-member cluster, everything else singleton -- spanning
+        // workgroup boundaries (256) inside both real clusters, not just a
+        // single tidy group.
+        let mut cluster_of: Vec<u32> = (0..600u32).collect();
+        for slot in cluster_of.iter_mut().take(100) {
+            *slot = 0;
+        }
+        for slot in cluster_of[100..300].iter_mut() {
+            *slot = 1;
+        }
+        // k=2.0, NOT the production default of 40 -- this synthetic graph's
+        // positions are seeded on a ~100-unit-radius circle (see test_graph),
+        // roughly 1/700th the real case-study graph's ~69,000-unit scale.
+        // k=40 here was tried first and produced forces ~1000x larger than
+        // the graph's own repulsion/edge-attraction forces, pushing the
+        // simulation into a chaotically unstable regime where ordinary
+        // GPU/CPU float-rounding differences (already present and harmless
+        // in the base-force-only parity tests) blew up to a max divergence
+        // of 72.9 units across 10 iterations, with 64/600 nodes over
+        // tolerance -- not a wrong kernel, just the wrong k for this scale.
+        // k=2.0 keeps the cluster term comparable in magnitude to the other
+        // forces (max divergence 0.70, 0/600 over tolerance) while still
+        // exercising the same cluster indexing/centroid code on both
+        // backends. The lever for a real graph is always relative to ITS
+        // scale, same as the production "cluster pull" slider is tunable
+        // rather than fixed.
+        let cluster = ClusterForces { cluster_of, num_clusters: 600, attraction_k: 2.0 };
+        let cap = SettleCap { max_iterations: 10, max_wall_clock: Duration::from_secs(30) };
+
+        let cpu_outcome = run_cpu_to_settle(&graph, positions.clone(), params, CpuMode::Multi, cap, cluster.clone());
+        let gpu_outcome = run_gpu_to_settle(&device, &queue, &graph, &positions, params, cap, &cluster);
+
+        assert_eq!(cpu_outcome.iterations, 10, "must run the full 10 iterations (not converge early) for a fair comparison");
+        assert_eq!(gpu_outcome.iterations, 10, "must run the full 10 iterations (not converge early) for a fair comparison");
+
+        const TOLERANCE: f32 = 1.0;
+        for (i, (c, g)) in cpu_outcome.positions.iter().zip(gpu_outcome.positions.iter()).enumerate() {
+            let dist = ((c[0] - g[0]).powi(2) + (c[1] - g[1]).powi(2)).sqrt();
+            assert!(
+                dist < TOLERANCE,
+                "node {i}: CPU {c:?} vs GPU {g:?} diverged by {dist} (tolerance {TOLERANCE}) -- \
+                 cluster-aware forces must match between backends just like the base force does"
             );
         }
     }
