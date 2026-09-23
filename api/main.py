@@ -16,23 +16,74 @@ Run it:
     curl localhost:8000/docs      # interactive OpenAPI docs, free from FastAPI
 """
 import json
+import logging
 import os
 import pathlib
 import secrets
+import threading
+from contextlib import asynccontextmanager, contextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-import psycopg2
+from fastapi.responses import JSONResponse
+from psycopg2 import InterfaceError, OperationalError
+from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ingestion import config
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("api.main")
+
+# Lazy: created on first real (live-mode) query, not at import/startup time --
+# mock mode (the default, and everything CI runs) never touches Postgres at
+# all, and eagerly connecting here would turn that into a hard requirement.
+# _pool_lock guards the lazy init itself: FastAPI dispatches sync endpoints
+# to a worker thread pool, so a burst of concurrent first requests (e.g. the
+# dashboard's initial batch of GET calls on load) can otherwise all observe
+# `_pool is None` at once and each construct their own ThreadedConnectionPool
+# -- whichever one loses the race to the global still has requests in flight
+# against it, and returning their connections via the *other* (currently
+# global) pool instance raises psycopg2.pool.PoolError: trying to put
+# unkeyed connection. Reproduced live via a real `cargo tauri dev` launch.
+_pool: "pg_pool.ThreadedConnectionPool | None" = None
+_pool_lock = threading.Lock()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    global _pool
+    if _pool is not None:
+        _pool.closeall()
+        log.info("Postgres connection pool closed")
+        _pool = None
+
 
 app = FastAPI(
     title="Transaction Graph Analyzer API",
     version="0.1.0",
     description="Shared contract between the GPU/backend half and the frontend half. See docs/API_CONTRACT.md.",
+    lifespan=lifespan,
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    # HTTPException (404s, 422s, the 403 on /internal/api-key) already has
+    # its own correct handling -- only step in for genuinely unexpected
+    # errors (a DB error, a bug), and never leak DB error text, SQL, or a
+    # traceback into the response body. The real detail goes to the log
+    # (findable via the Tauri get_backend_logs command in a packaged app,
+    # not just a dev terminal), not to the caller.
+    if isinstance(exc, StarletteHTTPException):
+        return await http_exception_handler(request, exc)
+    log.exception("Unhandled error handling %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "internal server error"})
+
 
 # No auth and no mutating endpoints (see API_CONTRACT.md "Known simplifications"),
 # so a wildcard origin doesn't widen the attack surface -- it just lets the
@@ -56,8 +107,39 @@ def load_mock() -> dict:
     return json.loads(MOCK_PATH.read_text())
 
 
+def _get_pool() -> pg_pool.ThreadedConnectionPool:
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:  # re-check: another thread may have won the race while we waited for the lock
+                _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=10, **config.PG_DSN)
+                log.info("Postgres connection pool created (min=1, max=10)")
+    return _pool
+
+
+@contextmanager
 def get_conn():
-    return psycopg2.connect(**config.PG_DSN)
+    """Checks out a pooled connection. ThreadedConnectionPool, not
+    SimpleConnectionPool: FastAPI runs sync endpoints (every endpoint in
+    this file) in a worker thread pool, not the event loop thread, so the
+    pool itself must be thread-safe. A connection that errors with a
+    connection-level exception (OperationalError/InterfaceError -- e.g. the
+    Postgres server restarting mid-request) is discarded (closed) rather
+    than returned to the pool for reuse, so one broken connection can't
+    poison every request after it."""
+    conn = _get_pool().getconn()
+    broken = False
+    try:
+        yield conn
+    except (OperationalError, InterfaceError):
+        broken = True
+        raise
+    finally:
+        pool = _get_pool()
+        if broken or conn.closed:
+            pool.putconn(conn, close=True)
+        else:
+            pool.putconn(conn)
 
 
 def rows_as_dicts(cur) -> list:
@@ -112,8 +194,7 @@ def set_internal_api_key(body: ApiKeyUpdate, request: Request):
 def list_wallets(limit: int = 50):
     if using_mock():
         return load_mock()["wallets"][:limit]
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT wallet_id, address, address_type, risk_score, tx_count
@@ -121,8 +202,6 @@ def list_wallets(limit: int = 50):
                 (limit,),
             )
             return rows_as_dicts(cur)
-    finally:
-        conn.close()
 
 
 @app.get("/wallets/{wallet_id}")
@@ -132,8 +211,7 @@ def get_wallet(wallet_id: int):
             if w["wallet_id"] == wallet_id:
                 return w
         raise HTTPException(404, "wallet not found")
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT wallet_id, address, address_type, risk_score, tx_count
@@ -145,8 +223,6 @@ def get_wallet(wallet_id: int):
                 raise HTTPException(404, "wallet not found")
             cols = [d[0] for d in cur.description]
             return dict(zip(cols, row))
-    finally:
-        conn.close()
 
 
 CLUSTER_COLUMNS = """c.cluster_id, c.run_id, c.community_label, c.member_count, c.cluster_type,
@@ -161,8 +237,7 @@ def list_clusters(run_id: Optional[int] = None):
         # Mock mode has no analysis_run to join against -- additive fields
         # default to null rather than a fabricated value.
         return [{**{k: v for k, v in c.items() if k != "members"}, "analysis_backend": None, "library_version": None} for c in clusters]
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             if run_id is not None:
                 cur.execute(
@@ -178,8 +253,6 @@ def list_clusters(run_id: Optional[int] = None):
                         ORDER BY c.run_id DESC LIMIT 100"""
                 )
             return rows_as_dicts(cur)
-    finally:
-        conn.close()
 
 
 @app.get("/clusters/{cluster_id}")
@@ -189,8 +262,7 @@ def get_cluster(cluster_id: int):
             if c["cluster_id"] == cluster_id:
                 return {**{k: v for k, v in c.items() if k != "members"}, "analysis_backend": None, "library_version": None}
         raise HTTPException(404, "cluster not found")
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"""SELECT {CLUSTER_COLUMNS}
@@ -203,8 +275,6 @@ def get_cluster(cluster_id: int):
                 raise HTTPException(404, "cluster not found")
             cols = [d[0] for d in cur.description]
             return dict(zip(cols, row))
-    finally:
-        conn.close()
 
 
 @app.get("/cluster-membership")
@@ -227,8 +297,7 @@ def cluster_membership(cluster_ids: str):
             for m in c.get("members", []):
                 result.setdefault(m["wallet_id"], []).append(c["cluster_id"])
         return result
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT wallet_id, array_agg(cluster_id ORDER BY cluster_id)
@@ -236,8 +305,6 @@ def cluster_membership(cluster_ids: str):
                 (ids,),
             )
             return {wallet_id: member_cluster_ids for wallet_id, member_cluster_ids in cur.fetchall()}
-    finally:
-        conn.close()
 
 
 @app.get("/clusters/{cluster_id}/members")
@@ -247,8 +314,7 @@ def cluster_members(cluster_id: int):
             if c["cluster_id"] == cluster_id:
                 return c.get("members", [])
         raise HTTPException(404, "cluster not found")
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT cm.wallet_id, w.address, cm.membership_score, cm.is_core_node
@@ -257,8 +323,6 @@ def cluster_members(cluster_id: int):
                 (cluster_id,),
             )
             return rows_as_dicts(cur)
-    finally:
-        conn.close()
 
 
 @app.get("/alerts")
@@ -266,8 +330,7 @@ def list_alerts(status: Optional[str] = None):
     if using_mock():
         alerts = load_mock()["alerts"]
         return [a for a in alerts if status is None or a["review_status"] == status]
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             if status:
                 cur.execute(
@@ -281,24 +344,19 @@ def list_alerts(status: Optional[str] = None):
                        FROM alert ORDER BY detected_at DESC LIMIT 100"""
                 )
             return rows_as_dicts(cur)
-    finally:
-        conn.close()
 
 
 @app.get("/snapshots")
 def list_snapshots():
     if using_mock():
         return load_mock()["snapshots"]
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT snapshot_id, snapshot_name, start_block, end_block, vertex_count, edge_count, is_directed
                    FROM graph_snapshot ORDER BY created_at DESC"""
             )
             return rows_as_dicts(cur)
-    finally:
-        conn.close()
 
 
 @app.get("/snapshots/{snapshot_id}/edges")
@@ -306,8 +364,7 @@ def snapshot_edges(snapshot_id: int, limit: int = 500):
     if using_mock():
         edges = load_mock()["edges"].get(str(snapshot_id), [])
         return edges[:limit]
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT src_wallet_id, dst_wallet_id, edge_weight, transfer_count
@@ -315,8 +372,6 @@ def snapshot_edges(snapshot_id: int, limit: int = 500):
                 (snapshot_id, limit),
             )
             return rows_as_dicts(cur)
-    finally:
-        conn.close()
 
 
 @app.get("/runs/{run_id}/metrics")
@@ -326,8 +381,7 @@ def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
         # Mock mode has no analysis_run to join against -- additive fields
         # default to null rather than a fabricated value.
         return [{**row, "analysis_backend": None, "library_version": None} for row in run.get(metric_name, [])[:limit]]
-    conn = get_conn()
-    try:
+    with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT vm.wallet_id, vm.metric_value, vm.rank_position,
@@ -337,5 +391,3 @@ def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
                 (run_id, metric_name, limit),
             )
             return rows_as_dicts(cur)
-    finally:
-        conn.close()

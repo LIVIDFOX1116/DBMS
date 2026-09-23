@@ -18,6 +18,15 @@ Compatibility rule: additive only. Add fields; never rename, remove, or
 retype an existing one. Keep status codes and error shapes the frontend
 already handles. A breaking change stops and asks first.
 
+**Unexpected errors (any endpoint):** a genuinely unexpected server error
+(a DB blowing up, a bug) returns `500 {"detail": "internal server error"}` --
+never the real exception text, SQL, or a traceback. This is a stable,
+documented shape as of the connection-pool/error-handling hardening pass;
+previously this case was unhandled and its response was whatever
+Starlette's default happened to produce. The real error is logged
+server-side and viewable via the `get_backend_logs` Tauri command, not
+returned to the caller.
+
 ---
 
 ## HTTP endpoints (Python sidecar, `api/main.py`)

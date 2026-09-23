@@ -15,6 +15,10 @@ import os
 
 os.environ["TXGRAPH_API_MODE"] = "mock"
 
+import threading  # noqa: E402
+import time  # noqa: E402
+
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from api import main as api_main  # noqa: E402
@@ -176,12 +180,22 @@ class _FakeCursor:
 class _FakeConn:
     def __init__(self, sink):
         self._sink = sink
+        self.closed = 0
 
     def cursor(self):
         return _FakeCursor(self._sink)
 
     def close(self):
         pass
+
+    # get_conn() is now a context manager (pooled connections) -- these let
+    # `with get_conn() as conn:` work against this fake the same way it
+    # works against a real pooled connection.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
 class TestLiveModeQueryShapes:
@@ -231,3 +245,144 @@ class TestLiveModeQueryShapes:
         mock_keys = set(load_mock()["snapshots"][0].keys())
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /snapshots query is missing columns: {missing}"
+
+
+class TestUnhandledErrors:
+    """An unexpected error (a DB blowing up, a bug) must become a clean,
+    generic 500 -- never leak the real exception text, SQL, or a traceback
+    into the response body. The real detail still needs to be findable
+    somewhere (the log), just not handed to whoever's calling the API."""
+
+    def test_unexpected_exception_returns_generic_500_not_the_real_error(self, monkeypatch):
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+
+        class _ExplodingConn:
+            def cursor(self):
+                raise RuntimeError("SELECT password_hash FROM analyst -- should never reach a caller")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(api_main, "get_conn", lambda: _ExplodingConn())
+
+        # TestClient's default (raise_server_exceptions=True) re-raises an
+        # unhandled exception for debugging rather than returning the
+        # formatted response -- exactly what we're testing here, so it
+        # needs a client with that off to see what a real ASGI server (and
+        # a real caller) would actually receive.
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        resp = no_raise_client.get("/wallets")
+        assert resp.status_code == 500
+        assert resp.json() == {"detail": "internal server error"}
+        assert "password_hash" not in resp.text
+        assert "RuntimeError" not in resp.text
+
+    def test_known_http_exceptions_are_unaffected_by_the_generic_handler(self):
+        # A real, existing 404 (mock mode, unknown wallet_id) must still
+        # come through with its own specific detail message, not get
+        # swallowed by the new catch-all handler.
+        resp = client.get("/wallets/999999999")
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "wallet not found"}
+
+
+class TestConnectionPoolDiscardsBrokenConnections:
+    """get_conn()'s whole reason to exist beyond a bare psycopg2.connect()
+    call: a connection that dies mid-request (e.g. a Postgres restart) must
+    be discarded, not handed back to the pool for the next request to trip
+    over."""
+
+    class _FakeConn:
+        def __init__(self):
+            self.closed = 0
+
+    class _FakePool:
+        def __init__(self, conn):
+            self._conn = conn
+            self.putconn_calls = []
+
+        def getconn(self):
+            return self._conn
+
+        def putconn(self, conn, close=False):
+            self.putconn_calls.append((conn, close))
+
+    def test_successful_request_returns_connection_to_pool_without_closing(self, monkeypatch):
+        conn = self._FakeConn()
+        fake_pool = self._FakePool(conn)
+        monkeypatch.setattr(api_main, "_get_pool", lambda: fake_pool)
+
+        with api_main.get_conn() as c:
+            assert c is conn
+
+        assert fake_pool.putconn_calls == [(conn, False)]
+
+    def test_operational_error_discards_the_connection(self, monkeypatch):
+        import psycopg2
+
+        conn = self._FakeConn()
+        fake_pool = self._FakePool(conn)
+        monkeypatch.setattr(api_main, "_get_pool", lambda: fake_pool)
+
+        with pytest.raises(psycopg2.OperationalError):
+            with api_main.get_conn() as c:
+                raise psycopg2.OperationalError("server closed the connection unexpectedly")
+
+        assert fake_pool.putconn_calls == [(conn, True)]
+
+    def test_already_closed_connection_is_discarded_even_without_an_exception(self, monkeypatch):
+        conn = self._FakeConn()
+        conn.closed = 1  # e.g. the server closed it, no exception raised locally
+        fake_pool = self._FakePool(conn)
+        monkeypatch.setattr(api_main, "_get_pool", lambda: fake_pool)
+
+        with api_main.get_conn():
+            pass
+
+        assert fake_pool.putconn_calls == [(conn, True)]
+
+
+class TestGetPoolIsThreadSafe:
+    """_get_pool()'s lazy init raced under real concurrent callers: FastAPI
+    dispatches sync endpoints to a worker thread pool, so a burst of
+    simultaneous first requests (e.g. the dashboard's initial batch of GET
+    calls on load) could each observe `_pool is None`, each construct their
+    own ThreadedConnectionPool, and overwrite the global -- a connection
+    checked out from the losing instance then gets returned via the
+    (different) winning instance, which raises psycopg2.pool.PoolError:
+    trying to put unkeyed connection. Reproduced live via a real
+    `cargo tauri dev` launch before _pool_lock was added."""
+
+    def test_concurrent_first_calls_create_exactly_one_pool(self, monkeypatch):
+        construct_count = 0
+        count_lock = threading.Lock()
+
+        class _FakePool:
+            def __init__(self, minconn, maxconn, **kwargs):
+                nonlocal construct_count
+                with count_lock:
+                    construct_count += 1
+                # Widen the race window: without _pool_lock, every thread's
+                # `if _pool is None` check passes before any of them finishes
+                # constructing, so they'd all construct their own instance.
+                time.sleep(0.02)
+
+        monkeypatch.setattr(api_main, "_pool", None)
+        monkeypatch.setattr(api_main.pg_pool, "ThreadedConnectionPool", _FakePool)
+
+        barrier = threading.Barrier(20)
+
+        def call():
+            barrier.wait()
+            api_main._get_pool()
+
+        threads = [threading.Thread(target=call) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert construct_count == 1
