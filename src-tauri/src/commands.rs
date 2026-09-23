@@ -265,9 +265,12 @@ pub struct LayoutResult {
 /// clustering to pull membership from (see `fetch_cluster_membership`) and
 /// is only used when `cluster_attraction_k` > 0.
 ///
-/// GPU currently ignores `cluster_attraction_k` and always lays out
-/// cluster-unaware -- wiring cluster-aware forces into the GPU path (with
-/// CPU/GPU parity preserved) is the next step, not yet done.
+/// GPU cluster-aware forces recompute centroids CPU-side every iteration
+/// and re-upload them (see `layout::run_gpu_to_settle`) -- there is no
+/// staleness/batching option, since that was measured (see the
+/// cluster_aware_layout_spike example) to cost more in layout quality than
+/// it saves in sync overhead, and CPU/GPU parity requires both backends to
+/// compute this identically.
 #[tauri::command]
 pub fn run_layout(
     snapshot_id: i64,
@@ -316,7 +319,7 @@ pub fn run_layout(
     let (dense_positions, device_used, iterations, elapsed_ms, converged) = if device.starts_with("gpu") {
         match layout::create_gpu_device(prefer_discrete) {
             Some((gpu_device, queue, name)) => {
-                let outcome = layout::run_gpu_to_settle(&gpu_device, &queue, &graph, &initial, params, cap);
+                let outcome = layout::run_gpu_to_settle(&gpu_device, &queue, &graph, &initial, params, cap, &cluster);
                 (outcome.positions, format!("gpu: {name}"), outcome.iterations, outcome.elapsed.as_millis() as u64, outcome.converged)
             }
             None => {
