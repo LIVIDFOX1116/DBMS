@@ -10,6 +10,14 @@ This deliberately does NOT run in this sandbox (no NVIDIA GPU here) -- that's
 expected. graph/backend.py falls back to pandas/NetworkX automatically
 wherever this check fails, so development isn't blocked by it; this script
 just tells you, plainly, which path you're on.
+
+NOTE: this script checks whether RAPIDS is *importable* -- it does not turn
+GPU usage on. graph/backend.py's GraphBackend is opt-in: even after this
+script prints "PHASE 0 GPU CHECK: COMPLETE", the pipeline still runs CPU
+(pandas+NetworkX) unless TXGRAPH_USE_GPU_GRAPH=1 is also set when you invoke
+it. This is deliberate -- see graph/backend.py's module docstring for why a
+wallet clustering tool can't let GPU availability alone silently change
+which algorithm produced a run's clusters.
 """
 import sys
 

@@ -11,6 +11,12 @@
 #   5. conda activate txgraph-gpu
 #   6. python scripts/verify_gpu_env.py   <- must print "PHASE 0 GPU CHECK: COMPLETE"
 #
+# NOTE: installing this env and passing step 6 makes RAPIDS *importable* --
+# it does not turn GPU usage on. graph/backend.py's GraphBackend is opt-in;
+# set TXGRAPH_USE_GPU_GRAPH=1 when invoking the pipeline to actually use it,
+# otherwise it still runs CPU (pandas+NetworkX) even in this env. See
+# graph/backend.py's module docstring for why.
+#
 # Requirements this depends on (see project bible / chat history for the
 # reasoning): NVIDIA GPU with compute capability 7.0+ (Volta or newer --
 # Pascal is unsupported since RAPIDS 24.02), CUDA 12 with driver 525.60.13+

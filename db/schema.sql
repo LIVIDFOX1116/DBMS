@@ -243,4 +243,16 @@ INSERT INTO analyst (username, email, password_hash, role, organisation)
 VALUES ('system', 'system@local.dev', 'unused-no-auth-in-this-project---------------------------', 'admin', 'txgraph-analyzer')
 ON CONFLICT (username) DO NOTHING;
 
+-- Migration (2026-09): per-run graph library version, alongside the
+-- existing gpu_device (which stores backend_name -- e.g. "pandas+networkx
+-- (CPU)" -- see graph/backend.py). Distinct from the unrelated, unused
+-- algorithm.library_version column above (a static 'TBD' placeholder
+-- scoped to the algorithm definition, not a specific run) -- Louvain output
+-- can change between library versions of the SAME backend over time, so
+-- this needs per-run granularity, not a one-time seed value. ADD COLUMN IF
+-- NOT EXISTS makes this idempotent: re-running this file (db/init_db.py's
+-- normal apply_schema()) against an already-provisioned database applies
+-- the migration in place, no separate migration runner needed.
+ALTER TABLE analysis_run ADD COLUMN IF NOT EXISTS backend_library_version VARCHAR(40);
+
 COMMIT;

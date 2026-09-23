@@ -15,10 +15,25 @@ ever holds a transient copy of the graph; results are always normalized back
 to pandas before this module returns them, mirroring the "GPU is transient,
 Postgres is durable" rule from the ER diagram notes.
 
-Force the CPU path even when RAPIDS is installed with:
+GPU is opt-in, not automatic: even with RAPIDS importable, `gpu_available()`
+returns False unless TXGRAPH_USE_GPU_GRAPH=1 is also set. This matters for a
+wallet clustering tool specifically because cuGraph Louvain and NetworkX
+Louvain are not guaranteed to produce the same partitions on the same data
+(different algorithm implementations -- parallel-GPU vs sequential-CPU --
+and NetworkX's louvain_communities takes a fixed seed for reproducibility
+while cuGraph's louvain() exposes no seed at all) -- a RAPIDS-capable
+environment showing up by accident (e.g. a stray WSL2/conda activation)
+must not silently change which clusters a user sees. TXGRAPH_FORCE_CPU
+still overrides everything, opt-in flag included -- it's the "definitely
+never GPU, no matter what" escape hatch, kept exactly as before.
+
+Force the CPU path even when RAPIDS is installed and opted in with:
     GraphBackend(force_cpu=True)
 or:
     TXGRAPH_FORCE_CPU=1 python ...
+
+Opt in to the GPU path (also requires RAPIDS actually importable) with:
+    TXGRAPH_USE_GPU_GRAPH=1 python ...
 """
 import os
 import time
@@ -29,6 +44,8 @@ log = logging.getLogger("graph.backend")
 
 def gpu_available() -> bool:
     if os.getenv("TXGRAPH_FORCE_CPU", "").lower() in ("1", "true", "yes"):
+        return False
+    if os.getenv("TXGRAPH_USE_GPU_GRAPH", "").lower() not in ("1", "true", "yes"):
         return False
     try:
         import cudf  # noqa: F401
@@ -42,18 +59,20 @@ class GraphBackend:
     def __init__(self, force_cpu: bool = False):
         self.use_gpu = gpu_available() and not force_cpu
         self.backend_name = "cudf+cugraph (GPU)" if self.use_gpu else "pandas+networkx (CPU)"
-        log.info("GraphBackend using: %s", self.backend_name)
 
         if self.use_gpu:
             import cudf
             import cugraph
             self._cudf = cudf
             self._cugraph = cugraph
+            self.library_version = cugraph.__version__
         else:
             import pandas
             import networkx
             self._pandas = pandas
             self._networkx = networkx
+            self.library_version = networkx.__version__
+        log.info("GraphBackend using: %s (library version %s)", self.backend_name, self.library_version)
 
     # ------------------------------------------------------------ load
 

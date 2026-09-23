@@ -64,7 +64,8 @@ dense 1..N range) — a UI must never assume small integer ids exist.
 ### GET /clusters?run_id=12 (optional)
 ```json
 [{"cluster_id": 28596, "run_id": 12, "community_label": 2, "member_count": 1,
-  "cluster_type": null, "risk_score": null, "modularity_score": 0.7258998477807098}]
+  "cluster_type": null, "risk_score": null, "modularity_score": 0.7258998477807098,
+  "analysis_backend": "pandas+networkx (CPU)", "library_version": null}]
 ```
 `cluster_type` is one of `SYBIL`, `WASH_TRADE`, `MIXER`, `PEEL_CHAIN`, or
 `null` if the run hasn't been triaged into a type yet — always handle
@@ -75,8 +76,18 @@ the list is capped at 100 rows (`ORDER BY run_id DESC LIMIT 100`) and is
 **not** representative — use `run_id` or `/clusters/{cluster_id}` instead
 of relying on the unfiltered list.
 
+`analysis_backend`/`library_version` (added — see `docs/UI_HANDOFF.md`):
+which backend/library version produced this run's clusters
+(`"pandas+networkx (CPU)"` or `"cudf+cugraph (GPU)"`, and e.g. a NetworkX
+or cuGraph version string). Both nullable — mock mode and every run
+recorded before this field existed (real data: every run so far) have
+`null` here. Matters because cuGraph Louvain and NetworkX Louvain are not
+guaranteed to produce identical partitions on the same data (see
+`graph/backend.py`'s module docstring).
+
 ### GET /clusters/{cluster_id}
-Single cluster, same shape as one `/clusters` list item.
+Single cluster, same shape as one `/clusters` list item (including
+`analysis_backend`/`library_version`).
 Errors: `404 {"detail": "cluster not found"}`.
 Exists specifically because `/clusters` (unfiltered) is capped at 100 — a
 specific cluster_id (e.g. from an alert) isn't guaranteed to be in that cut
@@ -141,8 +152,11 @@ beyond that.
 `metric_name` is whichever algorithm wrote it — open string, no fixed
 enum. Louvain output comes from `/clusters`, not this endpoint.
 ```json
-[{"wallet_id": 1647, "metric_value": 0.029165934242878663, "rank_position": 1}]
+[{"wallet_id": 1647, "metric_value": 0.029165934242878663, "rank_position": 1,
+  "analysis_backend": "pandas+networkx (CPU)", "library_version": null}]
 ```
+`analysis_backend`/`library_version`: same meaning and nullability as on
+`/clusters` — see there.
 BFS: `metric_name=bfs_distance_from_{seed_wallet_id}` (e.g.
 `bfs_distance_from_1476`); `metric_value` there is hop distance, not a
 score — `0.0` at the seed, `1.0`, `2.0`, ... outward.
