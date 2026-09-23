@@ -16,10 +16,21 @@ sandboxed dev environment without internet egress -- run this on a machine
 with normal internet access (e.g. the Zenbook). See tests/fixtures/ for a
 canned sample response used to unit-test the parsing/DB logic offline.
 """
+import logging
 import time
 import requests
 
 from . import config
+
+log = logging.getLogger("ingestion.etherscan_client")
+
+
+def _redact(params: dict) -> dict:
+    """Never let the real API key reach a log line -- it travels in the
+    request query string (Etherscan's API has no header-auth option), so
+    anything that logs params or a constructed URL must go through this
+    first."""
+    return {**params, "apikey": "***REDACTED***"} if "apikey" in params else dict(params)
 
 
 class EtherscanError(RuntimeError):
@@ -52,6 +63,7 @@ class EtherscanClient:
         # "no records found" -- treat "No transactions found" as an empty
         # result rather than an error.
         if data.get("status") == "0" and data.get("message") != "No transactions found":
+            log.warning("Etherscan error for %s: %s", _redact(params), data.get("message"))
             raise EtherscanError(f"{data.get('message')}: {data.get('result')}")
         result = data.get("result")
         return result if isinstance(result, list) else []
