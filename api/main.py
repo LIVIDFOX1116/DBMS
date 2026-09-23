@@ -149,24 +149,33 @@ def get_wallet(wallet_id: int):
         conn.close()
 
 
+CLUSTER_COLUMNS = """c.cluster_id, c.run_id, c.community_label, c.member_count, c.cluster_type,
+                      c.risk_score, c.modularity_score,
+                      ar.gpu_device AS analysis_backend, ar.backend_library_version AS library_version"""
+
+
 @app.get("/clusters")
 def list_clusters(run_id: Optional[int] = None):
     if using_mock():
         clusters = load_mock()["clusters"]
-        return [{k: v for k, v in c.items() if k != "members"} for c in clusters]
+        # Mock mode has no analysis_run to join against -- additive fields
+        # default to null rather than a fabricated value.
+        return [{**{k: v for k, v in c.items() if k != "members"}, "analysis_backend": None, "library_version": None} for c in clusters]
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             if run_id is not None:
                 cur.execute(
-                    """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score, modularity_score
-                       FROM cluster WHERE run_id = %s""",
+                    f"""SELECT {CLUSTER_COLUMNS}
+                        FROM cluster c JOIN analysis_run ar ON ar.run_id = c.run_id
+                        WHERE c.run_id = %s""",
                     (run_id,),
                 )
             else:
                 cur.execute(
-                    """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score, modularity_score
-                       FROM cluster ORDER BY run_id DESC LIMIT 100"""
+                    f"""SELECT {CLUSTER_COLUMNS}
+                        FROM cluster c JOIN analysis_run ar ON ar.run_id = c.run_id
+                        ORDER BY c.run_id DESC LIMIT 100"""
                 )
             return rows_as_dicts(cur)
     finally:
@@ -178,14 +187,15 @@ def get_cluster(cluster_id: int):
     if using_mock():
         for c in load_mock()["clusters"]:
             if c["cluster_id"] == cluster_id:
-                return {k: v for k, v in c.items() if k != "members"}
+                return {**{k: v for k, v in c.items() if k != "members"}, "analysis_backend": None, "library_version": None}
         raise HTTPException(404, "cluster not found")
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT cluster_id, run_id, community_label, member_count, cluster_type, risk_score, modularity_score
-                   FROM cluster WHERE cluster_id = %s""",
+                f"""SELECT {CLUSTER_COLUMNS}
+                    FROM cluster c JOIN analysis_run ar ON ar.run_id = c.run_id
+                    WHERE c.cluster_id = %s""",
                 (cluster_id,),
             )
             row = cur.fetchone()
@@ -313,13 +323,17 @@ def snapshot_edges(snapshot_id: int, limit: int = 500):
 def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
     if using_mock():
         run = load_mock()["runs"].get(str(run_id), {})
-        return run.get(metric_name, [])[:limit]
+        # Mock mode has no analysis_run to join against -- additive fields
+        # default to null rather than a fabricated value.
+        return [{**row, "analysis_backend": None, "library_version": None} for row in run.get(metric_name, [])[:limit]]
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT wallet_id, metric_value, rank_position FROM vertex_metric
-                   WHERE run_id = %s AND metric_name = %s ORDER BY rank_position LIMIT %s""",
+                """SELECT vm.wallet_id, vm.metric_value, vm.rank_position,
+                          ar.gpu_device AS analysis_backend, ar.backend_library_version AS library_version
+                   FROM vertex_metric vm JOIN analysis_run ar ON ar.run_id = vm.run_id
+                   WHERE vm.run_id = %s AND vm.metric_name = %s ORDER BY vm.rank_position LIMIT %s""",
                 (run_id, metric_name, limit),
             )
             return rows_as_dicts(cur)

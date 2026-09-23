@@ -60,8 +60,11 @@ class FakeCursor:
             self.state["runs"][run_id] = {"status": "RUNNING", "params": params}
             self._last = (run_id,)
         elif q.startswith("UPDATE analysis_run"):
-            status, runtime_ms, gpu_device, run_id = params
-            self.state["runs"][run_id].update(status=status, runtime_ms=runtime_ms, gpu_device=gpu_device)
+            status, runtime_ms, gpu_device, backend_library_version, run_id = params
+            self.state["runs"][run_id].update(
+                status=status, runtime_ms=runtime_ms, gpu_device=gpu_device,
+                backend_library_version=backend_library_version,
+            )
             self._last = None
         elif q.startswith("INSERT INTO vertex_metric"):
             self.state["vertex_metrics"].append(params)

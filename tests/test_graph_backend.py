@@ -5,12 +5,22 @@ runs -- it's the path that actually runs in the sandbox and on the Zenbook.
 The GPU class runs the exact same test bodies unmodified and is skipped
 automatically wherever RAPIDS isn't importable (i.e. everywhere except the
 GTX 1650 / RTX 4070 laptops with the txgraph-gpu conda env active).
+
+GraphBackend's GPU path is opt-in (TXGRAPH_USE_GPU_GRAPH=1) as of the
+provenance work -- gpu_available() now returns False without it regardless
+of whether RAPIDS is importable. This test file explicitly opts in for
+itself (setdefault, not a hard override, so a caller who deliberately unset
+it to test the fallback-when-not-opted-in behavior isn't fought with) so
+TestGraphBackendGPU's skip condition below still reflects RAPIDS
+importability the way it always has, not the new gate.
 """
+import os
 import pathlib
 import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+os.environ.setdefault("TXGRAPH_USE_GPU_GRAPH", "1")
 
 import pandas as pd
 from graph.backend import GraphBackend, gpu_available

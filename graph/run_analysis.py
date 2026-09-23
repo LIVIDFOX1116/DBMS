@@ -49,13 +49,13 @@ def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int = 1, 
     return run_id
 
 
-def finish_run(conn, run_id: int, runtime_ms: int, backend_name: str, status: str = "DONE") -> None:
+def finish_run(conn, run_id: int, runtime_ms: int, backend_name: str, library_version: str = None, status: str = "DONE") -> None:
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE analysis_run
-               SET status=%s, completed_at=NOW(), runtime_ms=%s, gpu_device=%s
+               SET status=%s, completed_at=NOW(), runtime_ms=%s, gpu_device=%s, backend_library_version=%s
                WHERE run_id=%s""",
-            (status, runtime_ms, backend_name, run_id),
+            (status, runtime_ms, backend_name, library_version, run_id),
         )
     conn.commit()
 
@@ -173,7 +173,7 @@ def run_pagerank(conn, backend: GraphBackend, G, snapshot_id: int) -> pd.DataFra
     t0 = time.time()
     df = backend.pagerank(G)
     persist_vertex_metric(conn, run_id, df, "pagerank", "score")
-    finish_run(conn, run_id, int((time.time() - t0) * 1000), backend.backend_name)
+    finish_run(conn, run_id, int((time.time() - t0) * 1000), backend.backend_name, backend.library_version)
     return df
 
 
@@ -184,7 +184,7 @@ def run_louvain(conn, backend: GraphBackend, G, snapshot_id: int, edges_df: pd.D
     internal_edges = compute_internal_edges(df, edges_df)
     persist_clusters(conn, run_id, df, modularity, internal_edges)
     flagged = classify_clusters(conn, run_id)
-    finish_run(conn, run_id, int((time.time() - t0) * 1000), backend.backend_name)
+    finish_run(conn, run_id, int((time.time() - t0) * 1000), backend.backend_name, backend.library_version)
     return df, flagged
 
 
@@ -193,7 +193,7 @@ def run_bfs(conn, backend: GraphBackend, G, snapshot_id: int, seed_wallet_id: in
     t0 = time.time()
     df = backend.bfs(G, seed_wallet_id)
     persist_vertex_metric(conn, run_id, df, f"bfs_distance_from_{seed_wallet_id}", "distance")
-    finish_run(conn, run_id, int((time.time() - t0) * 1000), backend.backend_name)
+    finish_run(conn, run_id, int((time.time() - t0) * 1000), backend.backend_name, backend.library_version)
     return df
 
 
