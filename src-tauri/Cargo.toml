@@ -52,6 +52,18 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D12",
+    # DwmSetWindowAttribute (see lib.rs's apply_dark_titlebar): tauri.conf.json's
+    # "theme": "Dark" only controls WebView2/window-chrome light-vs-dark
+    # rendering, not whether Windows tints the ACTIVE window's title bar with
+    # the user's own accent color -- that's a separate DWM composition
+    # behavior (Settings > Personalization > Colors > "Show accent color on
+    # title bars") the app theme setting doesn't touch at all. Confirmed live:
+    # with a non-default Windows accent color, the focused-window title bar
+    # rendered in that accent color (e.g. bright purple) against this app's
+    # dark teal palette -- the exact clash the "theme": "Dark" fix was meant
+    # to prevent. DWMWA_CAPTION_COLOR/DWMWA_TEXT_COLOR force a fixed color
+    # instead, independent of the user's accent-color setting.
+    "Win32_Graphics_Dwm",
     "Win32_Foundation",
     # Job Objects (see backend.rs's spawn_backend): ties the backend child's
     # lifetime to this process's, so a hard kill (Task Manager "End task",
