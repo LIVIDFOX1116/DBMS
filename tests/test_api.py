@@ -84,6 +84,40 @@ class TestClusters:
         assert resp.status_code == 404
 
 
+class TestClusterMembership:
+    """/cluster-membership backs both the frontend's dashboard load (one
+    batch call replacing what used to be one request per cluster) and the
+    desktop app's Rust layout engine (cluster-aware force layout, see
+    src-tauri/src/commands.rs's fetch_cluster_membership) -- exercised on
+    every real use of the app, but had no test coverage until now."""
+
+    def test_maps_wallets_to_their_clusters(self):
+        resp = client.get("/cluster-membership", params={"cluster_ids": "1"})
+        assert resp.status_code == 200
+        membership = resp.json()
+        assert set(int(k) for k in membership.keys()) == {2, 3, 4}
+        assert membership["2"] == [1]
+
+    def test_unknown_cluster_id_returns_empty_mapping_not_error(self):
+        resp = client.get("/cluster-membership", params={"cluster_ids": "9999"})
+        assert resp.status_code == 200
+        assert resp.json() == {}
+
+    def test_empty_cluster_ids_returns_empty_mapping(self):
+        resp = client.get("/cluster-membership", params={"cluster_ids": ""})
+        assert resp.status_code == 200
+        assert resp.json() == {}
+
+    def test_rejects_non_integer_cluster_ids(self):
+        resp = client.get("/cluster-membership", params={"cluster_ids": "1,abc"})
+        assert resp.status_code == 422
+
+    def test_unknown_id_mixed_with_real_id_does_not_drop_the_real_one(self):
+        resp = client.get("/cluster-membership", params={"cluster_ids": "1,9999"})
+        assert resp.status_code == 200
+        assert set(int(k) for k in resp.json().keys()) == {2, 3, 4}
+
+
 class TestAlerts:
     def test_list_alerts_returns_all(self):
         resp = client.get("/alerts")
@@ -231,3 +265,9 @@ class TestLiveModeQueryShapes:
         mock_keys = set(load_mock()["snapshots"][0].keys())
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /snapshots query is missing columns: {missing}"
+
+    def test_cluster_membership(self, monkeypatch):
+        query = self._live_query(monkeypatch, "/cluster-membership?cluster_ids=1")
+        assert "cluster_member" in query
+        assert "wallet_id" in query
+        assert "cluster_id" in query
