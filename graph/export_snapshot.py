@@ -49,6 +49,19 @@ def write_parquet(edge_df: pd.DataFrame, out_path: pathlib.Path) -> str:
     return hashlib.sha256(out_path.read_bytes()).hexdigest()
 
 
+def portable_path(out_path: pathlib.Path) -> str:
+    """graph_snapshot.file_path must be readable from wherever
+    graph.run_analysis actually runs -- per environment-gpu.yml, that's
+    WSL2/Linux (RAPIDS needs a real NVIDIA driver + CUDA, not available
+    natively on Windows), while this export script itself commonly runs on
+    Windows (plain pandas/psycopg2, no GPU needed). str(WindowsPath) produces
+    backslash-separated paths that are just literal characters to Linux, not
+    a separator -- open() on WSL then fails with FileNotFoundError even
+    though the file exists right there. Forward slashes work as a path
+    separator on both platforms, so always store posix-style."""
+    return out_path.as_posix()
+
+
 def persist_snapshot(conn, snapshot_name, out_path, start_block, end_block, edge_df, checksum) -> int:
     vertex_count = len(set(edge_df.src_wallet_id) | set(edge_df.dst_wallet_id))
     with conn.cursor() as cur:
@@ -60,7 +73,7 @@ def persist_snapshot(conn, snapshot_name, out_path, start_block, end_block, edge
             VALUES (%s,%s,'parquet',%s,%s,%s,%s,%s)
             RETURNING snapshot_id
             """,
-            (snapshot_name, str(out_path), start_block, end_block, vertex_count, len(edge_df), checksum),
+            (snapshot_name, portable_path(out_path), start_block, end_block, vertex_count, len(edge_df), checksum),
         )
         snapshot_id = cur.fetchone()[0]
 
