@@ -22,10 +22,12 @@ import argparse
 import json
 import logging
 import pathlib
+import time
 from decimal import Decimal
 
 import psycopg2
 import psycopg2.extras
+import requests
 
 from . import config
 from .etherscan_client import EtherscanClient
@@ -243,6 +245,46 @@ def _transaction_exists(cur, tx_hash: str) -> bool:
     return cur.fetchone() is not None
 
 
+MAX_ADDRESS_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 5
+
+
+def process_address_with_retry(cur, client: EtherscanClient, address: str) -> set:
+    """process_address wrapped with a bounded retry for transient network
+    failures. Confirmed in production: a single Etherscan ReadTimeoutError
+    deep into an hours-long crawl (hop 2 of a 3-hop run, ~508k wallets in)
+    propagated all the way up through main() and killed the whole process --
+    not a bug in the parsing/DB logic, just an unhandled transient network
+    exception with no retry anywhere in the call chain. Nothing noticed or
+    resumed it until a human checked in later.
+
+    Retrying the whole process_address() call (not just the failed API call
+    inside it) is safe because every DB write it makes is an upsert -- see
+    this module's own docstring ("re-running the crawl is safe and
+    idempotent"), which already has to hold for the checkpoint/resume design
+    to work at all. Only requests.exceptions.RequestException (timeouts,
+    connection errors -- genuinely transient) is retried; anything else (a
+    real parsing bug, a DB constraint violation) propagates immediately
+    rather than being silently retried into a worse or masked state.
+    """
+    for attempt in range(1, MAX_ADDRESS_RETRIES + 1):
+        try:
+            return process_address(cur, client, address)
+        except requests.exceptions.RequestException as e:
+            if attempt == MAX_ADDRESS_RETRIES:
+                log.warning(
+                    "giving up on %s after %d attempts (%s) -- skipping for this run, "
+                    "will be retried the next time this crawl resumes (not marked visited)",
+                    address, MAX_ADDRESS_RETRIES, e,
+                )
+                raise
+            log.warning(
+                "transient error on %s (attempt %d/%d): %s -- retrying in %ds",
+                address, attempt, MAX_ADDRESS_RETRIES, e, RETRY_BACKOFF_SECONDS,
+            )
+            time.sleep(RETRY_BACKOFF_SECONDS)
+
+
 # ------------------------------------------------------------- checkpointing
 # Per-address DB commits (below) make each address's *data* durable, but the
 # BFS frontier itself only ever lived in memory -- so before this existed,
@@ -322,8 +364,27 @@ def crawl(seed_address: str, hop_count: int, client: EtherscanClient = None, con
                 # the last hop boundary. Each address's writes are already a
                 # natural atomic unit (upserts, safe to redo), so committing
                 # here bounds the lost work to at most one in-flight address.
-                with conn.cursor() as cur:
-                    next_frontier |= process_address(cur, client, addr)
+                try:
+                    with conn.cursor() as cur:
+                        next_frontier |= process_address_with_retry(cur, client, addr)
+                except requests.exceptions.RequestException as e:
+                    # process_address_with_retry already retried MAX_ADDRESS_RETRIES
+                    # times -- this address's own API calls are persistently
+                    # failing (Etherscan down, sustained network issue, etc.).
+                    # Confirmed in production: before this existed, exactly
+                    # this scenario (one address, one ReadTimeoutError) killed
+                    # an hours-long crawl outright, and nothing resumed it
+                    # until a human noticed. Rolling back and NOT adding addr
+                    # to `visited` leaves it in `frontier` for the next resume
+                    # -- its data isn't lost, just deferred -- while the rest
+                    # of this hop keeps making progress instead of the whole
+                    # process dying over one address.
+                    conn.rollback()
+                    log.error(
+                        "%s still failing after retries (%s) -- leaving unvisited for the "
+                        "next resume, continuing with the rest of this hop", addr, e,
+                    )
+                    continue
                 conn.commit()
                 visited.add(addr)
                 stats["addresses_processed"] += 1
