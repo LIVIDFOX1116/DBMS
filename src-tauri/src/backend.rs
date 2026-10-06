@@ -170,16 +170,21 @@ fn resolve_backend_command(port: u16) -> Result<(String, Vec<String>, std::path:
         // subfolder) -- current_exe()'s parent is exactly that directory,
         // both when installed and when run straight out of target/release/
         // (cargo build --release without going through `tauri build`).
+        //
+        // scripts/build_backend_sidecar.py names its *source* output with the
+        // target-triple suffix (txgraph-backend-<triple>.exe) because that's
+        // the convention Tauri's bundler expects for externalBin entries --
+        // but confirmed against a real `cargo tauri build` + installer run,
+        // the NSIS installer strips that suffix when it copies the sidecar
+        // into the install directory. The installed (and `cargo tauri build`
+        // output) file is just txgraph-backend.exe, so that's what we look
+        // for at runtime -- not env!("SIDECAR_TARGET_TRIPLE").
         let exe_dir = std::env::current_exe()
             .map_err(|e| format!("could not resolve current_exe: {e}"))?
             .parent()
             .ok_or("current_exe() has no parent directory")?
             .to_path_buf();
-        let sidecar_name = format!(
-            "txgraph-backend-{}{}",
-            env!("SIDECAR_TARGET_TRIPLE"),
-            std::env::consts::EXE_SUFFIX
-        );
+        let sidecar_name = format!("txgraph-backend{}", std::env::consts::EXE_SUFFIX);
         let sidecar = exe_dir.join(&sidecar_name);
         if !sidecar.exists() {
             return Err(format!(

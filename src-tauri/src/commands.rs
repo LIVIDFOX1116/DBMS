@@ -296,6 +296,34 @@ pub fn run_layout(
         return Err(format!("snapshot {snapshot_id} has no edges to lay out"));
     }
     let (graph, index_to_id) = layout::build_graph_from_id_pairs(&edges);
+
+    // Safety ceiling, not a quality tradeoff: confirmed in practice, the app
+    // became laggy and crashed rendering a real live snapshot at 253,863
+    // nodes -- see MAX_FORCE_SIM_NODES's doc comment for the GPU-driver-
+    // timeout and memory-pressure mechanics. Above it, skip the O(n^2)
+    // settle on BOTH backends and return a fast, honestly-labeled fallback
+    // layout instead of attempting a job this scale of graph has already
+    // demonstrated it can crash the app on.
+    if index_to_id.len() > layout::MAX_FORCE_SIM_NODES {
+        let dense_positions = layout::degree_ranked_concentric_positions(&graph);
+        let positions = index_to_id.into_iter().zip(dense_positions).collect::<HashMap<i64, [f32; 2]>>();
+        return Ok(LayoutResult {
+            node_count: positions.len(),
+            edge_count: edges.len(),
+            positions,
+            device_requested: device,
+            device_used: format!(
+                "skipped: {} nodes exceeds the {}-node safety ceiling for force simulation \
+                 (confirmed to crash the app above this scale) -- showing a fast degree-ranked \
+                 layout instead",
+                graph.num_nodes, layout::MAX_FORCE_SIM_NODES
+            ),
+            iterations: 0,
+            elapsed_ms: 0,
+            converged: false,
+        });
+    }
+
     let initial = layout::initial_circle_positions(index_to_id.len());
     let params = LayoutParams::default();
     let cap = SettleCap::default();
@@ -386,6 +414,22 @@ pub fn benchmark_layout(snapshot_id: i64, max_edges: usize, state: tauri::State<
         return Err(format!("snapshot {snapshot_id} has no edges to benchmark"));
     }
     let (graph, index_to_id) = layout::build_graph_from_id_pairs(&edges);
+
+    // Same safety ceiling as run_layout, but here there's no meaningful
+    // fallback to return -- benchmark_layout's whole purpose is timing the
+    // O(n^2) settle across three backends run back-to-back (see this fn's
+    // own doc comment), which is exactly the unsafe operation above this
+    // size. Erroring out is the honest answer, not a partial/fake result.
+    if index_to_id.len() > layout::MAX_FORCE_SIM_NODES {
+        return Err(format!(
+            "snapshot {snapshot_id} has {} nodes, over the {}-node safety ceiling for force-\
+             layout benchmarking (confirmed to crash the app above this scale) -- try a smaller \
+             edge limit",
+            index_to_id.len(),
+            layout::MAX_FORCE_SIM_NODES
+        ));
+    }
+
     let initial = layout::initial_circle_positions(index_to_id.len());
     let params = LayoutParams::default();
     let cap = SettleCap::default();

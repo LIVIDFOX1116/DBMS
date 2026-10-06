@@ -113,6 +113,85 @@ pub fn initial_circle_positions(n: usize) -> Vec<[f32; 2]> {
         .collect()
 }
 
+/// Safety ceiling on the O(n^2) all-pairs force simulation (see this
+/// module's own header comment on why repulsion is naive all-pairs on every
+/// backend). Confirmed in practice, not theoretical: the desktop app became
+/// laggy and crashed while rendering a real live snapshot at 253,863 nodes.
+///
+/// Two independent, compounding causes at graph sizes like that:
+///   1. GPU: one force-pass dispatch does n^2 pairwise force calculations
+///      *synchronously within a single GPU command submission* (see
+///      forces.wgsl's inner loop and run_gpu_to_settle's BATCH packing).
+///      Windows' TDR (Timeout Detection & Recovery) resets the graphics
+///      driver -- crashing or hanging every app sharing that GPU, including
+///      the WebView2 UI itself -- if a single submission runs longer than
+///      ~2 seconds. At this app's measured GTX 1650 throughput (~3 TFLOPS,
+///      ~12 flops per pair), n=253,863 alone is already close to that
+///      budget once real driver/bind-group overhead is added on top of the
+///      raw compute estimate, and n=600,000 (this project's current live
+///      crawl size) is well past it even for a single iteration.
+///   2. CPU and GPU alike: the frontend also has to fetch, parse, and hold
+///      every edge (JSON -> JS objects) and the Rust side has to hold two
+///      float arrays per node for the whole settle loop -- on a machine
+///      that has independently, repeatedly hit system-wide memory pressure
+///      this same session at far smaller loads.
+///
+/// 100,000 is a conservative, safety-first line comfortably under the
+/// confirmed-bad 253,863 (not a value separately re-measured node-by-node --
+/// pending more precise empirical calibration if it turns out to be overly
+/// conservative). Above it, run_layout/benchmark_layout skip the settle
+/// loop entirely on both backends and return
+/// `degree_ranked_concentric_positions` instead -- a real, honestly-labeled
+/// answer (not a crash, not a silent hang), just not a force-simulated one.
+pub const MAX_FORCE_SIM_NODES: usize = 100_000;
+
+/// Fast (O(n log n)), safe fallback layout for graphs over
+/// MAX_FORCE_SIM_NODES -- same algorithm the frontend's own JS fallback
+/// (dashboard.html's layoutGraph, SPRING_LAYOUT_NODE_CEILING) already uses
+/// for exactly this situation, reimplemented here (not shared code, JS vs.
+/// Rust) so the *Rust* layout commands have an equally safe answer rather
+/// than only the JS pre-seed being safe while run_layout itself still
+/// attempts the unsafe O(n^2) settle underneath it. Ranks nodes by degree
+/// (hubs land in the center) and places them on concentric rings via the
+/// golden angle (avoids the spoke artifacts a naive even angular step
+/// produces).
+/// How many force-pass iterations are safe to pack into one GPU command
+/// submission before the *next* device.poll checks elapsed time -- see
+/// MAX_FORCE_SIM_NODES's doc comment for the TDR mechanics this guards
+/// against. The fixed BATCH=20 this replaces was fine at the graph sizes it
+/// was designed and tested against (tens of thousands of nodes) but not at
+/// hundreds of thousands, where 20 all-pairs iterations in one submission
+/// is the confirmed cause of the app hanging/crashing. Scales down as n
+/// grows so total per-submission work (~n^2 * batch) stays roughly
+/// constant; floored at 1 (a single iteration still costs n^2, this can't
+/// make that safe by itself -- MAX_FORCE_SIM_NODES is the real backstop for
+/// graphs where even one iteration would be too slow).
+fn safe_batch_size(n: usize) -> usize {
+    const REFERENCE_N: f64 = 20_000.0; // BATCH=20 was fine at this app's original validated scale
+    const REFERENCE_BATCH: f64 = 20.0;
+    let n = (n.max(1) as f64).max(REFERENCE_N);
+    ((REFERENCE_N * REFERENCE_N * REFERENCE_BATCH) / (n * n)).floor().clamp(1.0, 20.0) as usize
+}
+
+pub fn degree_ranked_concentric_positions(graph: &Graph) -> Vec<[f32; 2]> {
+    let n = graph.num_nodes as usize;
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| {
+        std::cmp::Reverse(graph.adj_offsets[i + 1] - graph.adj_offsets[i])
+    });
+    const GOLDEN_ANGLE: f32 = 2.399963;
+    let mut positions = vec![[0f32; 2]; n];
+    for (rank, &node_idx) in order.iter().enumerate() {
+        let ring = ((rank + 1) as f32 / n as f32).sqrt();
+        let angle = rank as f32 * GOLDEN_ANGLE;
+        positions[node_idx] = [angle.cos() * ring * 900.0, angle.sin() * ring * 900.0];
+    }
+    positions
+}
+
 #[inline]
 fn force_for_node(i: usize, positions: &[[f32; 2]], graph: &Graph, p: &LayoutParams) -> [f32; 2] {
     let pi = positions[i];
@@ -748,15 +827,21 @@ pub fn run_gpu_to_settle(
     let gpu = GpuLayout::new(device, queue, graph, initial_positions, &params, cluster);
 
     if cluster.attraction_k <= 0.0 {
-        const BATCH: usize = 20; // == PROGRESS_INTERVAL, so every batch's already-fetched readback also serves as a progress report at no extra cost
+        // Was a flat 20 (== PROGRESS_INTERVAL, so every batch's already-
+        // fetched readback also serves as a progress report at no extra
+        // cost) -- now scaled down for large graphs, see safe_batch_size's
+        // doc comment. Still <= PROGRESS_INTERVAL always (safe_batch_size
+        // caps at 20), so the "free progress report" property still holds;
+        // it just reports more often (every smaller batch) on big graphs.
+        let batch = safe_batch_size(graph.num_nodes as usize);
         let t0 = Instant::now();
         let mut iterations = 0;
         let mut converged = false;
         let mut prev: Option<Vec<[f32; 2]>> = None;
         let mut last_positions = initial_positions.to_vec();
         while iterations < cap.max_iterations && t0.elapsed() < cap.max_wall_clock {
-            gpu.run_iterations(BATCH);
-            iterations += BATCH;
+            gpu.run_iterations(batch);
+            iterations += batch;
             let positions = gpu.readback_positions();
             if let Some(cb) = on_progress.as_mut() {
                 cb(&positions);
@@ -767,7 +852,7 @@ pub fn run_gpu_to_settle(
                     .zip(prev_positions.iter())
                     .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt())
                     .fold(0f32, f32::max);
-                if max_disp / (BATCH as f32) < CONVERGENCE_EPS {
+                if max_disp / (batch as f32) < CONVERGENCE_EPS {
                     converged = true;
                     last_positions = positions;
                     break;
@@ -942,6 +1027,51 @@ mod tests {
         assert_eq!(positions.len(), 37);
         assert!(positions.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
         assert_eq!(initial_circle_positions(0).len(), 0);
+    }
+
+    #[test]
+    fn safe_batch_size_matches_the_original_fixed_batch_at_its_validated_scale() {
+        assert_eq!(safe_batch_size(20_000), 20, "at the scale BATCH=20 was originally validated at, nothing should change");
+        assert_eq!(safe_batch_size(1), 20, "small graphs are clamped up to the same 20, not scaled beyond it");
+    }
+
+    #[test]
+    fn safe_batch_size_shrinks_as_node_count_grows_and_never_exceeds_20() {
+        let sizes = [1usize, 1_000, 20_000, 50_000, 100_000, 600_000];
+        let batches: Vec<usize> = sizes.iter().map(|&n| safe_batch_size(n)).collect();
+        assert!(batches.iter().all(|&b| (1..=20).contains(&b)), "batch must always be in [1, 20]: {batches:?}");
+        for w in batches.windows(2) {
+            assert!(w[1] <= w[0], "batch size must be monotonically non-increasing as n grows: {batches:?}");
+        }
+        assert_eq!(*batches.last().unwrap(), 1, "at MAX_FORCE_SIM_NODES-adjacent scale, must floor to a single iteration per submission");
+    }
+
+    #[test]
+    fn degree_ranked_concentric_positions_returns_exactly_n_finite_points() {
+        let (graph, _) = test_graph(43);
+        let positions = degree_ranked_concentric_positions(&graph);
+        assert_eq!(positions.len(), 43);
+        assert!(positions.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
+        assert_eq!(degree_ranked_concentric_positions(&Graph::from_edges(0, &[])).len(), 0);
+    }
+
+    #[test]
+    fn degree_ranked_concentric_positions_places_higher_degree_nodes_closer_to_center() {
+        // Star graph: node 0 connects to every other node (degree = n-1);
+        // every other node has degree 1. The hub must land on the smallest
+        // ring -- that's the whole point of ranking by degree instead of an
+        // arbitrary/insertion order.
+        let n = 30u32;
+        let edges: Vec<(u32, u32)> = (1..n).map(|i| (0, i)).collect();
+        let graph = Graph::from_edges(n, &edges);
+        let positions = degree_ranked_concentric_positions(&graph);
+        let hub_dist = (positions[0][0].powi(2) + positions[0][1].powi(2)).sqrt();
+        let leaf_dists: Vec<f32> = positions[1..].iter().map(|p| (p[0].powi(2) + p[1].powi(2)).sqrt()).collect();
+        assert!(
+            leaf_dists.iter().all(|&d| hub_dist < d),
+            "hub (degree {}) at distance {hub_dist} must be closer to center than every leaf (degree 1) at {leaf_dists:?}",
+            n - 1
+        );
     }
 
     #[test]
