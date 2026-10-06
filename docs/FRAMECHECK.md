@@ -234,3 +234,18 @@ See `docs/benchmark_results.md`'s "Audit benchmark" section for real numbers on 
 - **`sybil_cluster` has no framing cost**: cluster membership isn't a per-transfer-additive
   threshold, so "cheapest transfer to re-trigger it" isn't a well-posed question for this one
   detector; its audit is `yes_no` only.
+- **Evidence collection has a performance cliff for high-inbound-degree wallets.** `db/queries/
+  evidence.sql`'s recursive CTE spawns one backward-walk branch per hop=0 row, and the hop=0 base
+  case produces one row *per direct inbound transaction*, not per distinct sender — a wallet with
+  many direct senders (or many transactions from the same sender) produces that many redundant
+  branches, each paying its own indexed lookup every hop. Found live on the full-extent snapshot:
+  auditing flags on a wallet with 2,005 inbound transactions took 26+ seconds and climbing per
+  flag (killed before completion); auditing 15 `bfs_proximity` flags on *other* wallets (excluding
+  that one) took between 0.17s and 183.67s each, the slow outliers all correlating with higher
+  in-degree, not with audit complexity — every one of those 15 was `method: exact`, the cheapest
+  possible audit path, confirming the variance is entirely evidence-collection cost, not the audit
+  algorithm. `sybil_cluster`'s audit never calls into evidence collection (no framing cost to
+  compute), and was unaffected: 30/30 sampled flags audited in a tight 2.56-3.24s band. A fix
+  (deduplicating the recursive term's branches by `from_wallet_id` before recursing, since the
+  final `SELECT DISTINCT` already collapses duplicate output rows) was scoped but not implemented
+  under this session's time budget — noted here rather than silently worked around.
