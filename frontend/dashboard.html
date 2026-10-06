@@ -1090,10 +1090,34 @@ let auditLoaded = false;
 let auditFilter = "all";
 let AUDIT_SUMMARY = [];
 let AUDIT_FLAGS = []; // flag rows merged with their audit result (verdict/cost/method), where audited
+const AUDIT_FLAGS_BY_FILTER = {}; // cache keyed by filter ("all" or a detector name) -- see loadAuditFlagsFor
 
 function weiToEth(wei) {
   if (wei == null) return "–";
   return `${(Number(wei) / 1e18).toFixed(6)} ETH`;
+}
+
+// Bounded page of flags for one filter, then their audit results in
+// parallel -- there is no bulk audit-lookup endpoint (unlike
+// /cluster-membership for clusters), so this stays a small, fixed-size
+// page rather than N+1 over every flag a real run can produce (thousands
+// for sybil_cluster). Fetched per filter (not client-filtered from a
+// single global page): /flags with no detector always returns the
+// globally lowest flag_ids, which in practice is always whichever
+// detector happens to run first each pipeline run -- a client-side filter
+// over that one page would silently show "nothing matches" for every
+// other detector even when it has real audited flags.
+async function loadAuditFlagsFor(filter) {
+  if (AUDIT_FLAGS_BY_FILTER[filter]) return AUDIT_FLAGS_BY_FILTER[filter];
+  const params = { limit: 50 };
+  if (filter !== "all") params.detector = filter;
+  const flags = await api("/flags", params).catch(() => []);
+  const audits = await Promise.all(
+    flags.map(f => api(`/flags/${f.flag_id}/audit`).catch(() => null))
+  );
+  const merged = flags.map((f, i) => ({ ...f, audit: audits[i] }));
+  AUDIT_FLAGS_BY_FILTER[filter] = merged;
+  return merged;
 }
 
 async function loadAudit() {
@@ -1104,15 +1128,7 @@ async function loadAudit() {
   AUDIT_SUMMARY = await api("/audit/summary").catch(() => []);
   renderAuditSummary();
 
-  // Bounded page of flags, then their audit results in parallel -- there
-  // is no bulk audit-lookup endpoint (unlike /cluster-membership for
-  // clusters), so this stays a small, fixed-size page rather than N+1
-  // over every flag a real run can produce (thousands for sybil_cluster).
-  const flags = await api("/flags", { limit: 50 }).catch(() => []);
-  const audits = await Promise.all(
-    flags.map(f => api(`/flags/${f.flag_id}/audit`).catch(() => null))
-  );
-  AUDIT_FLAGS = flags.map((f, i) => ({ ...f, audit: audits[i] }));
+  AUDIT_FLAGS = await loadAuditFlagsFor(auditFilter);
   renderAuditFlags();
 }
 
@@ -1129,16 +1145,18 @@ function renderAuditSummary() {
     </tr>`).join("");
 }
 
-document.getElementById("auditFilterBar").addEventListener("click", e => {
+document.getElementById("auditFilterBar").addEventListener("click", async e => {
   const btn = e.target.closest("button"); if (!btn) return;
   auditFilter = btn.dataset.f;
   document.querySelectorAll("#auditFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
+  document.getElementById("auditFlagRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
+  AUDIT_FLAGS = await loadAuditFlagsFor(auditFilter);
   renderAuditFlags();
 });
 
 function renderAuditFlags() {
   const tbody = document.getElementById("auditFlagRows");
-  const list = AUDIT_FLAGS.filter(f => auditFilter === "all" || f.detector === auditFilter);
+  const list = AUDIT_FLAGS;
   if (!list.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">Nothing matches this filter.</div></td></tr>`; return; }
   tbody.innerHTML = list.map(f => {
     const a = f.audit;
