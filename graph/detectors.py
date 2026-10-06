@@ -93,6 +93,32 @@ def select_pagerank_threshold_flags(pagerank_scores: list, seed_wallet_id: int, 
     return top, top[-1][1]
 
 
+def _apply_haircut_transfer(balance: dict, tainted: dict, from_id: int, to_id: int, value: float,
+                             seed_wallet_id: int) -> float:
+    """One step of the proportional-haircut taint-propagation model, shared
+    by compute_impurity_ratios and compute_engaged_outflow_ratios below --
+    see compute_impurity_ratios's docstring for the full model description
+    and its partial-balance limitation, which applies wherever this is used.
+
+    Mutates `balance`/`tainted` in place (both wallet_id -> float, created
+    lazily). Returns taint_out -- the amount of taint that moved from
+    from_id to to_id in this transfer -- since callers that track
+    additional per-wallet bookkeeping (cumulative inflow, forwarding
+    windows) need to see it directly, not just the updated running totals.
+    """
+    if from_id == seed_wallet_id:
+        taint_out = value
+    else:
+        bal_before = balance.get(from_id, 0.0)
+        taint_out = value * (tainted.get(from_id, 0.0) / bal_before) if bal_before > 0 else 0.0
+
+    balance[from_id] = max(0.0, balance.get(from_id, 0.0) - value)
+    tainted[from_id] = max(0.0, tainted.get(from_id, 0.0) - taint_out)
+    balance[to_id] = balance.get(to_id, 0.0) + value
+    tainted[to_id] = tainted.get(to_id, 0.0) + taint_out
+    return taint_out
+
+
 def compute_impurity_ratios(transfers: list, seed_wallet_id: int) -> dict:
     """Simplified Liu et al. "impurity" via proportional haircut taint
     propagation over native ETH transfers, in the block order given.
@@ -127,17 +153,7 @@ def compute_impurity_ratios(transfers: list, seed_wallet_id: int) -> dict:
     balance = {}
     tainted = {}
     for from_id, to_id, value_wei in transfers:
-        value = float(value_wei)
-        if from_id == seed_wallet_id:
-            taint_out = value
-        else:
-            bal_before = balance.get(from_id, 0.0)
-            taint_out = value * (tainted.get(from_id, 0.0) / bal_before) if bal_before > 0 else 0.0
-
-        balance[from_id] = max(0.0, balance.get(from_id, 0.0) - value)
-        tainted[from_id] = max(0.0, tainted.get(from_id, 0.0) - taint_out)
-        balance[to_id] = balance.get(to_id, 0.0) + value
-        tainted[to_id] = tainted.get(to_id, 0.0) + taint_out
+        _apply_haircut_transfer(balance, tainted, from_id, to_id, float(value_wei), seed_wallet_id)
 
     return {
         wallet_id: tainted.get(wallet_id, 0.0) / bal
@@ -150,6 +166,84 @@ def select_impurity_flags(impurity_ratios: dict, threshold: float) -> list:
     """Returns [(wallet_id, ratio), ...] for every wallet at or above
     `threshold`."""
     return [(wallet_id, ratio) for wallet_id, ratio in impurity_ratios.items() if ratio >= threshold]
+
+
+DEFAULT_ENGAGED_WINDOW_BLOCKS = 7200       # ~24h at ~12s/block
+DEFAULT_ENGAGED_OUTFLOW_THRESHOLD = 0.50   # >= 50% of tainted inflow forwarded onward, quickly
+
+
+def compute_engaged_outflow_ratios(transfers: list, seed_wallet_id: int,
+                                    window_blocks: int = DEFAULT_ENGAGED_WINDOW_BLOCKS) -> dict:
+    """engaged_proximity's signal: how much of the taint a wallet received
+    did it turn around and forward onward (signed outgoing transfers,
+    haircut-weighted by its tainted balance share at the moment of
+    sending -- reusing _apply_haircut_transfer, the exact same proportional
+    model compute_impurity_ratios uses above), within `window_blocks` of
+    when taint first reached it.
+
+    transfers: [(from_wallet_id, to_wallet_id, value_wei, block_number), ...],
+    block-ordered -- note the extra block_number column vs
+    compute_impurity_ratios's transfers, needed for the window check.
+
+    A wallet that drains its ENTIRE balance always forwards ~100% of
+    whatever taint it's currently holding, by the arithmetic of the
+    proportional model (taint_out = value_sent * tainted/balance; if
+    value_sent == balance, taint_out == tainted exactly) -- this is a
+    known, accepted property of a haircut model, not a bug: "sent its
+    whole balance onward quickly" is itself the behavior this detector is
+    looking for. It only under-flags a wallet that forwards everything
+    MINUS a kept remainder, or that forwards only part of its holdings --
+    exactly the "busy wallet sent unrelated funds" case this is meant to
+    leave unflagged.
+
+    Returns wallet_id -> ratio (tainted_outflow_in_window / total_tainted_
+    inflow_ever_received) for every non-seed wallet with nonzero total
+    tainted inflow.
+    """
+    balance = {}
+    tainted = {}
+    total_inflow = {}
+    first_taint_block = {}
+    outflow_in_window = {}
+
+    for from_id, to_id, value_wei, block_number in transfers:
+        value = float(value_wei)
+        taint_out = _apply_haircut_transfer(balance, tainted, from_id, to_id, value, seed_wallet_id)
+
+        if taint_out > 0 and from_id != seed_wallet_id:
+            arrival = first_taint_block.get(from_id)
+            if arrival is not None and block_number <= arrival + window_blocks:
+                outflow_in_window[from_id] = outflow_in_window.get(from_id, 0.0) + taint_out
+
+        if taint_out > 0:
+            total_inflow[to_id] = total_inflow.get(to_id, 0.0) + taint_out
+            if to_id not in first_taint_block:
+                first_taint_block[to_id] = block_number
+
+    return {
+        wallet_id: outflow_in_window.get(wallet_id, 0.0) / inflow
+        for wallet_id, inflow in total_inflow.items()
+        if wallet_id != seed_wallet_id and inflow > 0
+    }
+
+
+def select_engaged_proximity_flags(bfs_distances: dict, outflow_ratios: dict, seed_wallet_id: int,
+                                    bfs_threshold: float = DEFAULT_BFS_PROXIMITY_THRESHOLD,
+                                    outflow_threshold: float = DEFAULT_ENGAGED_OUTFLOW_THRESHOLD) -> list:
+    """Flags wallets that are BOTH within the BFS-proximity threshold of
+    the seed AND forwarded a significant, prompt share of the tainted
+    funds they received. Returns [(wallet_id, bfs_score, outflow_ratio), ...]."""
+    flags = []
+    for wallet_id, distance in bfs_distances.items():
+        if wallet_id == seed_wallet_id:
+            continue
+        score = bfs_proximity_score(distance)
+        if score < bfs_threshold:
+            continue
+        ratio = outflow_ratios.get(wallet_id)
+        if ratio is not None and ratio >= outflow_threshold:
+            flags.append((wallet_id, score, ratio))
+    return flags
 
 
 # --- DB-I/O wrappers ---------------------------------------------------------
@@ -290,7 +384,47 @@ def run_impurity(conn, snapshot_id: int, seed_wallet_id: int, threshold: float =
     return count
 
 
-DETECTOR_NAMES = ("bfs_proximity", "sybil_cluster", "pagerank_threshold", "impurity")
+def run_engaged_proximity(conn, snapshot_id: int, seed_wallet_id: int,
+                           bfs_threshold: float = DEFAULT_BFS_PROXIMITY_THRESHOLD,
+                           outflow_threshold: float = DEFAULT_ENGAGED_OUTFLOW_THRESHOLD,
+                           window_blocks: int = DEFAULT_ENGAGED_WINDOW_BLOCKS, bfs_run_id: int = None) -> int:
+    bfs_run_id = bfs_run_id or resolve_latest_run_id(conn, snapshot_id, "bfs")
+    run_id = start_run(
+        conn, snapshot_id, "engaged_proximity",
+        parameters={
+            "bfs_threshold": bfs_threshold, "outflow_threshold": outflow_threshold,
+            "window_blocks": window_blocks, "bfs_run_id": bfs_run_id, "seed_wallet_id": seed_wallet_id,
+            "limitation": "same partial-balance limitation as impurity -- see compute_impurity_ratios docstring",
+        },
+    )
+    t0 = time.time()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT wallet_id, metric_value FROM vertex_metric WHERE run_id = %s AND metric_name LIKE 'bfs_distance_from_%%'",
+            (bfs_run_id,),
+        )
+        bfs_distances = dict(cur.fetchall())
+        cur.execute(
+            """
+            SELECT t.from_wallet_id, t.to_wallet_id, t.value_wei, t.block_number
+            FROM snapshot_edge_tx st
+            JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
+            JOIN transaction t ON t.tx_hash = st.tx_hash
+            WHERE se.snapshot_id = %s
+            ORDER BY t.block_number, t.tx_index
+            """,
+            (snapshot_id,),
+        )
+        transfers = cur.fetchall()
+    outflow_ratios = compute_engaged_outflow_ratios(transfers, seed_wallet_id, window_blocks)
+    flags = select_engaged_proximity_flags(bfs_distances, outflow_ratios, seed_wallet_id, bfs_threshold, outflow_threshold)
+    rows = [(wallet_id, "engaged_proximity", ratio, outflow_threshold) for wallet_id, score, ratio in flags]
+    count = persist_flags(conn, run_id, rows)
+    finish_run(conn, run_id, int((time.time() - t0) * 1000), "engaged_proximity")
+    return count
+
+
+DETECTOR_NAMES = ("bfs_proximity", "sybil_cluster", "pagerank_threshold", "impurity", "engaged_proximity")
 
 
 def main():
@@ -301,6 +435,8 @@ def main():
     parser.add_argument("--bfs-proximity-threshold", type=float, default=DEFAULT_BFS_PROXIMITY_THRESHOLD)
     parser.add_argument("--pagerank-percentile", type=float, default=DEFAULT_PAGERANK_PERCENTILE)
     parser.add_argument("--impurity-threshold", type=float, default=DEFAULT_IMPURITY_THRESHOLD)
+    parser.add_argument("--engaged-outflow-threshold", type=float, default=DEFAULT_ENGAGED_OUTFLOW_THRESHOLD)
+    parser.add_argument("--engaged-window-blocks", type=int, default=DEFAULT_ENGAGED_WINDOW_BLOCKS)
     args = parser.parse_args()
 
     names = DETECTOR_NAMES if args.detector == "all" else (args.detector,)
@@ -314,8 +450,12 @@ def main():
                 n = run_sybil_cluster(conn, args.snapshot_id, args.seed_wallet_id)
             elif name == "pagerank_threshold":
                 n = run_pagerank_threshold(conn, args.snapshot_id, args.seed_wallet_id, args.pagerank_percentile)
-            else:
+            elif name == "impurity":
                 n = run_impurity(conn, args.snapshot_id, args.seed_wallet_id, args.impurity_threshold)
+            else:
+                n = run_engaged_proximity(conn, args.snapshot_id, args.seed_wallet_id,
+                                           args.bfs_proximity_threshold, args.engaged_outflow_threshold,
+                                           args.engaged_window_blocks)
             print(f"{name}: {n} wallets flagged")
     finally:
         conn.close()

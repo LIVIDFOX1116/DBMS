@@ -20,6 +20,8 @@ from graph.detectors import (
     select_pagerank_threshold_flags,
     compute_impurity_ratios,
     select_impurity_flags,
+    compute_engaged_outflow_ratios,
+    select_engaged_proximity_flags,
     persist_flags,
 )
 
@@ -103,6 +105,60 @@ class TestComputeImpurityRatios(unittest.TestCase):
         ratios = compute_impurity_ratios(transfers, SEED)
         self.assertNotIn(2, ratios)
         self.assertAlmostEqual(ratios[3], 1.0)
+
+
+class TestEngagedProximity(unittest.TestCase):
+    """The three narrative scenarios from the corrected spec, built as
+    concrete numeric transfer chains with hand-worked expected ratios --
+    this is the DETECTOR's own behavior (does it flag in the first
+    place), not the audit's frameable/robust verdict on top of it."""
+
+    BFS_DISTANCES = {SEED: 0, 2: 1}  # wallet 2 is always 1 hop from the seed in these scenarios
+
+    def test_launderer_forwards_most_of_the_taint_quickly_and_is_flagged(self):
+        transfers = [
+            (SEED, 2, 100.0, 100),  # taint arrives at wallet 2, block 100
+            (2, 9, 80.0, 105),      # wallet 2 forwards 80% of it onward 5 blocks later
+        ]
+        ratios = compute_engaged_outflow_ratios(transfers, SEED)
+        self.assertAlmostEqual(ratios[2], 0.8)
+        flags = select_engaged_proximity_flags(self.BFS_DISTANCES, ratios, SEED)
+        self.assertEqual([w for w, score, ratio in flags], [2])
+
+    def test_dusted_wallet_that_does_nothing_is_not_flagged(self):
+        transfers = [(SEED, 2, 1.0, 100)]  # dust arrives; wallet 2 never sends anything
+        ratios = compute_engaged_outflow_ratios(transfers, SEED)
+        self.assertEqual(ratios.get(2, 0.0), 0.0)
+        flags = select_engaged_proximity_flags(self.BFS_DISTANCES, ratios, SEED)
+        self.assertEqual(flags, [])
+
+    def test_busy_wallet_that_sends_mostly_unrelated_funds_is_not_flagged(self):
+        transfers = [
+            (SEED, 2, 1.0, 100),    # dust arrives
+            (5, 2, 100.0, 102),     # a large UNRELATED, untainted deposit arrives from elsewhere
+            (2, 9, 10.0, 105),      # wallet 2 sends only a small fraction of its now-mostly-clean balance
+        ]
+        ratios = compute_engaged_outflow_ratios(transfers, SEED)
+        # taint_out = 10 * (1/101) ~= 0.099 -- well under half of the 1.0 wei it ever received tainted
+        self.assertLess(ratios[2], 0.5)
+        flags = select_engaged_proximity_flags(self.BFS_DISTANCES, ratios, SEED)
+        self.assertEqual(flags, [])
+
+    def test_forwarding_outside_the_window_does_not_count(self):
+        transfers = [
+            (SEED, 2, 100.0, 100),
+            (2, 9, 80.0, 100 + 7200 + 1),  # one block past the default window
+        ]
+        ratios = compute_engaged_outflow_ratios(transfers, SEED, window_blocks=7200)
+        self.assertEqual(ratios.get(2, 0.0), 0.0)
+
+    def test_forwarding_right_at_the_window_edge_counts(self):
+        transfers = [
+            (SEED, 2, 100.0, 100),
+            (2, 9, 80.0, 100 + 7200),  # exactly at the edge, inclusive
+        ]
+        ratios = compute_engaged_outflow_ratios(transfers, SEED, window_blocks=7200)
+        self.assertAlmostEqual(ratios[2], 0.8)
 
 
 class TestSelectImpurityFlags(unittest.TestCase):
