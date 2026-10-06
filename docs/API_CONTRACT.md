@@ -178,6 +178,57 @@ will silently get an empty metrics list. `/runs/{run_id}/metrics` does not
 validate that `run_id` exists — an unknown or mismatched id just returns
 `[]`; treat that as "no data yet," not an error.
 
+### GET /flags?run_id=&detector=&wallet_id=&limit=100
+All filters optional. `detector` is one of `bfs_proximity`,
+`sybil_cluster`, `pagerank_threshold`, `impurity`, `engaged_proximity`.
+```json
+[{"flag_id": 2055, "run_id": 18, "wallet_id": 1478, "detector": "bfs_proximity",
+  "score": 70.0, "threshold": 50.0, "created_at": "2026-10-06T10:33:28.034157"}]
+```
+`score`/`threshold` meaning is detector-specific — see `CLAUDE.md`'s
+Definitions section and `graph/detectors.py`. `threshold` is `null` for
+`sybil_cluster` (categorical membership, not a numeric cutoff).
+
+### GET /flags/{flag_id}/evidence
+```json
+[{"tx_hash": "0x9a05...8cbe4", "hop": 0, "block_number": 10650165, "role": "unsolicited"}]
+```
+Block-ordered (not grouped by hop). `role` is `"signed"` or `"unsolicited"`
+— see `CLAUDE.md`. Returns `[]`, not an error, if evidence hasn't been
+collected for this flag yet — **this endpoint never computes evidence on
+demand**; it only reads what `graph/evidence.py` / the audit engine has
+already persisted. Unknown `flag_id` also returns `[]`.
+
+### GET /flags/{flag_id}/audit
+```json
+{"flag_audit_id": 1, "flag_id": 2055, "verdict": "frameable",
+ "framing_cost_wei": 4365121796310332, "framing_gas": 0,
+ "minimal_tx_set": ["0xc797...e08e7"], "method": "exact",
+ "backend": "pandas+networkx (CPU)", "runtime_ms": 1242,
+ "created_at": "2026-10-06T11:47:03.275594"}
+```
+`verdict`: `"frameable"` or `"robust"` — see `CLAUDE.md`'s corrected
+Definitions (2026-10-06). `framing_cost_wei`/`framing_gas`/`minimal_tx_set`
+are `null` for a `"robust"` verdict and for every `sybil_cluster` result
+(no framing cost is computed for that detector — see `graph/audit.py`).
+`method`: `"exact"`, `"greedy_upper_bound"`, or `"yes_no"`. A greedy
+result is an upper bound on the true minimum cost, never claimed exact.
+Errors: `404 {"detail": "flag not audited yet"}` — distinct from a 200
+with `"verdict": "robust"`.
+
+### GET /audit/summary?run_id=
+`run_id` optional (omit for all runs). One row per detector among flags
+that have been audited so far (not every flag that exists — see
+`graph/audit.py`'s `--limit`).
+```json
+[{"detector": "bfs_proximity", "total_audited": 3, "frameable_count": 3,
+  "framing_cost_min_wei": 1146808000000000, "framing_cost_median_wei": 2746258519285725.0,
+  "framing_cost_max_wei": 4365121796310332, "frameable_share": 1.0}]
+```
+`framing_cost_*_wei` are `null` when `frameable_count` is `0` (no
+frameable flags to compute a cost range from — see the `sybil_cluster`
+row in the example above, which has `0` frameable flags out of 2 audited).
+
 ### POST /internal/api-key (internal — not part of the UI contract)
 Body: `{"api_key": "string"}`. Header: `X-Internal-Token: <token>`.
 ```json

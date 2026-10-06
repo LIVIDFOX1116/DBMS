@@ -391,3 +391,110 @@ def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
                 (run_id, metric_name, limit),
             )
             return rows_as_dicts(cur)
+
+
+# ── FrameCheck (Phase 7) ────────────────────────────────────────────────────
+
+@app.get("/flags")
+def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
+                wallet_id: Optional[int] = None, limit: int = 100):
+    if using_mock():
+        flags = load_mock().get("flags", [])
+        filtered = [
+            f for f in flags
+            if (run_id is None or f["run_id"] == run_id)
+            and (detector is None or f["detector"] == detector)
+            and (wallet_id is None or f["wallet_id"] == wallet_id)
+        ]
+        return filtered[:limit]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            query = "SELECT flag_id, run_id, wallet_id, detector, score, threshold, created_at FROM flag WHERE 1=1"
+            params = []
+            if run_id is not None:
+                query += " AND run_id = %s"
+                params.append(run_id)
+            if detector is not None:
+                query += " AND detector = %s"
+                params.append(detector)
+            if wallet_id is not None:
+                query += " AND wallet_id = %s"
+                params.append(wallet_id)
+            query += " ORDER BY flag_id LIMIT %s"
+            params.append(limit)
+            cur.execute(query, params)
+            return rows_as_dicts(cur)
+
+
+@app.get("/flags/{flag_id}/evidence")
+def flag_evidence_endpoint(flag_id: int):
+    """Returns whatever flag_evidence rows already exist for this flag --
+    does NOT compute evidence on demand (that's graph/evidence.py's job,
+    run offline/by the audit engine; a GET here stays fast and read-only).
+    Empty list, not an error, if evidence hasn't been collected yet."""
+    if using_mock():
+        return load_mock().get("flag_evidence", {}).get(str(flag_id), [])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT tx_hash, hop, block_number, role FROM flag_evidence
+                   WHERE flag_id = %s ORDER BY block_number, hop""",
+                (flag_id,),
+            )
+            return rows_as_dicts(cur)
+
+
+@app.get("/flags/{flag_id}/audit")
+def flag_audit_endpoint(flag_id: int):
+    """The most recent flag_audit row for this flag -- 404 if it hasn't
+    been audited yet (distinct from "audited, verdict robust", which is a
+    normal 200)."""
+    if using_mock():
+        result = load_mock().get("flag_audit", {}).get(str(flag_id))
+        if result is None:
+            raise HTTPException(404, "flag not audited yet")
+        return result
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT flag_audit_id, flag_id, verdict, framing_cost_wei, framing_gas,
+                          minimal_tx_set, method, backend, runtime_ms, created_at
+                   FROM flag_audit WHERE flag_id = %s ORDER BY created_at DESC LIMIT 1""",
+                (flag_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "flag not audited yet")
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+
+
+@app.get("/audit/summary")
+def audit_summary(run_id: Optional[int] = None):
+    """Per detector: how many flags have been audited, what share came
+    back frameable, and the framing-cost min/median/max among the
+    frameable ones (robust flags have no framing cost to include)."""
+    if using_mock():
+        return load_mock().get("audit_summary", [])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            query = """
+                SELECT f.detector,
+                       COUNT(*) AS total_audited,
+                       COUNT(*) FILTER (WHERE fa.verdict = 'frameable') AS frameable_count,
+                       MIN(fa.framing_cost_wei) FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_min_wei,
+                       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fa.framing_cost_wei)
+                           FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_median_wei,
+                       MAX(fa.framing_cost_wei) FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_max_wei
+                FROM flag_audit fa JOIN flag f ON f.flag_id = fa.flag_id
+            """
+            params = []
+            if run_id is not None:
+                query += " WHERE f.run_id = %s"
+                params.append(run_id)
+            query += " GROUP BY f.detector ORDER BY f.detector"
+            cur.execute(query, params)
+            rows = rows_as_dicts(cur)
+            for row in rows:
+                row["frameable_share"] = row["frameable_count"] / row["total_audited"] if row["total_audited"] else 0.0
+            return rows
