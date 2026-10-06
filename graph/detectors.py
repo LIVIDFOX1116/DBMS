@@ -1,9 +1,12 @@
 """
 FrameCheck Phase 3: detectors that read already-computed analysis results
 (BFS distance, PageRank, Louvain/classify_clusters output, and native ETH
-transfer history) and write `flag` rows -- one row per (run_id, wallet_id,
-detector) that FrameCheck's audit engine (graph/audit.py, Phase 6) can
-later interrogate for frameability.
++ ERC-20 token transfer history) and write `flag` rows -- one row per
+(run_id, wallet_id, detector) that FrameCheck's audit engine
+(graph/audit.py, Phase 6) can later interrogate for frameability.
+impurity/engaged_proximity track taint per currency independently (native
+ETH and every ERC-20 contract get their own ledger) and flag a wallet if
+ANY currency crosses the threshold -- see compute_impurity_ratios.
 
 Each detector creates its OWN analysis_run row via graph/run_analysis.py's
 existing start_run/finish_run, under a new algorithm_name (see
@@ -23,6 +26,7 @@ graph/run_analysis.py.
 import argparse
 import math
 import time
+from collections import defaultdict
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -121,51 +125,79 @@ def _apply_haircut_transfer(balance: dict, tainted: dict, from_id: int, to_id: i
 
 def compute_impurity_ratios(transfers: list, seed_wallet_id: int) -> dict:
     """Simplified Liu et al. "impurity" via proportional haircut taint
-    propagation over native ETH transfers, in the block order given.
+    propagation, in the block order given, tracked PER CURRENCY
+    independently -- native ETH and each ERC-20 token contract get their
+    own balance/tainted ledger, since a wallet's ETH holdings say nothing
+    about its holdings of some unrelated token, and raw token amounts
+    (arbitrary integer units, no shared scale across tokens) can't be
+    mixed with wei or with each other.
 
-    transfers: [(from_wallet_id, to_wallet_id, value_wei), ...], caller-
-    sorted by (block_number, tx_index) -- order matters, this function
-    trusts it and does not re-sort.
+    transfers: [(from_wallet_id, to_wallet_id, value, currency), ...],
+    caller-sorted by (block_number, tx_index) WITHIN each currency (cross-
+    currency order doesn't matter -- each currency's replay only ever
+    looks at its own subsequence, re-grouped below) -- `currency` is None
+    for native ETH (value in wei) or an ERC-20 contract_address string
+    (value in that token's own raw integer units). The real signer is
+    always the transfer's parent transaction.from_wallet_id, even for a
+    token transfer -- see run_impurity's query; token_transfer.from_wallet_id
+    itself is never trusted (it's attacker-spoofable via a fake Transfer
+    event log, same reasoning as flag_evidence's role assignment).
 
-    Model: the seed wallet is treated as a pure taint source -- every wei
-    it sends is 100% tainted, regardless of its own tracked balance (we
-    have no visibility into the seed's true prior balance split, and it is
-    the known-bad address by construction of this whole case study, so
-    diluting its outflow with an assumed-clean portion would be the wrong
-    default). Every other wallet's outgoing taint fraction is
-    tainted_balance / balance at the moment it sends, carried forward
-    proportionally (the standard "haircut"/proportional taint model used
-    in blockchain forensics -- not a FIFO/LIFO UTXO tracing model, which
-    this simplification deliberately does not attempt).
+    Model: the seed wallet is treated as a pure taint source for EVERY
+    currency -- everything it sends is 100% tainted, regardless of its own
+    tracked balance (we have no visibility into the seed's true prior
+    balance split, and it is the known-bad address by construction of this
+    whole case study, so diluting its outflow with an assumed-clean
+    portion would be the wrong default). Every other wallet's outgoing
+    taint fraction, per currency, is tainted_balance / balance in that
+    currency at the moment it sends, carried forward proportionally (the
+    standard "haircut"/proportional taint model used in blockchain
+    forensics -- not a FIFO/LIFO UTXO tracing model, which this
+    simplification deliberately does not attempt).
 
     KNOWN LIMITATION (partial balances): `balance` here is NOT a wallet's
-    real on-chain balance -- it is only the net of transfers that happen to
-    appear in this bounded 2-hop subgraph crawl. A wallet that received
-    most of its real funds from outside the crawl will have an artificially
-    low (or even negative, floored at 0) tracked balance here, which can
-    inflate or deflate its computed impurity ratio relative to its true
-    on-chain impurity. This detector's output is only meaningful relative
-    to the visible subgraph, never as an absolute on-chain claim.
+    real on-chain balance in that currency -- it is only the net of
+    transfers that happen to appear in this bounded 2-hop subgraph crawl.
+    A wallet that received most of its real funds (in ETH or in some
+    token) from outside the crawl will have an artificially low (or even
+    negative, floored at 0) tracked balance here, which can inflate or
+    deflate its computed ratio relative to its true on-chain impurity.
+    This detector's output is only meaningful relative to the visible
+    subgraph, never as an absolute on-chain claim.
 
-    Returns wallet_id -> impurity_ratio (tainted_balance / balance) for
-    every wallet with balance > 0, EXCLUDING the seed itself.
+    Returns wallet_id -> {currency: ratio}, one entry per currency the
+    wallet ever held a nonzero balance of, EXCLUDING the seed itself.
     """
-    balance = {}
-    tainted = {}
-    for from_id, to_id, value_wei in transfers:
-        _apply_haircut_transfer(balance, tainted, from_id, to_id, float(value_wei), seed_wallet_id)
+    by_currency = defaultdict(list)
+    for from_id, to_id, value, currency in transfers:
+        by_currency[currency].append((from_id, to_id, value))
 
-    return {
-        wallet_id: tainted.get(wallet_id, 0.0) / bal
-        for wallet_id, bal in balance.items()
-        if wallet_id != seed_wallet_id and bal > 0
-    }
+    result = defaultdict(dict)
+    for currency, currency_transfers in by_currency.items():
+        balance = {}
+        tainted = {}
+        for from_id, to_id, value in currency_transfers:
+            _apply_haircut_transfer(balance, tainted, from_id, to_id, float(value), seed_wallet_id)
+        for wallet_id, bal in balance.items():
+            if wallet_id != seed_wallet_id and bal > 0:
+                result[wallet_id][currency] = tainted.get(wallet_id, 0.0) / bal
+    return dict(result)
 
 
 def select_impurity_flags(impurity_ratios: dict, threshold: float) -> list:
-    """Returns [(wallet_id, ratio), ...] for every wallet at or above
-    `threshold`."""
-    return [(wallet_id, ratio) for wallet_id, ratio in impurity_ratios.items() if ratio >= threshold]
+    """Returns [(wallet_id, best_ratio, best_currency), ...] for every
+    wallet where ANY currency's ratio is at or above `threshold` -- "a
+    flag fires if any token crosses the threshold," not an average or sum
+    across currencies. best_ratio/best_currency are the highest-ratio
+    qualifying currency, used as the flag's single score/token_contract
+    (None for native ETH)."""
+    flags = []
+    for wallet_id, per_currency in impurity_ratios.items():
+        qualifying = {c: r for c, r in per_currency.items() if r >= threshold}
+        if qualifying:
+            best_currency, best_ratio = max(qualifying.items(), key=lambda kv: kv[1])
+            flags.append((wallet_id, best_ratio, best_currency))
+    return flags
 
 
 DEFAULT_ENGAGED_WINDOW_BLOCKS = 7200       # ~24h at ~12s/block
@@ -174,57 +206,66 @@ DEFAULT_ENGAGED_OUTFLOW_THRESHOLD = 0.50   # >= 50% of tainted inflow forwarded 
 
 def compute_engaged_outflow_ratios(transfers: list, seed_wallet_id: int,
                                     window_blocks: int = DEFAULT_ENGAGED_WINDOW_BLOCKS) -> dict:
-    """engaged_proximity's signal: how much of the taint a wallet received
-    did it turn around and forward onward (signed outgoing transfers,
-    haircut-weighted by its tainted balance share at the moment of
-    sending -- reusing _apply_haircut_transfer, the exact same proportional
-    model compute_impurity_ratios uses above), within `window_blocks` of
-    when taint first reached it.
+    """engaged_proximity's signal: how much of the taint a wallet received,
+    IN A GIVEN CURRENCY, did it turn around and forward onward (signed
+    outgoing transfers, haircut-weighted by its tainted balance share in
+    that currency at the moment of sending -- reusing
+    _apply_haircut_transfer, the exact same proportional model
+    compute_impurity_ratios uses above), within `window_blocks` of when
+    taint first reached it. Tracked PER CURRENCY independently, same
+    reasoning as compute_impurity_ratios -- a wallet that forwards 100% of
+    the ETH it received but sits on an airdropped token (or vice versa)
+    should be judged on each currency's own merits, not an average.
 
-    transfers: [(from_wallet_id, to_wallet_id, value_wei, block_number), ...],
-    block-ordered -- note the extra block_number column vs
-    compute_impurity_ratios's transfers, needed for the window check.
+    transfers: [(from_wallet_id, to_wallet_id, value, currency, block_number), ...],
+    block-ordered WITHIN each currency (see compute_impurity_ratios'
+    docstring on why cross-currency order doesn't matter) -- note the
+    extra block_number column vs compute_impurity_ratios's transfers,
+    needed for the window check.
 
-    A wallet that drains its ENTIRE balance always forwards ~100% of
-    whatever taint it's currently holding, by the arithmetic of the
-    proportional model (taint_out = value_sent * tainted/balance; if
-    value_sent == balance, taint_out == tainted exactly) -- this is a
-    known, accepted property of a haircut model, not a bug: "sent its
-    whole balance onward quickly" is itself the behavior this detector is
-    looking for. It only under-flags a wallet that forwards everything
-    MINUS a kept remainder, or that forwards only part of its holdings --
-    exactly the "busy wallet sent unrelated funds" case this is meant to
-    leave unflagged.
+    A wallet that drains its ENTIRE balance in a currency always forwards
+    ~100% of whatever taint it's currently holding IN THAT CURRENCY, by
+    the arithmetic of the proportional model (taint_out = value_sent *
+    tainted/balance; if value_sent == balance, taint_out == tainted
+    exactly) -- this is a known, accepted property of a haircut model,
+    not a bug: "sent its whole balance onward quickly" is itself the
+    behavior this detector is looking for. It only under-flags a wallet
+    that forwards everything MINUS a kept remainder, or that forwards
+    only part of its holdings -- exactly the "busy wallet sent unrelated
+    funds" case this is meant to leave unflagged.
 
-    Returns wallet_id -> ratio (tainted_outflow_in_window / total_tainted_
-    inflow_ever_received) for every non-seed wallet with nonzero total
-    tainted inflow.
+    Returns wallet_id -> {currency: ratio}, one entry per currency the
+    wallet ever received nonzero tainted inflow of, EXCLUDING the seed.
     """
-    balance = {}
-    tainted = {}
-    total_inflow = {}
-    first_taint_block = {}
-    outflow_in_window = {}
+    by_currency = defaultdict(list)
+    for from_id, to_id, value, currency, block_number in transfers:
+        by_currency[currency].append((from_id, to_id, value, block_number))
 
-    for from_id, to_id, value_wei, block_number in transfers:
-        value = float(value_wei)
-        taint_out = _apply_haircut_transfer(balance, tainted, from_id, to_id, value, seed_wallet_id)
+    result = defaultdict(dict)
+    for currency, currency_transfers in by_currency.items():
+        balance = {}
+        tainted = {}
+        total_inflow = {}
+        first_taint_block = {}
+        outflow_in_window = {}
 
-        if taint_out > 0 and from_id != seed_wallet_id:
-            arrival = first_taint_block.get(from_id)
-            if arrival is not None and block_number <= arrival + window_blocks:
-                outflow_in_window[from_id] = outflow_in_window.get(from_id, 0.0) + taint_out
+        for from_id, to_id, value, block_number in currency_transfers:
+            taint_out = _apply_haircut_transfer(balance, tainted, from_id, to_id, float(value), seed_wallet_id)
 
-        if taint_out > 0:
-            total_inflow[to_id] = total_inflow.get(to_id, 0.0) + taint_out
-            if to_id not in first_taint_block:
-                first_taint_block[to_id] = block_number
+            if taint_out > 0 and from_id != seed_wallet_id:
+                arrival = first_taint_block.get(from_id)
+                if arrival is not None and block_number <= arrival + window_blocks:
+                    outflow_in_window[from_id] = outflow_in_window.get(from_id, 0.0) + taint_out
 
-    return {
-        wallet_id: outflow_in_window.get(wallet_id, 0.0) / inflow
-        for wallet_id, inflow in total_inflow.items()
-        if wallet_id != seed_wallet_id and inflow > 0
-    }
+            if taint_out > 0:
+                total_inflow[to_id] = total_inflow.get(to_id, 0.0) + taint_out
+                if to_id not in first_taint_block:
+                    first_taint_block[to_id] = block_number
+
+        for wallet_id, inflow in total_inflow.items():
+            if wallet_id != seed_wallet_id and inflow > 0:
+                result[wallet_id][currency] = outflow_in_window.get(wallet_id, 0.0) / inflow
+    return dict(result)
 
 
 def select_engaged_proximity_flags(bfs_distances: dict, outflow_ratios: dict, seed_wallet_id: int,
@@ -232,7 +273,9 @@ def select_engaged_proximity_flags(bfs_distances: dict, outflow_ratios: dict, se
                                     outflow_threshold: float = DEFAULT_ENGAGED_OUTFLOW_THRESHOLD) -> list:
     """Flags wallets that are BOTH within the BFS-proximity threshold of
     the seed AND forwarded a significant, prompt share of the tainted
-    funds they received. Returns [(wallet_id, bfs_score, outflow_ratio), ...]."""
+    funds they received IN ANY SINGLE CURRENCY -- "a flag fires if any
+    token crosses the threshold," not an average or sum across
+    currencies. Returns [(wallet_id, bfs_score, best_ratio, best_currency), ...]."""
     flags = []
     for wallet_id, distance in bfs_distances.items():
         if wallet_id == seed_wallet_id:
@@ -240,9 +283,11 @@ def select_engaged_proximity_flags(bfs_distances: dict, outflow_ratios: dict, se
         score = bfs_proximity_score(distance)
         if score < bfs_threshold:
             continue
-        ratio = outflow_ratios.get(wallet_id)
-        if ratio is not None and ratio >= outflow_threshold:
-            flags.append((wallet_id, score, ratio))
+        per_currency = outflow_ratios.get(wallet_id, {})
+        qualifying = {c: r for c, r in per_currency.items() if r >= outflow_threshold}
+        if qualifying:
+            best_currency, best_ratio = max(qualifying.items(), key=lambda kv: kv[1])
+            flags.append((wallet_id, score, best_ratio, best_currency))
     return flags
 
 
@@ -269,18 +314,25 @@ def resolve_latest_run_id(conn, snapshot_id: int, algorithm_name: str) -> int:
 
 
 def persist_flags(conn, run_id: int, rows: list, commit: bool = True) -> int:
-    """rows: [(wallet_id, detector, score, threshold), ...]. Bulk via
-    execute_values, same pattern Phase 2 established for vertex_metric/
-    cluster -- see graph/run_analysis.py."""
+    """rows: [(wallet_id, detector, score, threshold), ...] (bfs_proximity,
+    sybil_cluster, pagerank_threshold -- no currency dimension) or
+    [(wallet_id, detector, score, threshold, token_contract), ...]
+    (impurity, engaged_proximity -- token_contract is None for a
+    native-ETH-triggered flag, or the ERC-20 contract_address of whichever
+    token's ratio actually crossed the threshold; see select_impurity_
+    flags/select_engaged_proximity_flags). Bulk via execute_values, same
+    pattern Phase 2 established for vertex_metric/cluster -- see
+    graph/run_analysis.py."""
     if not rows:
         if commit:
             conn.commit()
         return 0
+    normalized = [(run_id, *row) if len(row) == 5 else (run_id, *row, None) for row in rows]
     with conn.cursor() as cur:
         execute_values(
             cur,
-            "INSERT INTO flag (run_id, wallet_id, detector, score, threshold) VALUES %s",
-            [(run_id, wallet_id, detector, score, threshold) for wallet_id, detector, score, threshold in rows],
+            "INSERT INTO flag (run_id, wallet_id, detector, score, threshold, token_contract) VALUES %s",
+            normalized,
         )
     if commit:
         conn.commit()
@@ -353,32 +405,71 @@ def run_pagerank_threshold(conn, snapshot_id: int, seed_wallet_id: int,
     return count
 
 
+def _fetch_native_and_token_transfers(cur, snapshot_id: int, with_block: bool) -> list:
+    """Native ETH + ERC-20 token transfers whose parent transaction is
+    part of this snapshot, tagged with `currency` (None for native ETH,
+    the token's contract_address for an ERC-20 transfer) -- the shared
+    fetch for both run_impurity and run_engaged_proximity. The real
+    signer is always transaction.from_wallet_id, even for a token row --
+    never token_transfer.from_wallet_id (attacker-spoofable via a fake
+    Transfer event log; see compute_impurity_ratios' docstring).
+    token_transfer.to_wallet_id is used as-is, matching how it's already
+    trusted elsewhere in this codebase for routing/graph purposes.
+
+    A transaction's parent row still lands in snapshot_edge_tx even for a
+    pure token call with value_wei=0 -- export_snapshot's edge query has
+    no value_wei filter, only `to_wallet_id IS NOT NULL` (satisfied: a
+    contract call's native recipient is the contract's own wallet_id).
+
+    Returns [(from_wallet_id, to_wallet_id, value, currency[, block_number]), ...]
+    -- block_number included only when with_block=True (engaged_proximity
+    needs it for the forwarding-window check; impurity doesn't)."""
+    block_col = ", t.block_number" if with_block else ""
+    cur.execute(
+        f"""
+        SELECT t.from_wallet_id, t.to_wallet_id, t.value_wei, NULL::char(42) {block_col}
+        FROM snapshot_edge_tx st
+        JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
+        JOIN transaction t ON t.tx_hash = st.tx_hash
+        WHERE se.snapshot_id = %s
+        ORDER BY t.block_number, t.tx_index
+        """,
+        (snapshot_id,),
+    )
+    native = cur.fetchall()
+    cur.execute(
+        f"""
+        SELECT t.from_wallet_id, tt.to_wallet_id, tt.token_amount, tok.contract_address {block_col}
+        FROM snapshot_edge_tx st
+        JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
+        JOIN transaction t ON t.tx_hash = st.tx_hash
+        JOIN token_transfer tt ON tt.tx_hash = t.tx_hash
+        JOIN token tok ON tok.token_id = tt.token_id
+        WHERE se.snapshot_id = %s
+        ORDER BY t.block_number, tt.log_index
+        """,
+        (snapshot_id,),
+    )
+    token = cur.fetchall()
+    return native + token
+
+
 def run_impurity(conn, snapshot_id: int, seed_wallet_id: int, threshold: float = DEFAULT_IMPURITY_THRESHOLD) -> int:
     run_id = start_run(
         conn, snapshot_id, "impurity",
         parameters={
             "threshold": threshold, "seed_wallet_id": seed_wallet_id,
             "limitation": "balances are computed only from transfers visible in this bounded crawl, "
-                           "not each wallet's true on-chain balance -- see compute_impurity_ratios docstring",
+                           "not each wallet's true on-chain balance -- see compute_impurity_ratios docstring. "
+                           "Tracks native ETH and every ERC-20 token seen in the crawl, each independently.",
         },
     )
     t0 = time.time()
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT t.from_wallet_id, t.to_wallet_id, t.value_wei
-            FROM snapshot_edge_tx st
-            JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
-            JOIN transaction t ON t.tx_hash = st.tx_hash
-            WHERE se.snapshot_id = %s
-            ORDER BY t.block_number, t.tx_index
-            """,
-            (snapshot_id,),
-        )
-        transfers = cur.fetchall()
+        transfers = _fetch_native_and_token_transfers(cur, snapshot_id, with_block=False)
     ratios = compute_impurity_ratios(transfers, seed_wallet_id)
     flags = select_impurity_flags(ratios, threshold)
-    rows = [(wallet_id, "impurity", ratio, threshold) for wallet_id, ratio in flags]
+    rows = [(wallet_id, "impurity", ratio, threshold, currency) for wallet_id, ratio, currency in flags]
     count = persist_flags(conn, run_id, rows)
     finish_run(conn, run_id, int((time.time() - t0) * 1000), "impurity")
     return count
@@ -404,21 +495,13 @@ def run_engaged_proximity(conn, snapshot_id: int, seed_wallet_id: int,
             (bfs_run_id,),
         )
         bfs_distances = dict(cur.fetchall())
-        cur.execute(
-            """
-            SELECT t.from_wallet_id, t.to_wallet_id, t.value_wei, t.block_number
-            FROM snapshot_edge_tx st
-            JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
-            JOIN transaction t ON t.tx_hash = st.tx_hash
-            WHERE se.snapshot_id = %s
-            ORDER BY t.block_number, t.tx_index
-            """,
-            (snapshot_id,),
-        )
-        transfers = cur.fetchall()
+        transfers = _fetch_native_and_token_transfers(cur, snapshot_id, with_block=True)
     outflow_ratios = compute_engaged_outflow_ratios(transfers, seed_wallet_id, window_blocks)
     flags = select_engaged_proximity_flags(bfs_distances, outflow_ratios, seed_wallet_id, bfs_threshold, outflow_threshold)
-    rows = [(wallet_id, "engaged_proximity", ratio, outflow_threshold) for wallet_id, score, ratio in flags]
+    rows = [
+        (wallet_id, "engaged_proximity", ratio, outflow_threshold, currency)
+        for wallet_id, score, ratio, currency in flags
+    ]
     count = persist_flags(conn, run_id, rows)
     finish_run(conn, run_id, int((time.time() - t0) * 1000), "engaged_proximity")
     return count

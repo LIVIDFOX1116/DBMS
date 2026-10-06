@@ -90,21 +90,34 @@ class TestComputeImpurityRatios(unittest.TestCase):
 
     def test_known_chain_produces_hand_verified_ratios(self):
         transfers = [
-            (SEED, 2, 100.0),  # A = wallet 2
-            (2, 3, 50.0),      # B = wallet 3
-            (4, 3, 50.0),      # C = wallet 4, untainted source outside the subgraph
+            (SEED, 2, 100.0, None),  # A = wallet 2, native ETH (currency=None)
+            (2, 3, 50.0, None),      # B = wallet 3
+            (4, 3, 50.0, None),      # C = wallet 4, untainted source outside the subgraph
         ]
         ratios = compute_impurity_ratios(transfers, SEED)
-        self.assertAlmostEqual(ratios[2], 1.0)   # A: fully tainted
-        self.assertAlmostEqual(ratios[3], 0.5)   # B: half its balance traces to the seed
-        self.assertNotIn(4, ratios)              # C: balance floored to 0, excluded
-        self.assertNotIn(SEED, ratios)           # seed itself never included
+        self.assertAlmostEqual(ratios[2][None], 1.0)   # A: fully tainted
+        self.assertAlmostEqual(ratios[3][None], 0.5)   # B: half its balance traces to the seed
+        self.assertNotIn(4, ratios)                    # C: balance floored to 0, excluded
+        self.assertNotIn(SEED, ratios)                 # seed itself never included
 
     def test_wallet_with_zero_balance_is_excluded_not_divided_by_zero(self):
-        transfers = [(SEED, 2, 100.0), (2, 3, 100.0)]  # A forwards everything, ends at balance 0
+        transfers = [(SEED, 2, 100.0, None), (2, 3, 100.0, None)]  # A forwards everything, ends at balance 0
         ratios = compute_impurity_ratios(transfers, SEED)
         self.assertNotIn(2, ratios)
-        self.assertAlmostEqual(ratios[3], 1.0)
+        self.assertAlmostEqual(ratios[3][None], 1.0)
+
+    def test_two_currencies_are_tracked_independently(self):
+        """Wallet 2 is 100% tainted in native ETH but holds an untainted
+        balance of some ERC-20 token -- each currency's ratio must reflect
+        only its own ledger, never bleed into the other's."""
+        transfers = [
+            (SEED, 2, 100.0, None),              # native ETH: fully tainted
+            (4, 2, 50.0, "0xTOKEN"),              # unrelated token deposit, untainted source
+        ]
+        ratios = compute_impurity_ratios(transfers, SEED)
+        self.assertAlmostEqual(ratios[2][None], 1.0)
+        self.assertEqual(ratios[2]["0xTOKEN"], 0.0)  # held the token, but none of it traces to the seed
+        self.assertNotIn(4, ratios)  # wallet 4 (the token sender) ends at balance 0 in every currency it touched
 
 
 class TestEngagedProximity(unittest.TestCase):
@@ -117,55 +130,83 @@ class TestEngagedProximity(unittest.TestCase):
 
     def test_launderer_forwards_most_of_the_taint_quickly_and_is_flagged(self):
         transfers = [
-            (SEED, 2, 100.0, 100),  # taint arrives at wallet 2, block 100
-            (2, 9, 80.0, 105),      # wallet 2 forwards 80% of it onward 5 blocks later
+            (SEED, 2, 100.0, None, 100),  # taint arrives at wallet 2, block 100, native ETH
+            (2, 9, 80.0, None, 105),      # wallet 2 forwards 80% of it onward 5 blocks later
         ]
         ratios = compute_engaged_outflow_ratios(transfers, SEED)
-        self.assertAlmostEqual(ratios[2], 0.8)
+        self.assertAlmostEqual(ratios[2][None], 0.8)
         flags = select_engaged_proximity_flags(self.BFS_DISTANCES, ratios, SEED)
-        self.assertEqual([w for w, score, ratio in flags], [2])
+        self.assertEqual([w for w, score, ratio, currency in flags], [2])
 
     def test_dusted_wallet_that_does_nothing_is_not_flagged(self):
-        transfers = [(SEED, 2, 1.0, 100)]  # dust arrives; wallet 2 never sends anything
+        transfers = [(SEED, 2, 1.0, None, 100)]  # dust arrives; wallet 2 never sends anything
         ratios = compute_engaged_outflow_ratios(transfers, SEED)
-        self.assertEqual(ratios.get(2, 0.0), 0.0)
+        self.assertEqual(ratios.get(2, {}).get(None, 0.0), 0.0)
         flags = select_engaged_proximity_flags(self.BFS_DISTANCES, ratios, SEED)
         self.assertEqual(flags, [])
 
     def test_busy_wallet_that_sends_mostly_unrelated_funds_is_not_flagged(self):
         transfers = [
-            (SEED, 2, 1.0, 100),    # dust arrives
-            (5, 2, 100.0, 102),     # a large UNRELATED, untainted deposit arrives from elsewhere
-            (2, 9, 10.0, 105),      # wallet 2 sends only a small fraction of its now-mostly-clean balance
+            (SEED, 2, 1.0, None, 100),    # dust arrives
+            (5, 2, 100.0, None, 102),     # a large UNRELATED, untainted deposit arrives from elsewhere
+            (2, 9, 10.0, None, 105),      # wallet 2 sends only a small fraction of its now-mostly-clean balance
         ]
         ratios = compute_engaged_outflow_ratios(transfers, SEED)
         # taint_out = 10 * (1/101) ~= 0.099 -- well under half of the 1.0 wei it ever received tainted
-        self.assertLess(ratios[2], 0.5)
+        self.assertLess(ratios[2][None], 0.5)
         flags = select_engaged_proximity_flags(self.BFS_DISTANCES, ratios, SEED)
         self.assertEqual(flags, [])
 
     def test_forwarding_outside_the_window_does_not_count(self):
         transfers = [
-            (SEED, 2, 100.0, 100),
-            (2, 9, 80.0, 100 + 7200 + 1),  # one block past the default window
+            (SEED, 2, 100.0, None, 100),
+            (2, 9, 80.0, None, 100 + 7200 + 1),  # one block past the default window
         ]
         ratios = compute_engaged_outflow_ratios(transfers, SEED, window_blocks=7200)
-        self.assertEqual(ratios.get(2, 0.0), 0.0)
+        self.assertEqual(ratios.get(2, {}).get(None, 0.0), 0.0)
 
     def test_forwarding_right_at_the_window_edge_counts(self):
         transfers = [
-            (SEED, 2, 100.0, 100),
-            (2, 9, 80.0, 100 + 7200),  # exactly at the edge, inclusive
+            (SEED, 2, 100.0, None, 100),
+            (2, 9, 80.0, None, 100 + 7200),  # exactly at the edge, inclusive
         ]
         ratios = compute_engaged_outflow_ratios(transfers, SEED, window_blocks=7200)
-        self.assertAlmostEqual(ratios[2], 0.8)
+        self.assertAlmostEqual(ratios[2][None], 0.8)
+
+    def test_two_currencies_are_tracked_independently(self):
+        """A launderer that forwards its ETH fast but sits on an airdropped
+        token must be flagged for ETH and NOT for the token -- each
+        currency judged on its own merits, never averaged together."""
+        transfers = [
+            (SEED, 2, 100.0, None, 100),       # ETH taint arrives
+            (2, 9, 80.0, None, 105),           # forwards 80% of the ETH fast -- qualifies
+            (SEED, 2, 100.0, "0xTOKEN", 100),  # token taint also arrives
+            # wallet 2 never forwards any of the token -- must not qualify
+        ]
+        ratios = compute_engaged_outflow_ratios(transfers, SEED)
+        self.assertAlmostEqual(ratios[2][None], 0.8)
+        self.assertEqual(ratios[2]["0xTOKEN"], 0.0)
+        flags = select_engaged_proximity_flags(self.BFS_DISTANCES, ratios, SEED)
+        self.assertEqual(len(flags), 1)
+        wallet_id, score, ratio, currency = flags[0]
+        self.assertEqual((wallet_id, currency), (2, None))  # flagged for the ETH, not the token
 
 
 class TestSelectImpurityFlags(unittest.TestCase):
     def test_filters_by_threshold(self):
-        ratios = {2: 1.0, 3: 0.5, 4: 0.05}
-        self.assertEqual(sorted(select_impurity_flags(ratios, 0.10)), [(2, 1.0), (3, 0.5)])
-        self.assertEqual(select_impurity_flags(ratios, 0.6), [(2, 1.0)])
+        ratios = {2: {None: 1.0}, 3: {None: 0.5}, 4: {None: 0.05}}
+        self.assertEqual(sorted(select_impurity_flags(ratios, 0.10)), [(2, 1.0, None), (3, 0.5, None)])
+        self.assertEqual(select_impurity_flags(ratios, 0.6), [(2, 1.0, None)])
+
+    def test_flags_fire_if_any_currency_crosses_the_threshold(self):
+        ratios = {2: {None: 0.02, "0xTOKEN": 0.80}}  # under threshold in ETH, well over it in the token
+        flags = select_impurity_flags(ratios, 0.10)
+        self.assertEqual(flags, [(2, 0.80, "0xTOKEN")])
+
+    def test_picks_the_highest_qualifying_currency_as_the_representative(self):
+        ratios = {2: {None: 0.90, "0xTOKEN": 0.95}}
+        flags = select_impurity_flags(ratios, 0.10)
+        self.assertEqual(flags, [(2, 0.95, "0xTOKEN")])
 
 
 class _FakeCursor:
@@ -214,8 +255,21 @@ class TestPersistFlags(unittest.TestCase):
         rows = [(2, "bfs_proximity", 70.0, 50.0), (3, "impurity", 0.5, 0.10)]
         count = persist_flags(conn, run_id=99, rows=rows)
         self.assertEqual(count, 2)
-        self.assertEqual(conn.rows, [(99, 2, "bfs_proximity", 70.0, 50.0), (99, 3, "impurity", 0.5, 0.10)])
+        self.assertEqual(
+            conn.rows,
+            [(99, 2, "bfs_proximity", 70.0, 50.0, None), (99, 3, "impurity", 0.5, 0.10, None)],
+        )
         self.assertEqual(conn.committed, 1)
+
+    def test_5_tuple_rows_carry_their_own_token_contract(self):
+        conn = _FakeConn()
+        rows = [(2, "impurity", 0.8, 0.10, "0xTOKEN"), (3, "engaged_proximity", 0.9, 0.50, None)]
+        count = persist_flags(conn, run_id=99, rows=rows)
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            conn.rows,
+            [(99, 2, "impurity", 0.8, 0.10, "0xTOKEN"), (99, 3, "engaged_proximity", 0.9, 0.50, None)],
+        )
 
     def test_empty_rows_still_commits_and_returns_zero(self):
         conn = _FakeConn()
