@@ -7,7 +7,7 @@ FrameCheck: flags-audited-per-minute benchmark, CPU vs GPU.
 Times graph.audit.audit_flag against a sample of real flags (--limit per
 detector), reporting the median seconds/flag and flags/minute for the CPU
 path always, and the GPU path too whenever RAPIDS is importable and
-TXGRAPH_USE_GPU_GRAPH=1 is set -- graph/audit.py's pagerank_threshold
+FRAMECHECK_USE_GPU_GRAPH=1 is set -- graph/audit.py's pagerank_threshold
 audit already routes through GraphBackend.pagerank_excluding_signed_edges,
 which is GPU-accelerated under those conditions; the other four
 detectors' audits are CPU replay/NetworkX-only by design (see
@@ -117,7 +117,7 @@ def main():
               "have no separate GPU path (CPU replay/NetworkX by design).")
     else:
         print("\n[note] GPU backend unavailable on this machine (no RAPIDS/cugraph importable, or "
-              "TXGRAPH_USE_GPU_GRAPH not set) -- re-run this script unmodified on a RAPIDS-capable "
+              "FRAMECHECK_USE_GPU_GRAPH not set) -- re-run this script unmodified on a RAPIDS-capable "
               "machine to fill in the GPU numbers for pagerank_threshold.")
 
     report = format_report(results)

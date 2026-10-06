@@ -1,4 +1,4 @@
-# GPU-Accelerated Ethereum Transaction-Graph Analyzer
+# FrameCheck — GPU-Accelerated Ethereum Framing Audit
 
 Full context, rationale, and the 8-week beat sheet live in
 [`docs/Project_Bible_TransactionGraphAnalyzer.docx`](docs/Project_Bible_TransactionGraphAnalyzer.docx).
@@ -135,10 +135,10 @@ curl localhost:8000/wallets
 curl localhost:8000/docs        # interactive OpenAPI UI
 ```
 
-Defaults to `TXGRAPH_API_MODE=mock`, serving `api/mock_data.json` — **the
+Defaults to `FRAMECHECK_API_MODE=mock`, serving `api/mock_data.json` — **the
 partner can start the frontend against this right now, with zero setup
 beyond this section.** See `docs/API_CONTRACT.md` for every endpoint shape.
-Switch to `TXGRAPH_API_MODE=live` once Postgres actually has real analysis
+Switch to `FRAMECHECK_API_MODE=live` once Postgres actually has real analysis
 results in it (Phase 3.5 in the bible).
 
 ## Running the frontend
@@ -209,8 +209,8 @@ python -m venv .venv-win && .venv-win\Scripts\pip install -r requirements.txt
 # 4. The sidecar -- REQUIRED before step 5, dev or release
 pip install -r requirements-build.txt
 python scripts/build_backend_sidecar.py
-# -> src-tauri/binaries/txgraph-backend-<host-triple>.exe
-#    (e.g. txgraph-backend-x86_64-pc-windows-msvc.exe on a normal 64-bit PC)
+# -> src-tauri/binaries/framecheck-backend-<host-triple>.exe
+#    (e.g. framecheck-backend-x86_64-pc-windows-msvc.exe on a normal 64-bit PC)
 
 # 5. Launch
 cargo tauri dev          # from src-tauri/ -- opens the real window, hot-reloads
@@ -248,7 +248,7 @@ the key works, without saving it. "Clear" removes it from the keychain.
 handoff plumbing is fully built and works (Rust owns the key, the backend
 receives it at spawn and can be hot-swapped without a restart), but no
 endpoint in `api/main.py` reads `_runtime_state["etherscan_api_key"]` --
-mock vs. live mode is controlled purely by the unrelated `TXGRAPH_API_MODE`
+mock vs. live mode is controlled purely by the unrelated `FRAMECHECK_API_MODE`
 env var (see "Running the API" above). Practically: with or without a
 saved key, the desktop app serves the same mock data as the browser version
 until something is built to actually use the key (see Backend, item 4, in
@@ -258,7 +258,7 @@ anything downstream consumes it yet.
 
 ### Troubleshooting
 
-**`resource path 'binaries\txgraph-backend-<triple>.exe' doesn't exist`**
+**`resource path 'binaries\framecheck-backend-<triple>.exe' doesn't exist`**
 (build fails around `Building [...] app`, before any window opens): the
 sidecar hasn't been built yet, in dev or release. Run step 4 above
 (`pip install -r requirements-build.txt && python scripts/build_backend_sidecar.py`)

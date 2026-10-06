@@ -1,5 +1,5 @@
 /*
-TXGraph — landing page behavior
+FrameCheck — landing page behavior
 Adapted from TemplateMo 622 Clearwave's script: smooth-scroll, nav-on-scroll,
 mobile menu, scroll-reveal and stat counters. Carousel/pricing-toggle logic
 dropped — this page has neither.

@@ -1,6 +1,6 @@
 """
 FrameCheck experiment runner: injects a framing scenario into the isolated
-txgraph_sim database (see scripts/simulate_framing.py -- this script never
+framecheck_sim database (see scripts/simulate_framing.py -- this script never
 touches the main database for injection or analysis), re-exports a
 snapshot and re-runs analyze/detect/evidence/audit THERE, then reports a
 summary: per detector, how many of the injected target wallets got
@@ -87,7 +87,7 @@ def cleanup_experiment(conn, scenario_id: int, launderer_scenario_id: int = None
 
 
 def sim_env() -> dict:
-    """Env for subprocess stages that must run against txgraph_sim, never
+    """Env for subprocess stages that must run against framecheck_sim, never
     the main database -- every other PG* var is inherited unchanged."""
     env = dict(os.environ)
     env["PGDATABASE"] = SIM_DB_NAME
@@ -104,7 +104,7 @@ def run(cmd, **kwargs):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--snapshot-id", type=int, help="snapshot (in txgraph_sim) whose BFS run defines the targets")
+    parser.add_argument("--snapshot-id", type=int, help="snapshot (in framecheck_sim) whose BFS run defines the targets")
     parser.add_argument("--seed-wallet-id", type=int)
     parser.add_argument("--num-targets", type=int, default=100)
     parser.add_argument("--dust-eth", type=float, default=0.001)
@@ -163,7 +163,7 @@ def main():
         sim_conn.close()
 
     # Re-export + re-run analyze/detect/evidence/audit -- all against
-    # txgraph_sim (sim_env()/PGDATABASE override), never the main database.
+    # framecheck_sim (sim_env()/PGDATABASE override), never the main database.
     snapshot_name = experiment_snapshot_name(scenario_id, launderer_scenario_id)
     export_result = run(
         [sys.executable, "-m", "graph.export_snapshot", "--name", snapshot_name,

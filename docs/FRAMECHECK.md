@@ -1,6 +1,6 @@
 # FrameCheck
 
-An audit layer on top of txgraph-analyzer's existing detectors, built for a 24-hour hackathon
+FrameCheck's audit layer, built on top of its own graph-analysis detectors, for a 24-hour hackathon
 (DBTHON, 2 PM 7 Oct – 2 PM 8 Oct 2026).
 
 ## The idea
@@ -11,7 +11,7 @@ unsolicited transfer that drags the wallet within range of a proximity detector,
 cluster's inflow, or into a PageRank-ranked neighborhood, without the wallet's owner doing
 anything at all.
 
-txgraph-analyzer already flags wallets this way (BFS proximity to a seed, Sybil clusters,
+FrameCheck's detectors already flag wallets this way (BFS proximity to a seed, Sybil clusters,
 PageRank rank, taint/impurity from a known-bad source). FrameCheck audits every flag those
 detectors raise and answers one question: **could an outsider have produced this flag on their
 own, without the wallet owner signing a single transaction, and how cheaply?**
@@ -135,8 +135,8 @@ python -m graph.evidence --snapshot-id 4 --seed-wallet-id 1476 --run-id 20
 wallets with no BFS path from the seed, each dusted with `DEFAULT_DUST_ETH` (0.001) ETH plus a
 documented gas constant (21000 × 20 gwei) — to prove the whole pipeline reacts the way the theory
 predicts. It **never touches the main database**: everything runs against a separate database,
-`txgraph_sim`, created as a native Postgres template-clone of the main DB
-(`CREATE DATABASE txgraph_sim TEMPLATE txgraph`). Synthetic rows are tagged
+`framecheck_sim`, created as a native Postgres template-clone of the main DB
+(`CREATE DATABASE framecheck_sim TEMPLATE framecheck`). Synthetic rows are tagged
 `transaction.is_simulated = true` and use a deterministic `0xdeadbeef...`-prefixed `tx_hash` and a
 `SYNTHETIC_BLOCK_BASE`-offset `block_number`, both keyed by `scenario_id`, so `--cleanup
 <scenario_id>` can find and remove exactly the right rows even if the `framing_scenario` row
@@ -149,7 +149,7 @@ python scripts/simulate_framing.py --drop-db
 ```
 
 `scripts/run_experiment.py` wraps this into a full experiment: inject → re-export a snapshot →
-re-run analyze/detect/evidence/audit, all against `txgraph_sim` (via a `PGDATABASE` override on
+re-run analyze/detect/evidence/audit, all against `framecheck_sim` (via a `PGDATABASE` override on
 every subprocess call, never the main database) → print a per-detector summary (targets flagged,
 share frameable, framing-cost range). Evidence and audit are scoped to only the injected target
 wallets, not the whole snapshot's flags — a real snapshot can carry thousands of unrelated flags

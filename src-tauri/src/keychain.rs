@@ -2,7 +2,7 @@
 //! localStorage, never sent to the webview -- see api/main.py's comment on
 //! _runtime_state for the rest of the handoff story.
 
-const SERVICE: &str = "com.txgraph.analyzer";
+const SERVICE: &str = "com.framecheck.app";
 const ACCOUNT: &str = "etherscan_api_key";
 
 fn entry() -> Result<keyring::Entry, String> {

@@ -172,19 +172,19 @@ fn resolve_backend_command(port: u16) -> Result<(String, Vec<String>, std::path:
         // (cargo build --release without going through `tauri build`).
         //
         // scripts/build_backend_sidecar.py names its *source* output with the
-        // target-triple suffix (txgraph-backend-<triple>.exe) because that's
+        // target-triple suffix (framecheck-backend-<triple>.exe) because that's
         // the convention Tauri's bundler expects for externalBin entries --
         // but confirmed against a real `cargo tauri build` + installer run,
         // the NSIS installer strips that suffix when it copies the sidecar
         // into the install directory. The installed (and `cargo tauri build`
-        // output) file is just txgraph-backend.exe, so that's what we look
+        // output) file is just framecheck-backend.exe, so that's what we look
         // for at runtime -- not env!("SIDECAR_TARGET_TRIPLE").
         let exe_dir = std::env::current_exe()
             .map_err(|e| format!("could not resolve current_exe: {e}"))?
             .parent()
             .ok_or("current_exe() has no parent directory")?
             .to_path_buf();
-        let sidecar_name = format!("txgraph-backend{}", std::env::consts::EXE_SUFFIX);
+        let sidecar_name = format!("framecheck-backend{}", std::env::consts::EXE_SUFFIX);
         let sidecar = exe_dir.join(&sidecar_name);
         if !sidecar.exists() {
             return Err(format!(
@@ -252,21 +252,21 @@ pub fn spawn_backend(api_key: &str) -> Result<BackendHandle, String> {
     let mut cmd = Command::new(&program);
     cmd.args(&args)
         .current_dir(&cwd)
-        .env("TXGRAPH_ETHERSCAN_API_KEY", api_key)
-        .env("TXGRAPH_INTERNAL_TOKEN", &internal_token)
+        .env("FRAMECHECK_ETHERSCAN_API_KEY", api_key)
+        .env("FRAMECHECK_INTERNAL_TOKEN", &internal_token)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Only pass TXGRAPH_API_MODE through if *this* process actually has it
-    // set (e.g. `TXGRAPH_API_MODE=live cargo tauri dev`) -- unconditionally
+    // Only pass FRAMECHECK_API_MODE through if *this* process actually has it
+    // set (e.g. `FRAMECHECK_API_MODE=live cargo tauri dev`) -- unconditionally
     // defaulting to "mock" here, as this used to, injects that value into
     // the child's environment before it starts, which pre-empts the
     // child's own ingestion.config::load_dotenv() (load_dotenv doesn't
     // override an already-set var) from ever applying the real .env file's
-    // TXGRAPH_API_MODE. Found by testing: flipping .env to "live" had no
+    // FRAMECHECK_API_MODE. Found by testing: flipping .env to "live" had no
     // effect on the actual desktop app, only on bare `uvicorn` runs that
     // never went through this spawn path.
-    if let Ok(mode) = std::env::var("TXGRAPH_API_MODE") {
-        cmd.env("TXGRAPH_API_MODE", mode);
+    if let Ok(mode) = std::env::var("FRAMECHECK_API_MODE") {
+        cmd.env("FRAMECHECK_API_MODE", mode);
     }
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);

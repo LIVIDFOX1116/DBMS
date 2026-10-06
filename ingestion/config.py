@@ -42,7 +42,7 @@ REQUESTS_PER_SECOND = float(os.getenv("REQUESTS_PER_SECOND", "4"))  # stay under
 PG_DSN = {
     "host": os.getenv("PGHOST", "localhost"),
     "port": os.getenv("PGPORT", "5432"),
-    "dbname": os.getenv("PGDATABASE", "txgraph"),
+    "dbname": os.getenv("PGDATABASE", "framecheck"),
     "user": os.getenv("PGUSER", "postgres"),
     "password": os.getenv("PGPASSWORD", ""),
 }

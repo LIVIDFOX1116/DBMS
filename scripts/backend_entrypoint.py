@@ -21,7 +21,7 @@ from api.main import app
 
 def main() -> None:
     if len(sys.argv) != 2 or not sys.argv[1].isdigit():
-        print("usage: txgraph-backend <port>", file=sys.stderr)
+        print("usage: framecheck-backend <port>", file=sys.stderr)
         sys.exit(2)
     port = int(sys.argv[1])
     # log_config=None: uvicorn's default dictConfig setup touches logging

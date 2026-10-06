@@ -38,7 +38,7 @@ Run it standalone: `uvicorn api.main:app --reload --port 8000`. Interactive
 OpenAPI docs are free from FastAPI at `http://localhost:8000/docs`.
 
 Two modes, **identical shapes** in both, switched by one env var:
-`TXGRAPH_API_MODE=mock|live` (default `mock`). Mock serves
+`FRAMECHECK_API_MODE=mock|live` (default `mock`). Mock serves
 `api/mock_data.json`; live queries the real Postgres schema
 (`db/schema.sql`). All examples below are real responses captured from the
 live database on `snapshot_id=3` / cluster run `run_id=12` / metrics runs

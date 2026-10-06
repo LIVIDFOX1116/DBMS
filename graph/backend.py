@@ -16,24 +16,24 @@ to pandas before this module returns them, mirroring the "GPU is transient,
 Postgres is durable" rule from the ER diagram notes.
 
 GPU is opt-in, not automatic: even with RAPIDS importable, `gpu_available()`
-returns False unless TXGRAPH_USE_GPU_GRAPH=1 is also set. This matters for a
+returns False unless FRAMECHECK_USE_GPU_GRAPH=1 is also set. This matters for a
 wallet clustering tool specifically because cuGraph Louvain and NetworkX
 Louvain are not guaranteed to produce the same partitions on the same data
 (different algorithm implementations -- parallel-GPU vs sequential-CPU --
 and NetworkX's louvain_communities takes a fixed seed for reproducibility
 while cuGraph's louvain() exposes no seed at all) -- a RAPIDS-capable
 environment showing up by accident (e.g. a stray WSL2/conda activation)
-must not silently change which clusters a user sees. TXGRAPH_FORCE_CPU
+must not silently change which clusters a user sees. FRAMECHECK_FORCE_CPU
 still overrides everything, opt-in flag included -- it's the "definitely
 never GPU, no matter what" escape hatch, kept exactly as before.
 
 Force the CPU path even when RAPIDS is installed and opted in with:
     GraphBackend(force_cpu=True)
 or:
-    TXGRAPH_FORCE_CPU=1 python ...
+    FRAMECHECK_FORCE_CPU=1 python ...
 
 Opt in to the GPU path (also requires RAPIDS actually importable) with:
-    TXGRAPH_USE_GPU_GRAPH=1 python ...
+    FRAMECHECK_USE_GPU_GRAPH=1 python ...
 """
 import os
 import time
@@ -43,9 +43,9 @@ log = logging.getLogger("graph.backend")
 
 
 def gpu_available() -> bool:
-    if os.getenv("TXGRAPH_FORCE_CPU", "").lower() in ("1", "true", "yes"):
+    if os.getenv("FRAMECHECK_FORCE_CPU", "").lower() in ("1", "true", "yes"):
         return False
-    if os.getenv("TXGRAPH_USE_GPU_GRAPH", "").lower() not in ("1", "true", "yes"):
+    if os.getenv("FRAMECHECK_USE_GPU_GRAPH", "").lower() not in ("1", "true", "yes"):
         return False
     try:
         import cudf  # noqa: F401
@@ -95,7 +95,7 @@ class GraphBackend:
             # reciprocal edges (src size != weights size), so louvain() below
             # rebuilds a fresh undirected graph from the original edgelist
             # instead -- stash the column names needed to do that.
-            G._txgraph_cols = (src, dst, weight)
+            G._framecheck_cols = (src, dst, weight)
             return G
         else:
             G = self._networkx.from_pandas_edgelist(
@@ -148,7 +148,7 @@ class GraphBackend:
         """Returns (pandas.DataFrame[wallet_id, community_label], modularity_score)."""
         t0 = time.time()
         if self.use_gpu:
-            src, dst, weight = G._txgraph_cols
+            src, dst, weight = G._framecheck_cols
             UG = self._cugraph.Graph(directed=False)
             UG.from_cudf_edgelist(G.view_edge_list(), source=src, destination=dst, edge_attr=weight, renumber=True)
             result, modularity = self._cugraph.louvain(UG)

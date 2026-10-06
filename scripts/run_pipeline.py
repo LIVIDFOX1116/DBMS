@@ -199,7 +199,7 @@ def main():
     elapsed = time.time() - t_start
     print("\n" + "=" * 70)
     print(f"Pipeline complete in {elapsed:.1f}s -- snapshot_id={snapshot_id}, seed_wallet_id={seed_wallet_id}")
-    print("View it: TXGRAPH_API_MODE=live uvicorn api.main:app --port 8000, "
+    print("View it: FRAMECHECK_API_MODE=live uvicorn api.main:app --port 8000, "
           "then open frontend/index.html (Settings -> run ID -> the analysis_run "
           "id(s) this just created).")
     print("=" * 70)
