@@ -59,24 +59,55 @@ psql $PGDATABASE -c "SELECT wallet_id FROM wallet WHERE address = lower('0xC8a65
 python -m graph.run_analysis --snapshot-id 1 --seed-wallet-id 1
 ```
 
-## Running everything at once (Phase 6)
+## Running everything at once (Phase 6 + FrameCheck)
 
-`scripts/run_pipeline.py` chains the three steps above into one command --
-it resolves the seed wallet_id and snapshot_id itself instead of you reading
-them off the terminal and pasting them into the next command by hand. Exit
-criterion: "a fresh end-to-end run (ingestion -> GPU processing -> dashboard)
-completes without manual intervention."
+`scripts/run_pipeline.py` chains seven stages into one command -- ingest,
+export, analyze, score (wallet risk), detect (FrameCheck's five flag
+detectors), evidence (FrameCheck evidence collection), audit (FrameCheck
+audit engine) -- resolving the seed wallet_id and snapshot_id itself
+instead of you reading them off the terminal and pasting them into the
+next command by hand. Exit criterion: "a fresh end-to-end run (ingestion
+-> GPU processing -> dashboard) completes without manual intervention."
 
 ```bash
-python scripts/run_pipeline.py                       # ingest + export + analyze, fresh
-python scripts/run_pipeline.py --skip-ingestion       # reuse what's already in Postgres
+python scripts/run_pipeline.py                                   # every stage, fresh
+python scripts/run_pipeline.py --skip-ingestion                  # reuse what's already in Postgres
+python scripts/run_pipeline.py --snapshot-id 4                   # reuse an existing snapshot (implies analyze onward)
+python scripts/run_pipeline.py --from-stage detect --until-stage audit --snapshot-id 4
+python scripts/run_pipeline.py --audit-limit 50                  # passthrough to graph.audit's --limit
 python scripts/run_pipeline.py --hops 1 --force-cpu
 ```
 
-Each stage is the exact same `python -m ...` command as above -- this only
-removes the manual hand-off between them. Ingestion is upsert-based and safe
-to re-run; export always creates a new, uniquely-named snapshot rather than
+Each stage is the exact same `python -m ...` command documented under
+"Running the real pipeline" above and in `docs/FRAMECHECK.md` -- this only
+removes the manual hand-off between them. `--from-stage`/`--until-stage`
+pick a contiguous sub-range of `ingest, export, analyze, score, detect,
+evidence, audit` (both inclusive). Ingestion is upsert-based and safe to
+re-run; export always creates a new, uniquely-named snapshot rather than
 overwriting one.
+
+## FrameCheck
+
+A new audit layer: for every flag the detectors above raise, could an
+outsider have produced it just by sending the wallet unsolicited funds
+(which Ethereum lets anyone do, unrefusably), and how cheaply? Full
+writeup -- definitions, per-detector audit method, the framing simulator,
+the API/dashboard additions, and known limitations -- is in
+[`docs/FRAMECHECK.md`](docs/FRAMECHECK.md). Quick reference:
+
+```bash
+python -m graph.detectors --snapshot-id 4 --seed-wallet-id 1476 --detector all
+python -m graph.evidence --snapshot-id 4 --seed-wallet-id 1476
+python -m graph.audit --snapshot-id 4 --seed-wallet-id 1476 --limit 50
+
+# Framing simulator -- a separate database only, never the main one
+python scripts/simulate_framing.py --snapshot-id 4 --seed-wallet-id 1476
+python scripts/run_experiment.py --snapshot-id 4 --seed-wallet-id 1476   # inject + full chain + summary
+python scripts/run_experiment.py --cleanup <scenario_id>
+
+# Flags audited per minute, CPU vs GPU
+python scripts/benchmark_audit.py --snapshot-id 4 --seed-wallet-id 1476 --limit 5
+```
 
 ## Benchmarking (Phase 5)
 
@@ -279,14 +310,18 @@ capability, is what actually limits subgraph size on the GTX 1650.
 ## Repo layout
 
 ```
-db/            schema.sql (PostgreSQL DDL) + init_db.py
+db/            schema.sql (PostgreSQL DDL) + init_db.py + migrations/ (FrameCheck additions)
 ingestion/     Etherscan client + BFS subgraph crawler (Phase 1)
-graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py (Phases 2-3)
+graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py, score_wallets.py (Phases 2-3),
+               detectors.py, evidence.py, audit.py (FrameCheck)
 api/           FastAPI app + mock_data.json (the frontend's day-one contract)
-frontend/      index.html (landing page) + dashboard.html (wallets/clusters/alerts/graph), no build step
-scripts/       verify_gpu_env.py (Phase 0 exit criterion), run_pipeline.py (Phase 6, one-command end-to-end run), benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main), backend_entrypoint.py + build_backend_sidecar.py (desktop app release packaging)
+frontend/      index.html (landing page) + dashboard.html (wallets/clusters/alerts/graph/audit), no build step
+scripts/       verify_gpu_env.py (Phase 0 exit criterion), run_pipeline.py (7-stage one-command end-to-end run),
+               benchmark.py (Phase 5), promote_to_main.py (test-gated dev -> main),
+               backend_entrypoint.py + build_backend_sidecar.py (desktop app release packaging),
+               simulate_framing.py, run_experiment.py, benchmark_audit.py (FrameCheck)
 tests/         offline unit tests -- run with `python -m pytest tests/ -v`
-docs/          ER diagram (SVG + DBML), API contract, benchmark_results.md, and the full project bible
+docs/          ER diagram (SVG + DBML), API contract, benchmark_results.md, FRAMECHECK.md, and the full project bible
 src-tauri/     optional native desktop wrapper (Windows) around the frontend + API -- see "Desktop app" above
 ```
 
