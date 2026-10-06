@@ -43,35 +43,36 @@ how PageRank-influential the cheapest available senders happen to be, not just h
 
 ## 3. The Sybil framing result
 
-Only **9.6%** of a random sample of real `sybil_cluster` flags turned out to be frameable; **90.4%
-were robust**. This is a genuinely different picture from `bfs_proximity`'s unanimous 100%: a
-SYBIL-cluster classification usually depends on the flagged wallet's *own* broader signed activity
-(the edges it itself created that feed Louvain's community structure), not just on unsolicited
-money arriving. An attacker dusting a wallet essentially never changes its Louvain community
-membership — the one real victim-group overlap case found during this session's synthetic
-experiment (§4) confirms this directly: a dust victim that happened to land in a SYBIL cluster
-audited **robust**, because that specific wallet had pre-existing signed activity unrelated to the
-injected scenario, and removing it was what broke the classification.
+A random sample of 52 real `sybil_cluster` flags came back **9.6% frameable, 90.4% robust** (one
+sample; see §4 for how much this swings run to run on synthetic data, which this real-data sample
+was not re-drawn to check). This is a genuinely different picture from `bfs_proximity`'s unanimous
+100%: a SYBIL-cluster classification usually depends on the flagged wallet's *own* broader signed
+activity (the edges it itself created that feed Louvain's community structure), not just on
+unsolicited money arriving.
 
 `sybil_cluster`'s audit is `yes_no` only (fixed Louvain `seed=42`, re-run with the wallet's signed
 edges removed, check if it's still classified SYBIL) — no framing cost is computed for this
 detector at all, by design: cluster membership isn't a per-transfer-additive threshold the way the
 other four detectors are, so "cheapest transfer to re-trigger it" isn't a well-posed question here.
 
-## 4. Victim vs. launderer (synthetic experiment)
+## 4. Victim vs. launderer (synthetic experiment) — run 5 times, reported as a range
 
 Real data has zero positive `engaged_proximity` cases to audit (see §3/§5), so a controlled
 experiment is what actually demonstrates this detector works as designed: 20 synthetic dusted
-*victims* (passive — never sign anything) and 20 synthetic *launderers* (receive from the seed,
-forward ≥80% onward within 50 blocks to a fresh wallet), injected into an isolated `txgraph_sim`
-clone and cleaned up after.
+*victims* (passive — never sign anything) and, in some runs, 20 synthetic *launderers* (receive
+from the seed, forward ≥80% onward within 50 blocks to a fresh wallet), injected into an isolated
+`txgraph_sim` clone and cleaned up after. Run 5 times total — 3 dust-only (victims only) and 2
+more victims+launderers alongside the one from the original run — specifically to check whether
+single-run numbers generalize. **They mostly do, with one clear exception.**
+
+**bfs_proximity, impurity, engaged_proximity: identical on every single run**, victims and
+launderers alike — these numbers are not a range, they are exactly this every time:
 
 | Detector | Victims (flagged/frameable/robust) | Launderers (flagged/frameable/robust) |
 |---|---|---|
 | bfs_proximity | 20/20/0 | 20/20/0 |
 | **engaged_proximity** | **0/0/0** | **20/0/20** |
 | impurity | 0/0/0 | 20/20/0 |
-| sybil_cluster | 1/0/1 | 20/0/20 |
 
 Exactly as predicted: `bfs_proximity` flags both groups and calls both frameable (§1's proof
 applies equally to either). `engaged_proximity` flags **only** launderers, and audits every one of
@@ -80,6 +81,36 @@ which disappears the instant it's stripped. `impurity` also cleanly separates th
 independent reason: a launderer that forwards 80% and keeps 20% is still 100% tainted on what it
 kept (ratio = tainted/balance *after* the forward, unaffected by whether the forward happened at
 all) — frameable regardless of the forwarding.
+
+**`sybil_cluster` is a genuinely different story: unstable across runs, both in how many get
+flagged and in their frameable/robust split.** Three dust-only runs (20 victims, no launderers):
+
+| Run | Victims flagged | Frameable | Robust |
+|---|---|---|---|
+| 1 | 14/20 | 14 | 0 |
+| 2 | 18/20 | 18 | 0 |
+| 3 | 2/20 | 0 | 2 |
+
+Three victims+launderers runs (the original from the prior task, plus 2 more):
+
+| Run | Victims flagged | Victims frameable/robust | Launderers flagged | Launderers frameable/robust |
+|---|---|---|---|---|
+| original | 1/20 | 0/1 | 20/20 | 0/20 |
+| 4 | 1/20 | 0/1 | 20/20 | 20/0 |
+| 5 | 16/20 | 16/0 | 20/20 | 20/0 |
+
+So: **victims flagged by `sybil_cluster` ranged 2–18 out of 20 (10–90%) across 5 runs, with the
+frameable share swinging from 0% to 100% of whoever got flagged.** Launderers were flagged 20/20
+every time, but their frameable/robust split flipped between runs too (robust once, frameable
+twice). This is not noise in the flag logic or the audit itself — it's a real, explicable property
+of Louvain: `select_target_wallets`/launderer injection pick different random real wallets each
+run, and Louvain's community structure is sensitive to the *whole* graph, not just the injected
+wallets, so a different random selection perturbs which communities form and who ends up
+classified SYBIL at all. **The §3 real-data "9.6% frameable" figure and this table's single-run
+victim/launderer numbers from the prior report should both be read as one sample from a
+genuinely wide distribution, not as the detector's typical behavior** — only the *direction* of the
+synthetic result (bfs_proximity/impurity/engaged_proximity behaving exactly as designed) is a
+claim these runs actually support.
 
 ## 5. Audit throughput
 
@@ -144,6 +175,11 @@ candidate — the one detector audit with no cheap closed form, and correspondin
   itself — W only appears via `token_transfer.to_wallet_id`). Confirmed live on snapshot 5's one
   token-triggered impurity flag. Fixing it needs `evidence.sql` extended with a
   `token_transfer`-based branch; out of scope for the session that found it.
+- **`sybil_cluster`'s flagging rate and frameable/robust split are unstable across runs** (§4) —
+  driven by Louvain's sensitivity to the whole graph, not by any randomness in the audit itself
+  (the Louvain seed is fixed at 42; see `graph/backend.py`). Any single-run `sybil_cluster` number
+  in this document, including §3's real-data sample, should be read as one draw from a wide
+  distribution, not as this detector's typical rate.
 - **`sybil_cluster` has no framing cost.** Cluster membership isn't a per-transfer-additive
   threshold, so "cheapest transfer to re-trigger it" isn't a well-posed question for this detector;
   its audit is `yes_no` only (§3).
