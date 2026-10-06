@@ -34,6 +34,21 @@ class TestHealth:
         assert resp.json() == {"status": "ok", "mode": "mock"}
 
 
+class TestStatsOverview:
+    """/wallets, /clusters, /alerts are all capped (200/100/100
+    unfiltered) -- the Overview page's true totals come from here, not
+    from len() of those capped responses. Found live: real data has
+    52,581 wallets but /wallets?limit=200 (what the dashboard calls)
+    returns 200, and the Overview page was showing 200 as if it were the
+    total."""
+
+    def test_returns_true_counts_from_mock_data(self):
+        resp = client.get("/stats/overview")
+        assert resp.status_code == 200
+        stats = resp.json()
+        assert stats == {"wallet_count": 6, "cluster_count": 1, "alert_count": 2}
+
+
 class TestWallets:
     def test_list_wallets_returns_all_mock_wallets(self):
         resp = client.get("/wallets")
@@ -227,7 +242,7 @@ class TestFlags:
         resp = client.get("/audit/summary")
         assert resp.status_code == 200
         summary = resp.json()
-        assert len(summary) == 2
+        assert len(summary) == 4
         bfs_row = next(r for r in summary if r["detector"] == "bfs_proximity")
         assert bfs_row["frameable_share"] == 1.0
 

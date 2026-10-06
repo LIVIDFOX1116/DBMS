@@ -814,7 +814,7 @@ document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("clic
 /* ════════════════════════════════════════
    STATE + LOAD
 ════════════════════════════════════════ */
-let WALLETS = [], CLUSTERS = [], ALERTS = [], SNAPSHOTS = [];
+let WALLETS = [], CLUSTERS = [], ALERTS = [], SNAPSHOTS = [], OVERVIEW_STATS = null;
 let CLUSTER_MEMBERS = {};
 let WALLET_CLUSTERS = {};
 let PAGERANK = {};
@@ -830,11 +830,17 @@ async function loadAll() {
   try {
     const health = await api("/health");
 
-    [WALLETS, CLUSTERS, ALERTS, SNAPSHOTS] = await Promise.all([
+    [WALLETS, CLUSTERS, ALERTS, SNAPSHOTS, OVERVIEW_STATS] = await Promise.all([
       api("/wallets", { limit: 200 }),
       api("/clusters"),
       api("/alerts"),
       api("/snapshots"),
+      // /wallets, /clusters, /alerts are all capped (200/100/100
+      // unfiltered) -- true totals for the stat cards come from here,
+      // never from .length of those capped arrays. Falls back to the
+      // capped arrays' own length if the endpoint is unreachable, so an
+      // old mock_data.json or a stale backend doesn't blank the cards.
+      api("/stats/overview").catch(() => null),
     ]);
 
     // One bulk call instead of one request per cluster (was 100 sequential
@@ -877,9 +883,9 @@ function renderAll() {
    OVERVIEW
 ════════════════════════════════════════ */
 function renderStatCards() {
-  document.getElementById("statWallets").textContent = WALLETS.length;
-  document.getElementById("statClusters").textContent = CLUSTERS.length;
-  document.getElementById("statAlerts").textContent = ALERTS.length;
+  document.getElementById("statWallets").textContent = OVERVIEW_STATS ? OVERVIEW_STATS.wallet_count : WALLETS.length;
+  document.getElementById("statClusters").textContent = OVERVIEW_STATS ? OVERVIEW_STATS.cluster_count : CLUSTERS.length;
+  document.getElementById("statAlerts").textContent = OVERVIEW_STATS ? OVERVIEW_STATS.alert_count : ALERTS.length;
   document.getElementById("statAlertsNew").textContent = ALERTS.filter(a => a.review_status === "NEW").length;
   document.getElementById("statHighSev").textContent = ALERTS.filter(a => a.severity === "HIGH").length;
 }

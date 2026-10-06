@@ -53,6 +53,16 @@ token-gated — see below).
 {"status": "ok", "mode": "mock" | "live"}
 ```
 
+### GET /stats/overview
+True totals, unaffected by any other endpoint's row cap -- use this for
+"how many wallets/clusters/alerts are there," never `.length` of a
+`/wallets`, `/clusters`, or `/alerts` response (all three cap their
+unfiltered result: 50-by-default/200-by-request, 100, and 100
+respectively).
+```json
+{"wallet_count": 52581, "cluster_count": 70254, "alert_count": 197}
+```
+
 ### GET /wallets?limit=50
 List of wallets, most active (`tx_count`) first, `NULL`s last.
 ```json
