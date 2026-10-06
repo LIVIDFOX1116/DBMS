@@ -1,5 +1,5 @@
 """
-Create the database (if needed) and apply schema.sql.
+Create the database (if needed) and apply schema.sql, then any migrations.
 
 Usage:
     python db/init_db.py
@@ -9,7 +9,8 @@ Reads connection settings from environment variables (see .env.example):
 
 This only needs Postgres itself -- no GPU, no RAPIDS. Safe to run on the
 Zenbook. Runs on both the "control" connection (to CREATE DATABASE, which
-can't happen inside a transaction) and the target database (to run schema.sql).
+can't happen inside a transaction) and the target database (to run schema.sql
+and db/migrations/*.sql).
 """
 import os
 import sys
@@ -28,6 +29,7 @@ USER = os.getenv("PGUSER", "postgres")
 PASSWORD = os.getenv("PGPASSWORD", "")
 
 SCHEMA_PATH = pathlib.Path(__file__).parent / "schema.sql"
+MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
 
 
 def ensure_database_exists():
@@ -58,10 +60,35 @@ def apply_schema():
         conn.close()
 
 
+def apply_migrations():
+    """Applies every db/migrations/*.sql file, in filename order (hence the
+    002_, 003_, ... numeric prefix convention), after schema.sql. No
+    version-tracking table -- every migration file is written to be
+    idempotent (IF NOT EXISTS throughout, see 002_framecheck.sql), so
+    re-running an already-applied migration is always safe. Keeps this
+    deliberately minimal rather than building a migration framework beyond
+    what's actually needed."""
+    if not MIGRATIONS_DIR.is_dir():
+        return
+    migration_paths = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    if not migration_paths:
+        return
+    conn = psycopg2.connect(host=HOST, port=PORT, dbname=DBNAME, user=USER, password=PASSWORD)
+    try:
+        for path in migration_paths:
+            with conn.cursor() as cur:
+                cur.execute(path.read_text())
+            conn.commit()
+            print(f"Applied migration {path.name}")
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     try:
         ensure_database_exists()
         apply_schema()
+        apply_migrations()
     except psycopg2.OperationalError as e:
         print(f"Could not connect to Postgres: {e}", file=sys.stderr)
         print("Is Postgres running? Check PGHOST/PGPORT/PGUSER/PGPASSWORD in your .env", file=sys.stderr)

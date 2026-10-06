@@ -40,6 +40,7 @@ Table transaction {
   nonce int
   status boolean
   method_id char(10)
+  is_simulated boolean [default: false, note: 'FrameCheck (migration 002): true only for synthetic dust transfers inserted by scripts/simulate_framing.py -- never a real transaction']
 
   Note: 'Graph EDGE (associative entity resolving the recursive WALLET-to-WALLET m:n).'
 }
@@ -220,4 +221,56 @@ Table analyst {
   role varchar(20) [not null]
   organisation varchar(80)
   created_at timestamp [default: `now()`]
+}
+
+// --- FrameCheck audit layer (migration 002, 2026-10) -----------------------
+
+Table framing_scenario {
+  scenario_id bigint [pk, increment]
+  attacker_wallet_ids "bigint[]" [not null]
+  target_wallet_ids "bigint[]" [not null]
+  transfer_count int [not null]
+  total_value_wei numeric(38,0) [not null]
+  created_at timestamp [default: `now()`]
+
+  Note: 'One row per scripts/simulate_framing.py run. Reversible via that script's --cleanup flag; never touches a real network.'
+}
+
+Table flag {
+  flag_id bigint [pk, increment]
+  run_id bigint [ref: > analysis_run.run_id, not null]
+  wallet_id bigint [ref: > wallet.wallet_id, not null]
+  detector varchar(30) [not null]
+  score double
+  threshold double
+  created_at timestamp [default: `now()`]
+
+  Note: 'One row per detector-raised signal that graph/audit.py can audit for frameability. Distinct from (not a replacement for) the existing alert table -- see 002_framecheck.sql for the full relationship.'
+}
+
+Table flag_evidence {
+  flag_id bigint [ref: > flag.flag_id, not null]
+  tx_hash char(66) [ref: > transaction.tx_hash, not null]
+  hop int [not null]
+  block_number bigint [not null]
+  role varchar(12) [not null, note: "'signed' or 'unsolicited', set from transaction.from_wallet_id -- never token_transfer.from_wallet_id"]
+
+  indexes {
+    (flag_id, tx_hash) [pk]
+  }
+}
+
+Table flag_audit {
+  flag_audit_id bigint [pk, increment]
+  flag_id bigint [ref: > flag.flag_id, not null]
+  verdict varchar(12) [not null, note: "'frameable' or 'robust'"]
+  framing_cost_wei numeric(38,0)
+  framing_gas bigint
+  minimal_tx_set jsonb
+  method varchar(20) [not null, note: "'exact' | 'greedy_upper_bound' | 'yes_no'"]
+  backend varchar(40)
+  runtime_ms int
+  created_at timestamp [default: `now()`]
+
+  Note: 'Not unique on flag_id by design -- a flag can be re-audited over time, same philosophy as analysis_run.'
 }
