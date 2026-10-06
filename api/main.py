@@ -190,21 +190,50 @@ def set_internal_api_key(body: ApiKeyUpdate, request: Request):
     return {"status": "ok"}
 
 
+def _tier_counts_from_scores(scores: list) -> dict:
+    """Mirrors frontend/dashboard.html's riskTier() bucketing exactly
+    (high >= 67, med 34-66.99, low < 34, unknown = null/missing) -- used
+    by mock mode, which has no SQL to delegate this to."""
+    counts = {"low": 0, "med": 0, "high": 0, "unknown": 0}
+    for score in scores:
+        if score is None:
+            counts["unknown"] += 1
+        elif score >= 67:
+            counts["high"] += 1
+        elif score >= 34:
+            counts["med"] += 1
+        else:
+            counts["low"] += 1
+    return counts
+
+
 @app.get("/stats/overview")
 def stats_overview():
-    """True totals for the dashboard's Overview stat cards. /wallets,
+    """True totals for the dashboard's Overview page. /wallets,
     /clusters, and /alerts are all capped (50/200-by-request, 100, 100
-    respectively, when unfiltered) -- real row counts on a real database
-    are far larger (found live: 52,581 wallets, 70,254 clusters, 197
-    alerts vs. the 200/100/100 those endpoints return unfiltered), so the
-    Overview page must not use len() of those capped responses as if it
-    were a total. This endpoint exists so it doesn't have to."""
+    respectively, when unfiltered) -- real row counts and breakdowns on a
+    real database are far larger (found live: 52,581 wallets, 70,254
+    clusters, 197 alerts -- all 197 marked NEW, 100 HIGH severity -- vs.
+    the 200/100/100-row pages those endpoints return unfiltered), so the
+    Overview page must not compute totals or breakdowns by filtering
+    those capped responses as if they were the whole dataset. This
+    endpoint exists so it doesn't have to, for every Overview number:
+    the three raw counts, the alert new-count and severity breakdown,
+    and the wallet risk-tier breakdown."""
     if using_mock():
         mock = load_mock()
+        alerts = mock["alerts"]
+        severity_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for a in alerts:
+            if a["severity"] in severity_counts:
+                severity_counts[a["severity"]] += 1
         return {
             "wallet_count": len(mock["wallets"]),
             "cluster_count": len(mock["clusters"]),
-            "alert_count": len(mock["alerts"]),
+            "alert_count": len(alerts),
+            "alert_new_count": sum(1 for a in alerts if a["review_status"] == "NEW"),
+            "alert_severity_counts": severity_counts,
+            "wallet_risk_tier_counts": _tier_counts_from_scores([w["risk_score"] for w in mock["wallets"]]),
         }
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -214,7 +243,34 @@ def stats_overview():
             cluster_count = cur.fetchone()[0]
             cur.execute("SELECT count(*) FROM alert")
             alert_count = cur.fetchone()[0]
-    return {"wallet_count": wallet_count, "cluster_count": cluster_count, "alert_count": alert_count}
+            cur.execute("SELECT count(*) FROM alert WHERE review_status = 'NEW'")
+            alert_new_count = cur.fetchone()[0]
+            cur.execute(
+                """SELECT severity, count(*) FROM alert GROUP BY severity"""
+            )
+            severity_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+            for severity, count in cur.fetchall():
+                if severity in severity_counts:
+                    severity_counts[severity] = count
+            cur.execute(
+                """
+                SELECT
+                    count(*) FILTER (WHERE risk_score IS NULL) AS unknown,
+                    count(*) FILTER (WHERE risk_score >= 67) AS high,
+                    count(*) FILTER (WHERE risk_score >= 34 AND risk_score < 67) AS med,
+                    count(*) FILTER (WHERE risk_score < 34) AS low
+                FROM wallet
+                """
+            )
+            unknown, high, med, low = cur.fetchone()
+    return {
+        "wallet_count": wallet_count,
+        "cluster_count": cluster_count,
+        "alert_count": alert_count,
+        "alert_new_count": alert_new_count,
+        "alert_severity_counts": severity_counts,
+        "wallet_risk_tier_counts": {"low": low, "med": med, "high": high, "unknown": unknown},
+    }
 
 
 @app.get("/wallets")

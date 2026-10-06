@@ -772,10 +772,15 @@ function typeBadgeClass(t) { return { SYBIL: "b-cluster-sybil", WASH_TRADE: "b-c
 function severityBadgeClass(s) { return `b-sev-${(s || "").toLowerCase()}`; }
 function statusBadgeClass(s) { return `b-status-${(s || "").toLowerCase()}`; }
 
-function riskDistBlock(wallets, containerId) {
-  const tiers = { low: 0, med: 0, high: 0, unknown: 0 };
-  wallets.forEach(w => tiers[riskTier(w.risk_score)]++);
-  const total = wallets.length || 1;
+function riskDistBlock(wallets, containerId, overrideTiers) {
+  // overrideTiers: true counts across the WHOLE dataset (Overview uses
+  // this, via OVERVIEW_STATS -- `wallets` there is only a 200-row capped
+  // page, not the real ~52k). Omit it to bucket `wallets` directly, which
+  // is correct when the array passed in already IS the full population
+  // being described (e.g. the Graph view's currently-rendered subgraph).
+  const tiers = overrideTiers || { low: 0, med: 0, high: 0, unknown: 0 };
+  if (!overrideTiers) wallets.forEach(w => tiers[riskTier(w.risk_score)]++);
+  const total = Object.values(tiers).reduce((a, b) => a + b, 0) || 1;
   const box = document.getElementById(containerId);
   box.innerHTML = Object.entries(tiers).map(([k, v]) => `
     <div class="bar-row">
@@ -868,7 +873,7 @@ async function loadAll() {
 
 function renderAll() {
   renderStatCards();
-  riskDistBlock(WALLETS, "riskDist");
+  riskDistBlock(WALLETS, "riskDist", OVERVIEW_STATS ? OVERVIEW_STATS.wallet_risk_tier_counts : null);
   renderTopRisk();
   renderSeverityBars();
   renderLatestAlerts();
@@ -886,14 +891,24 @@ function renderStatCards() {
   document.getElementById("statWallets").textContent = OVERVIEW_STATS ? OVERVIEW_STATS.wallet_count : WALLETS.length;
   document.getElementById("statClusters").textContent = OVERVIEW_STATS ? OVERVIEW_STATS.cluster_count : CLUSTERS.length;
   document.getElementById("statAlerts").textContent = OVERVIEW_STATS ? OVERVIEW_STATS.alert_count : ALERTS.length;
-  document.getElementById("statAlertsNew").textContent = ALERTS.filter(a => a.review_status === "NEW").length;
-  document.getElementById("statHighSev").textContent = ALERTS.filter(a => a.severity === "HIGH").length;
+  document.getElementById("statAlertsNew").textContent = OVERVIEW_STATS
+    ? OVERVIEW_STATS.alert_new_count : ALERTS.filter(a => a.review_status === "NEW").length;
+  document.getElementById("statHighSev").textContent = OVERVIEW_STATS
+    ? OVERVIEW_STATS.alert_severity_counts.HIGH : ALERTS.filter(a => a.severity === "HIGH").length;
 }
 
 function renderSeverityBars() {
+  // Prefer OVERVIEW_STATS's true counts across all alerts -- ALERTS
+  // itself is only a 100-row capped page (see /stats/overview's
+  // docstring), so filtering it directly undercounts on real data.
   const box = document.getElementById("severityBars");
-  const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
-  ALERTS.forEach(a => { if (counts[a.severity] !== undefined) counts[a.severity]++; });
+  let counts;
+  if (OVERVIEW_STATS) {
+    counts = { ...OVERVIEW_STATS.alert_severity_counts };
+  } else {
+    counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+    ALERTS.forEach(a => { if (counts[a.severity] !== undefined) counts[a.severity]++; });
+  }
   const max = Math.max(1, ...Object.values(counts));
   const colors = { HIGH: "var(--high)", MEDIUM: "var(--med)", LOW: "var(--accent-glow)" };
   if (!ALERTS.length) { box.innerHTML = `<div class="empty-hint">No alerts yet.</div>`; return; }

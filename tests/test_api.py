@@ -46,7 +46,12 @@ class TestStatsOverview:
         resp = client.get("/stats/overview")
         assert resp.status_code == 200
         stats = resp.json()
-        assert stats == {"wallet_count": 6, "cluster_count": 1, "alert_count": 2}
+        assert stats == {
+            "wallet_count": 6, "cluster_count": 1, "alert_count": 2,
+            "alert_new_count": 2,
+            "alert_severity_counts": {"HIGH": 1, "MEDIUM": 1, "LOW": 0},
+            "wallet_risk_tier_counts": {"low": 3, "med": 1, "high": 2, "unknown": 0},
+        }
 
 
 class TestWallets:
