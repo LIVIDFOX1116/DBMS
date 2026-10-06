@@ -29,11 +29,20 @@ dusting attacks, taint models, or counterfactual explanations in general.
   from ERC-20 Transfer event logs, which spam contracts can fake. The real signer of any transfer
   that shows up as a `token_transfer` row is still `transaction.from_wallet_id`, joined via
   `tx_hash` — never `token_transfer.from_wallet_id` itself.
-- **Frameable flag**: removing some set of unsolicited transfers into `W` makes the flag disappear.
-- **Robust flag**: the flag survives removing ALL unsolicited transfers into `W`.
-- **Framing cost**: for a frameable flag, the cheapest set of unsolicited transfers
-  (`value_wei` + gas) that still produces the flag. Greedy results are an upper bound — always
-  label them as such, never as the true minimum unless the method is `exact`.
+- **Frameable flag**: the flag still holds on the graph with every transaction SIGNED BY `W`
+  removed (`W` passive). If a flag survives with `W` contributing nothing of its own, an
+  attacker's unsolicited inbound transfers alone were sufficient to produce it. (Corrected
+  2026-10-06: the original definition here — "remove unsolicited inbound transfers, check if the
+  flag disappears" — was wrong. A real launderer's flag also rests on inbound transfers it didn't
+  sign, so that test called almost every flag frameable.)
+- **Robust flag**: the flag disappears when `W`'s signed transactions are removed. The flag
+  depended on `W`'s own active behavior, which an attacker cannot forge — not on money that
+  merely arrived.
+- **Framing cost**: for a frameable flag, start from the graph with BOTH `W`'s signed
+  transactions AND `W`'s unsolicited inbound transfers removed, then add real unsolicited inbound
+  transfers back cheapest-first (`value_wei` + gas) until the flag reappears, then prune any not
+  needed. Greedy results are an upper bound — always label them as such, never as the true
+  minimum unless the method is `exact`.
 - **Threat model**: the attacker can send any amount to any wallet and pays value + gas per
   transfer. The attacker can only ADD transfers into the target. The attacker cannot sign for the
   target and cannot remove or reorder existing history.
