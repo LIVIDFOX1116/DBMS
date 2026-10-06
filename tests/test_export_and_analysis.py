@@ -4,7 +4,9 @@ and graph/run_analysis.py's bookkeeping (fake connection, no DB needed). The
 live Postgres read (build_edge_dataframe / pd.read_sql) and the live GPU
 algorithms are exercised on the real laptops, not here -- see README.md.
 """
+import ast
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -49,8 +51,35 @@ class FakeCursor:
     def __init__(self, state):
         self.state = state
         self._last = None
+        self._last_many = []
+        # execute_values() itself (not just our mogrify stub above) reaches
+        # into cur.connection.encoding to encode the base SQL string -- a
+        # bare object with that one attribute is enough to satisfy it.
+        self.connection = type("_FakeConnEncoding", (), {"encoding": "UTF8"})()
+
+    def mogrify(self, template, args):
+        """Stands in for psycopg2's real mogrify, which execute_values calls
+        internally to build its multi-row VALUES literal -- repr() per field
+        is a faithful enough stand-in since this fake never touches a real
+        database; _extract_rows below parses the exact same repr() text back
+        out with ast.literal_eval. template arrives as bytes (execute_values
+        derives it from the already-encoded base SQL)."""
+        rendered = template.decode()
+        for value in args:
+            rendered = rendered.replace("%s", repr(value), 1)
+        return rendered.encode()
+
+    def _extract_rows(self, query):
+        """execute_values composes one query with a literal VALUES
+        (...),(...),... list (via mogrify above) instead of passing a
+        params tuple -- recover the original rows the same way they were
+        serialized, since nothing else will do it for this fake."""
+        match = re.search(r"VALUES\s+(.+?)(?:\s+ON CONFLICT|\s+RETURNING|$)", query, re.IGNORECASE | re.DOTALL)
+        return ast.literal_eval("[" + match.group(1) + "]")
 
     def execute(self, query, params=()):
+        if isinstance(query, bytes):
+            query = query.decode()  # execute_values composes+encodes the final multi-row SQL itself
         q = " ".join(query.split())
         if q.startswith("SELECT algorithm_id"):
             (name,) = params
@@ -67,14 +96,19 @@ class FakeCursor:
             )
             self._last = None
         elif q.startswith("INSERT INTO vertex_metric"):
-            self.state["vertex_metrics"].append(params)
+            self.state["vertex_metrics"].extend(self._extract_rows(q))
             self._last = None
         elif q.startswith("INSERT INTO cluster "):
-            cluster_id = len(self.state["clusters"]) + 1
-            self.state["clusters"][cluster_id] = params
-            self._last = (cluster_id,)
+            rows = self._extract_rows(q)  # each: (run_id, community_label, member_count, internal_edges, modularity)
+            returned = []
+            for row in rows:
+                cluster_id = len(self.state["clusters"]) + 1
+                self.state["clusters"][cluster_id] = row
+                returned.append((cluster_id, row[1]))  # row[1] = community_label, per the real RETURNING clause
+            self._last_many = returned
+            self._last = None
         elif q.startswith("INSERT INTO cluster_member"):
-            self.state["cluster_members"].append(params)
+            self.state["cluster_members"].extend(self._extract_rows(q))
             self._last = None
         elif q.startswith("SELECT cluster_id, member_count, internal_edges"):
             (run_id,) = params
@@ -99,7 +133,7 @@ class FakeCursor:
         return self._last
 
     def fetchall(self):
-        return getattr(self, "_last_many", [])
+        return self._last_many
 
     def __enter__(self):
         return self
@@ -150,6 +184,31 @@ class TestRunAnalysisBookkeeping(unittest.TestCase):
 
         self.assertEqual(len(conn.state["clusters"]), 2)  # two distinct community labels
         self.assertEqual(len(conn.state["cluster_members"]), 3)  # three wallets total
+
+    def test_persist_clusters_maps_members_by_community_label_not_row_order(self):
+        """The real risk execute_values introduces: Postgres makes no
+        row-order guarantee for a multi-row INSERT...RETURNING, so
+        persist_clusters must map the returned cluster_id back to each
+        wallet by community_label, never by assuming RETURNING rows came
+        back in the same order the VALUES list was given in."""
+        conn = FakeConnection()
+        run_id = start_run(conn, snapshot_id=1, algorithm_name="louvain")
+        df = pd.DataFrame([
+            {"wallet_id": 10, "community_label": 5},
+            {"wallet_id": 20, "community_label": 5},
+            {"wallet_id": 30, "community_label": 2},
+            {"wallet_id": 40, "community_label": 2},
+            {"wallet_id": 50, "community_label": 2},
+        ])
+        persist_clusters(conn, run_id, df, modularity=0.5)
+
+        label_to_cluster_id = {row[1]: cid for cid, row in conn.state["clusters"].items()}
+        members_of = {}
+        for cluster_id, wallet_id in conn.state["cluster_members"]:
+            members_of.setdefault(cluster_id, set()).add(wallet_id)
+
+        self.assertEqual(members_of[label_to_cluster_id[5]], {10, 20})
+        self.assertEqual(members_of[label_to_cluster_id[2]], {30, 40, 50})
 
 
 class TestComputeInternalEdges(unittest.TestCase):

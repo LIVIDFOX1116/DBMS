@@ -18,6 +18,7 @@ import time
 
 import pandas as pd
 import psycopg2
+from psycopg2.extras import execute_values
 
 from ingestion import config
 from graph.backend import GraphBackend
@@ -32,7 +33,8 @@ def get_algorithm_id(conn, name: str) -> int:
         return row[0]
 
 
-def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int = 1, parameters: dict = None) -> int:
+def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int = 1, parameters: dict = None,
+              commit: bool = True) -> int:
     algorithm_id = get_algorithm_id(conn, algorithm_name)
     with conn.cursor() as cur:
         cur.execute(
@@ -45,11 +47,13 @@ def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int = 1, 
             (snapshot_id, algorithm_id, analyst_id, json.dumps(parameters or {})),
         )
         run_id = cur.fetchone()[0]
-    conn.commit()
+    if commit:
+        conn.commit()
     return run_id
 
 
-def finish_run(conn, run_id: int, runtime_ms: int, backend_name: str, library_version: str = None, status: str = "DONE") -> None:
+def finish_run(conn, run_id: int, runtime_ms: int, backend_name: str, library_version: str = None,
+               status: str = "DONE", commit: bool = True) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """UPDATE analysis_run
@@ -57,46 +61,85 @@ def finish_run(conn, run_id: int, runtime_ms: int, backend_name: str, library_ve
                WHERE run_id=%s""",
             (status, runtime_ms, backend_name, library_version, run_id),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def persist_vertex_metric(conn, run_id: int, df: pd.DataFrame, metric_name: str, value_col: str) -> None:
-    with conn.cursor() as cur:
-        for rank, row in enumerate(df.itertuples(), start=1):
-            cur.execute(
+def persist_vertex_metric(conn, run_id: int, df: pd.DataFrame, metric_name: str, value_col: str,
+                           commit: bool = True) -> None:
+    """Bulk via execute_values instead of one INSERT per row -- real crawls
+    produce thousands of vertex_metric rows per run, and the row-by-row loop
+    this replaced was the dominant cost in a full pipeline invocation (see
+    scripts/benchmark.py's persistence-timing section, added alongside this).
+    commit=False lets a caller (the benchmark) batch several of these inside
+    one transaction it controls and rolls back itself, rather than each call
+    committing on its own."""
+    rows = [
+        (run_id, int(getattr(row, "wallet_id")), metric_name, float(getattr(row, value_col)), rank)
+        for rank, row in enumerate(df.itertuples(), start=1)
+    ]
+    if rows:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
                 """
                 INSERT INTO vertex_metric (run_id, wallet_id, metric_name, metric_value, rank_position)
-                VALUES (%s,%s,%s,%s,%s)
+                VALUES %s
                 ON CONFLICT (run_id, wallet_id, metric_name)
                 DO UPDATE SET metric_value = EXCLUDED.metric_value, rank_position = EXCLUDED.rank_position
                 """,
-                (run_id, int(getattr(row, "wallet_id")), metric_name, float(getattr(row, value_col)), rank),
+                rows,
             )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def persist_clusters(conn, run_id: int, df: pd.DataFrame, modularity: float, internal_edges: dict = None) -> None:
+def persist_clusters(conn, run_id: int, df: pd.DataFrame, modularity: float, internal_edges: dict = None,
+                      commit: bool = True) -> None:
+    """Bulk via execute_values for both the cluster and cluster_member
+    inserts. The cluster insert uses RETURNING cluster_id, community_label
+    (fetch=True) and maps the new cluster_id back to each group by its
+    community_label -- NOT by assuming the RETURNING rows come back in the
+    same order the VALUES list was given in. Postgres makes no such
+    ordering guarantee for a multi-row INSERT...RETURNING, unlike the old
+    one-row-at-a-time loop where "the row I just inserted" was unambiguous."""
     internal_edges = internal_edges or {}
+    groups = list(df.groupby("community_label"))
+    if not groups:
+        if commit:
+            conn.commit()
+        return
+
+    cluster_rows = [
+        (run_id, int(label), len(group), int(internal_edges.get(label, 0)), modularity)
+        for label, group in groups
+    ]
     with conn.cursor() as cur:
-        for label, group in df.groupby("community_label"):
-            cur.execute(
-                """
-                INSERT INTO cluster (run_id, community_label, member_count, internal_edges, modularity_score)
-                VALUES (%s,%s,%s,%s,%s)
-                RETURNING cluster_id
-                """,
-                (run_id, int(label), len(group), int(internal_edges.get(label, 0)), modularity),
+        returned = execute_values(
+            cur,
+            """
+            INSERT INTO cluster (run_id, community_label, member_count, internal_edges, modularity_score)
+            VALUES %s
+            RETURNING cluster_id, community_label
+            """,
+            cluster_rows,
+            fetch=True,
+        )
+        cluster_id_by_label = {label: cluster_id for cluster_id, label in returned}
+
+        member_rows = [
+            (cluster_id_by_label[int(label)], int(wallet_id))
+            for label, group in groups
+            for wallet_id in group.wallet_id
+        ]
+        if member_rows:
+            execute_values(
+                cur,
+                "INSERT INTO cluster_member (cluster_id, wallet_id) VALUES %s ON CONFLICT DO NOTHING",
+                member_rows,
             )
-            cluster_id = cur.fetchone()[0]
-            for wallet_id in group.wallet_id:
-                cur.execute(
-                    """
-                    INSERT INTO cluster_member (cluster_id, wallet_id)
-                    VALUES (%s,%s) ON CONFLICT DO NOTHING
-                    """,
-                    (cluster_id, int(wallet_id)),
-                )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def compute_internal_edges(cluster_df: pd.DataFrame, edges_df: pd.DataFrame) -> dict:

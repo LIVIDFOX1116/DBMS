@@ -12,10 +12,16 @@ Runs graph/backend.py's CPU (pandas + NetworkX) path always, and its GPU
 still runs and prints the CPU numbers, with a note that the GPU column needs
 a RAPIDS-capable machine to fill in.
 
-Deliberately read-only against Postgres (SELECT only, no INSERT/UPDATE): this
-is supporting evidence, not part of the pipeline itself (see the bible's
-descope order, 8.2) -- persisting real results to analysis_run/vertex_metric
-is run_analysis.py's job, not this script's.
+The algorithm-timing pass above is read-only against Postgres (SELECT only):
+this is supporting evidence, not part of the pipeline itself (see the
+bible's descope order, 8.2) -- persisting real results to analysis_run/
+vertex_metric for an actual analysis run is run_analysis.py's job, not this
+script's.
+
+Phase 2 adds one exception: run_persistence_benchmark() DOES call
+run_analysis.py's real INSERT paths, to time them -- but always inside one
+transaction that gets rolled back, never committed, so this script still
+never leaves a real row behind.
 """
 import argparse
 import statistics
@@ -30,6 +36,7 @@ import psycopg2
 
 from ingestion import config
 from graph.backend import GraphBackend, gpu_available
+from graph.run_analysis import start_run, persist_vertex_metric, persist_clusters, compute_internal_edges
 
 ALGORITHMS = ("load_edgelist", "pagerank", "louvain", "bfs")
 
@@ -108,11 +115,55 @@ def run_backend_suite(force_cpu, edges_df, seed_wallet_id, repeats):
         "louvain_communities": int(lv_df["community_label"].nunique()),
         "louvain_modularity": modularity,
         "bfs_reached": len(bfs_df),
+        # Kept for run_persistence_benchmark below, which reuses the CPU
+        # pass's already-computed PageRank/Louvain output rather than
+        # recomputing it a second time just to time the DB-write side.
+        "pagerank_df": pr_df,
+        "louvain_df": lv_df,
     }
     return summary
 
 
-def format_report(snapshot_name, vertex_count, edge_count, seed_wallet_id, repeats, results):
+def run_persistence_benchmark(snapshot_id, pr_df, lv_df, modularity, edges_df, repeats):
+    """Times graph/run_analysis.py's bulk persist_vertex_metric/
+    persist_clusters directly (Phase 2) -- separate from the algorithm
+    timing above, which never touches Postgres at all (see this module's
+    docstring).
+
+    Chosen approach for leaving zero rows in the real DB: everything here
+    runs inside ONE transaction that is always rolled back, never
+    committed (see the `finally` below), rather than committing and
+    tagging rows as benchmark runs. Rollback needs no schema support and
+    guarantees a clean DB regardless of which tables a future Phase
+    touches -- tagging would mean every table this ever writes to needs
+    its own "is this real" marker, and a crash before cleanup would still
+    leave rows behind. start_run/persist_vertex_metric/persist_clusters
+    all take commit=False for exactly this: each call stages its writes in
+    the one open transaction instead of committing on its own.
+    """
+    internal_edges = compute_internal_edges(lv_df, edges_df)
+    conn = psycopg2.connect(**config.PG_DSN)
+    try:
+        run_id = start_run(conn, snapshot_id, "pagerank", commit=False)
+        timings = {}
+
+        samples, _ = time_it(
+            lambda: persist_vertex_metric(conn, run_id, pr_df, "pagerank", "score", commit=False), repeats
+        )
+        timings["persist_vertex_metric"] = samples
+
+        samples, _ = time_it(
+            lambda: persist_clusters(conn, run_id, lv_df, modularity, internal_edges, commit=False), repeats
+        )
+        timings["persist_clusters"] = samples
+
+        return timings
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def format_report(snapshot_name, vertex_count, edge_count, seed_wallet_id, repeats, results, persistence_timing=None):
     lines = []
     lines.append(f"# Benchmark: {snapshot_name}")
     lines.append("")
@@ -162,6 +213,25 @@ def format_report(snapshot_name, vertex_count, edge_count, seed_wallet_id, repea
             f"BFS reached {r['bfs_reached']} wallets"
         )
 
+    if persistence_timing is not None:
+        lines.append("")
+        lines.append("## Persistence time (Phase 2 bulk writes)")
+        lines.append("")
+        lines.append("Separate from algorithm time above -- this is graph/run_analysis.py's "
+                      "execute_values-based DB writes, timed directly against the real database. "
+                      "Run inside a transaction that is always rolled back, never committed, so "
+                      "this leaves zero rows in the real DB.")
+        lines.append("")
+        lines.append("| Stage | Time |")
+        lines.append("|---|---|")
+        for stage, samples in persistence_timing.items():
+            med = statistics.median(samples) * 1000
+            if len(samples) > 1:
+                lines.append(f"| {stage} | {med:.1f} ms median (range {min(samples)*1000:.1f}-{max(samples)*1000:.1f} ms, n={len(samples)}) |")
+            else:
+                lines.append(f"| {stage} | {med:.1f} ms |")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -193,7 +263,18 @@ def main():
         print("[note] GPU backend unavailable on this machine (no RAPIDS/cugraph importable) -- "
               "re-run this script unmodified on the RTX 4070 / GTX 1650 laptop to fill in the GPU column.\n")
 
-    report = format_report(snapshot_name, vertex_count, edge_count, seed_wallet_id, args.repeats, results)
+    cpu_result = results[0]
+    try:
+        persistence_timing = run_persistence_benchmark(
+            snapshot_id, cpu_result["pagerank_df"], cpu_result["louvain_df"],
+            cpu_result["louvain_modularity"], edges_df, args.repeats,
+        )
+    except psycopg2.OperationalError as e:
+        persistence_timing = None
+        print(f"[note] persistence benchmark skipped -- could not connect to Postgres ({e})\n")
+
+    report = format_report(snapshot_name, vertex_count, edge_count, seed_wallet_id, args.repeats, results,
+                            persistence_timing=persistence_timing)
     print(report)
 
     if args.output:
