@@ -395,9 +395,39 @@ def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
 
 # ── FrameCheck (Phase 7) ────────────────────────────────────────────────────
 
+# Mirrors graph.detectors.DETECTOR_NAMES -- duplicated rather than imported
+# so this API layer keeps its "no GPU/graph-stack import needed" footprint
+# (graph.detectors pulls in graph.run_analysis at module level).
+FLAG_DETECTORS = ("bfs_proximity", "sybil_cluster", "pagerank_threshold", "impurity", "engaged_proximity")
+
+
+def resolve_latest_run_ids(cur, snapshot_id: int, detectors=FLAG_DETECTORS) -> list:
+    """Each flag detector can be re-run on the same snapshot (manual
+    re-runs, re-detect after a correction, etc.), leaving older runs' flag
+    rows sitting in the table alongside the newest run's. Counting all of
+    them together double-counts. Returns the run_id of the most recent
+    DONE run per detector on this snapshot -- resolved from analysis_run
+    directly (not by joining through flag), so a detector that is latest
+    but flagged nobody (e.g. engaged_proximity with 0 flags) still
+    contributes its own run_id rather than being silently skipped in
+    favor of an older run that happened to produce flags."""
+    cur.execute(
+        """
+        SELECT DISTINCT ON (al.algorithm_name) ar.run_id
+        FROM analysis_run ar JOIN algorithm al ON al.algorithm_id = ar.algorithm_id
+        WHERE ar.snapshot_id = %s AND ar.status = 'DONE' AND al.algorithm_name = ANY(%s)
+        ORDER BY al.algorithm_name, ar.run_id DESC
+        """,
+        (snapshot_id, list(detectors)),
+    )
+    return [row[0] for row in cur.fetchall()]
+
+
 @app.get("/flags")
 def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
-                wallet_id: Optional[int] = None, limit: int = 100):
+                wallet_id: Optional[int] = None, snapshot_id: Optional[int] = None, limit: int = 100):
+    """snapshot_id (ignored if run_id is given explicitly) dedupes to the
+    latest run per detector on that snapshot -- see resolve_latest_run_ids."""
     if using_mock():
         flags = load_mock().get("flags", [])
         filtered = [
@@ -414,6 +444,12 @@ def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
             if run_id is not None:
                 query += " AND run_id = %s"
                 params.append(run_id)
+            elif snapshot_id is not None:
+                latest_run_ids = resolve_latest_run_ids(
+                    cur, snapshot_id, (detector,) if detector is not None else FLAG_DETECTORS
+                )
+                query += " AND run_id = ANY(%s)"
+                params.append(latest_run_ids)
             if detector is not None:
                 query += " AND detector = %s"
                 params.append(detector)
@@ -470,10 +506,15 @@ def flag_audit_endpoint(flag_id: int):
 
 
 @app.get("/audit/summary")
-def audit_summary(run_id: Optional[int] = None):
+def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = None):
     """Per detector: how many flags have been audited, what share came
     back frameable, and the framing-cost min/median/max among the
-    frameable ones (robust flags have no framing cost to include)."""
+    frameable ones (robust flags have no framing cost to include).
+
+    snapshot_id (ignored if run_id is given explicitly) dedupes to the
+    latest run per detector on that snapshot, so re-running a detector
+    on the same snapshot doesn't double-count flags audited under an
+    older run alongside the newest one -- see resolve_latest_run_ids."""
     if using_mock():
         return load_mock().get("audit_summary", [])
     with get_conn() as conn:
@@ -492,6 +533,10 @@ def audit_summary(run_id: Optional[int] = None):
             if run_id is not None:
                 query += " WHERE f.run_id = %s"
                 params.append(run_id)
+            elif snapshot_id is not None:
+                latest_run_ids = resolve_latest_run_ids(cur, snapshot_id)
+                query += " WHERE f.run_id = ANY(%s)"
+                params.append(latest_run_ids)
             query += " GROUP BY f.detector ORDER BY f.detector"
             cur.execute(query, params)
             rows = rows_as_dicts(cur)

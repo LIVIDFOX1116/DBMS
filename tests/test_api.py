@@ -232,6 +232,124 @@ class TestFlags:
         assert bfs_row["frameable_share"] == 1.0
 
 
+class TestAuditDedup:
+    """snapshot_id on /flags and /audit/summary dedupes to the latest run
+    per detector (api_main.resolve_latest_run_ids) -- without this, a
+    detector re-run on the same snapshot leaves an older run's flags
+    sitting in the table alongside the newest run's, and naive counting
+    (or a naive "all flags for this snapshot" query) double-counts them.
+    Verified against a real Postgres directly before trusting it here
+    (snapshot 4 has two bfs_proximity runs, 25 and 29 -- resolve_latest_
+    run_ids correctly returns 29, not 25)."""
+
+    class _CapturingCursor:
+        def __init__(self, sink):
+            self._sink = sink
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, query, params=None):
+            self._sink.append((" ".join(query.split()), params))
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return (1,)
+
+        @property
+        def description(self):
+            return []
+
+    class _CapturingConn:
+        def __init__(self, sink):
+            self._sink = sink
+            self.closed = 0
+
+        def cursor(self):
+            return TestAuditDedup._CapturingCursor(self._sink)
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def test_resolve_latest_run_ids_query_shape_and_extraction(self):
+        calls = []
+
+        class FakeCur:
+            def execute(self, query, params=None):
+                calls.append((" ".join(query.split()), params))
+
+            def fetchall(self):
+                return [(29,), (30,)]  # real query SELECTs only ar.run_id -- one column
+
+        result = api_main.resolve_latest_run_ids(FakeCur(), 4, ("bfs_proximity", "sybil_cluster"))
+        assert result == [29, 30]
+        query, params = calls[0]
+        assert "DISTINCT ON" in query
+        assert "status = 'DONE'" in query
+        assert "ORDER BY al.algorithm_name, ar.run_id DESC" in query
+        assert params == (4, ["bfs_proximity", "sybil_cluster"])
+
+    def test_flags_with_snapshot_id_filters_by_resolved_run_ids(self, monkeypatch):
+        sink = []
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
+        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda cur, snap, detectors=None: [29])
+
+        resp = client.get("/flags", params={"snapshot_id": 4, "detector": "bfs_proximity"})
+        assert resp.status_code == 200
+        query, params = sink[-1]
+        assert "run_id = ANY" in query
+        assert [29] in params
+
+    def test_flags_explicit_run_id_skips_snapshot_dedup(self, monkeypatch):
+        sink = []
+        called = []
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
+        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda *a, **k: called.append(1) or [])
+
+        resp = client.get("/flags", params={"snapshot_id": 4, "run_id": 18})
+        assert resp.status_code == 200
+        assert not called, "resolve_latest_run_ids must not run when run_id is given explicitly"
+        query, params = sink[-1]
+        assert "run_id = %s" in query and "ANY" not in query
+        assert 18 in params
+
+    def test_audit_summary_with_snapshot_id_filters_by_resolved_run_ids(self, monkeypatch):
+        sink = []
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
+        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda cur, snap, detectors=None: [29, 30, 31, 32, 33])
+
+        resp = client.get("/audit/summary", params={"snapshot_id": 4})
+        assert resp.status_code == 200
+        query, params = sink[-1]
+        assert "run_id = ANY" in query
+        assert [29, 30, 31, 32, 33] in params
+
+    def test_audit_summary_explicit_run_id_skips_snapshot_dedup(self, monkeypatch):
+        sink = []
+        called = []
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
+        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda *a, **k: called.append(1) or [])
+
+        resp = client.get("/audit/summary", params={"snapshot_id": 4, "run_id": 18})
+        assert resp.status_code == 200
+        assert not called
+
+
 class _FakeCursor:
     """Records the query text instead of touching a real database. rows_as_dicts()
     calls .description and .fetchall() on the way out, so both need to work even

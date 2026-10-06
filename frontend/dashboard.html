@@ -599,7 +599,7 @@ table.dtable a { color: var(--accent-glow); }
 
     <!-- AUDIT (FrameCheck) -->
     <section class="view" id="view-audit">
-      <div class="view-header"><div><h1>Audit</h1><p>Could an outsider have produced each flag without the wallet doing anything?</p></div></div>
+      <div class="view-header"><div><h1>Audit</h1><p>Could an outsider have produced each flag without the wallet doing anything? <span id="auditSnapshotLabel" class="mono" style="opacity:0.7;"></span></p></div></div>
 
       <div class="panel" style="margin-bottom:16px;">
         <div class="table-wrap">
@@ -1088,6 +1088,7 @@ function renderAlerts() {
 ════════════════════════════════════════ */
 let auditLoaded = false;
 let auditFilter = "all";
+let auditSnapshotId = null; // resolved once per loadAudit() -- the latest snapshot; see resolveLatestSnapshotId
 let AUDIT_SUMMARY = [];
 let AUDIT_FLAGS = []; // flag rows merged with their audit result (verdict/cost/method), where audited
 const AUDIT_FLAGS_BY_FILTER = {}; // cache keyed by filter ("all" or a detector name) -- see loadAuditFlagsFor
@@ -1095,6 +1096,17 @@ const AUDIT_FLAGS_BY_FILTER = {}; // cache keyed by filter ("all" or a detector 
 function weiToEth(wei) {
   if (wei == null) return "–";
   return `${(Number(wei) / 1e18).toFixed(6)} ETH`;
+}
+
+// The Audit view always shows one snapshot's data, deduped to the latest
+// run per detector on it (see api/main.py's resolve_latest_run_ids) --
+// otherwise a re-run detector's older flags double-count alongside the
+// newest run's. Defaults to the most recently created snapshot; there is
+// no per-view snapshot picker yet (unlike the Graph view's), so this is
+// the one place "current snapshot" is decided for Audit.
+async function resolveLatestSnapshotId() {
+  const snapshots = await api("/snapshots").catch(() => []);
+  return snapshots.length ? snapshots[0].snapshot_id : null;
 }
 
 // Bounded page of flags for one filter, then their audit results in
@@ -1110,6 +1122,7 @@ function weiToEth(wei) {
 async function loadAuditFlagsFor(filter) {
   if (AUDIT_FLAGS_BY_FILTER[filter]) return AUDIT_FLAGS_BY_FILTER[filter];
   const params = { limit: 50 };
+  if (auditSnapshotId != null) params.snapshot_id = auditSnapshotId;
   if (filter !== "all") params.detector = filter;
   const flags = await api("/flags", params).catch(() => []);
   const audits = await Promise.all(
@@ -1125,7 +1138,12 @@ async function loadAudit() {
   document.getElementById("auditSummaryRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
   document.getElementById("auditFlagRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
 
-  AUDIT_SUMMARY = await api("/audit/summary").catch(() => []);
+  auditSnapshotId = await resolveLatestSnapshotId();
+  document.getElementById("auditSnapshotLabel").textContent =
+    auditSnapshotId != null ? `(snapshot ${auditSnapshotId})` : "";
+
+  const summaryParams = auditSnapshotId != null ? { snapshot_id: auditSnapshotId } : {};
+  AUDIT_SUMMARY = await api("/audit/summary", summaryParams).catch(() => []);
   renderAuditSummary();
 
   AUDIT_FLAGS = await loadAuditFlagsFor(auditFilter);
