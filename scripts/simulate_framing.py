@@ -19,6 +19,7 @@ for cost estimation, NOT a live gas-price oracle lookup; real gas prices
 vary continuously and this is a simplification.
 """
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -39,6 +40,13 @@ DEFAULT_DUST_ETH = 0.001
 DUST_GAS_USED = 21000               # a standard ETH transfer's gas cost
 DUST_GAS_PRICE_GWEI = 20            # documented constant, not a live oracle lookup
 DUST_GAS_PRICE_WEI = DUST_GAS_PRICE_GWEI * 10 ** 9
+
+# "Engaged launderer" scenario -- the active counterpart to the passive
+# dust targets above. See inject_launderer_scenario.
+DEFAULT_NUM_LAUNDERERS = 20
+DEFAULT_LAUNDER_ETH = 1.0
+DEFAULT_LAUNDER_FORWARD_FRACTION = 0.80
+LAUNDER_FORWARD_BLOCK_OFFSET = 50   # comfortably inside any "within 100 blocks" requirement
 
 
 def _sim_dsn(dbname: str = SIM_DB_NAME) -> dict:
@@ -219,6 +227,151 @@ def cleanup_scenario(conn, scenario_id: int) -> dict:
         scenario_deleted = cur.rowcount
     conn.commit()
     return {"transactions": tx_deleted, "blocks": block_deleted, "scenarios": scenario_deleted}
+
+
+def synthetic_wallet_address(scenario_id: int, role: str, index: int) -> str:
+    """Deterministic 42-char hex address for a BRAND NEW synthetic wallet
+    -- used only by inject_launderer_scenario. Dust targets in
+    inject_framing_scenario reuse real existing wallets and never need
+    this; a launderer and its downstream recipient must be wallets that
+    cannot already exist by chance ("received from the seed and
+    forwarded most of it on, fast" is exactly the behavior under test,
+    not something to go looking for in real data). role ('launderer' or
+    'laundered') is folded into the hash so the two roles can never
+    collide for the same scenario_id/index."""
+    digest = hashlib.sha256(f"{SYNTHETIC_TX_PREFIX}:{scenario_id}:{role}:{index}".encode()).hexdigest()
+    return "0x" + digest[:40]
+
+
+def insert_synthetic_wallet(conn, scenario_id: int, role: str, index: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO wallet (address, address_type) VALUES (%s, 'EOA') RETURNING wallet_id",
+            (synthetic_wallet_address(scenario_id, role, index),),
+        )
+        return cur.fetchone()[0]
+
+
+def inject_launderer_scenario(conn, seed_wallet_id: int, num_launderers: int = DEFAULT_NUM_LAUNDERERS,
+                               amount_eth: float = DEFAULT_LAUNDER_ETH,
+                               forward_fraction: float = DEFAULT_LAUNDER_FORWARD_FRACTION) -> dict:
+    """The "engaged launderer" counterpart to inject_framing_scenario's
+    passive dust victims: injects num_launderers BRAND NEW wallets, each
+    receiving amount_eth directly from the seed (block block_in) then
+    forwarding forward_fraction of it onward to its own BRAND NEW
+    downstream wallet (block block_in + LAUNDER_FORWARD_BLOCK_OFFSET).
+    This is meant to make bfs_proximity and engaged_proximity disagree in
+    a controlled, legible way: bfs_proximity sees a wallet one hop from
+    the seed either way (passive or active) and is provably invariant to
+    removing a wallet's own signed edges (see graph/audit.py's
+    audit_bfs_proximity docstring), so it should flag both this and dust
+    victims, and call both frameable. engaged_proximity's signal IS the
+    forwarding itself -- strip the launderer's own signed forward
+    transaction and the signal disappears, so it should flag ONLY
+    launderers (never passive dust victims, who forward nothing) and
+    audit them as robust, not frameable.
+
+    Returns {"scenario_id", "launderer_wallet_ids", "downstream_wallet_ids"}."""
+    amount_wei = int(amount_eth * 10 ** 18)
+    forward_wei = int(amount_wei * forward_fraction)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO framing_scenario (attacker_wallet_ids, target_wallet_ids, transfer_count, total_value_wei)
+            VALUES (%s, %s, %s, %s) RETURNING scenario_id
+            """,
+            ([seed_wallet_id], [], 2 * num_launderers, amount_wei * num_launderers),
+        )
+        scenario_id = cur.fetchone()[0]
+
+    launderer_ids = [insert_synthetic_wallet(conn, scenario_id, "launderer", i) for i in range(num_launderers)]
+    downstream_ids = [insert_synthetic_wallet(conn, scenario_id, "laundered", i) for i in range(num_launderers)]
+
+    block_in = synthetic_block_number(scenario_id)
+    block_out = block_in + LAUNDER_FORWARD_BLOCK_OFFSET
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE framing_scenario SET target_wallet_ids = %s WHERE scenario_id = %s",
+            (launderer_ids, scenario_id),
+        )
+        for block_number, suffix in ((block_in, "0"), (block_out, "1")):
+            cur.execute(
+                """
+                INSERT INTO block (block_number, block_hash, proposer_wallet_id, block_timestamp, gas_used, gas_limit, tx_count)
+                VALUES (%s, %s, NULL, NOW(), %s, %s, %s)
+                """,
+                (
+                    block_number, "0x" + SYNTHETIC_TX_PREFIX + f"{scenario_id:055x}{suffix}",
+                    DUST_GAS_USED * num_launderers, DUST_GAS_USED * num_launderers * 10, num_launderers,
+                ),
+            )
+
+        inbound_rows = [
+            (
+                synthetic_tx_hash(scenario_id, i), block_in, seed_wallet_id, launderer_ids[i], amount_wei,
+                DUST_GAS_PRICE_WEI, DUST_GAS_USED, i, 0, True, None, True,
+            )
+            for i in range(num_launderers)
+        ]
+        outbound_rows = [
+            (
+                synthetic_tx_hash(scenario_id, num_launderers + i), block_out, launderer_ids[i], downstream_ids[i],
+                forward_wei, DUST_GAS_PRICE_WEI, DUST_GAS_USED, i, 0, True, None, True,
+            )
+            for i in range(num_launderers)
+        ]
+        execute_values(
+            cur,
+            """
+            INSERT INTO transaction
+                (tx_hash, block_number, from_wallet_id, to_wallet_id, value_wei,
+                 gas_price, gas_used, tx_index, nonce, status, method_id, is_simulated)
+            VALUES %s
+            """,
+            inbound_rows + outbound_rows,
+        )
+    conn.commit()
+    return {"scenario_id": scenario_id, "launderer_wallet_ids": launderer_ids, "downstream_wallet_ids": downstream_ids}
+
+
+def cleanup_launderer_scenario(conn, scenario_id: int) -> dict:
+    """Reverses inject_launderer_scenario: removes its synthetic
+    transactions, both of its synthetic blocks (an inbound AND an
+    outbound block, vs cleanup_scenario's single block for passive dust),
+    the launderer/downstream WALLET rows it created (unlike dust targets,
+    which reuse real existing wallets and are never deleted), and the
+    framing_scenario row itself. Downstream wallet ids aren't stored on
+    framing_scenario (only launderer ids, as target_wallet_ids) -- found
+    instead via the synthetic transactions' own to_wallet_id, which still
+    works even if the framing_scenario row is already gone."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT target_wallet_ids FROM framing_scenario WHERE scenario_id = %s", (scenario_id,))
+        row = cur.fetchone()
+        launderer_ids = row[0] if row else []
+
+        block_in = synthetic_block_number(scenario_id)
+        block_out = block_in + LAUNDER_FORWARD_BLOCK_OFFSET
+        cur.execute(
+            "SELECT DISTINCT to_wallet_id FROM transaction WHERE block_number = %s AND is_simulated = TRUE",
+            (block_out,),
+        )
+        downstream_ids = [r[0] for r in cur.fetchall() if r[0] is not None]
+        all_synthetic_ids = launderer_ids + downstream_ids
+
+        cur.execute("DELETE FROM transaction WHERE block_number = ANY(%s) AND is_simulated = TRUE", ([block_in, block_out],))
+        tx_deleted = cur.rowcount
+        cur.execute("DELETE FROM block WHERE block_number = ANY(%s)", ([block_in, block_out],))
+        block_deleted = cur.rowcount
+        cur.execute("DELETE FROM wallet WHERE wallet_id = ANY(%s)", (all_synthetic_ids,))
+        wallet_deleted = cur.rowcount
+        cur.execute("DELETE FROM framing_scenario WHERE scenario_id = %s", (scenario_id,))
+        scenario_deleted = cur.rowcount
+    conn.commit()
+    return {
+        "transactions": tx_deleted, "blocks": block_deleted,
+        "wallets": wallet_deleted, "scenarios": scenario_deleted,
+    }
 
 
 def resolve_latest_bfs_run_id(conn, snapshot_id: int) -> int:
