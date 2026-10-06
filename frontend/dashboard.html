@@ -201,6 +201,8 @@ table.dtable a { color: var(--accent-glow); }
 .b-status-new { color: var(--accent-glow); background: var(--accent-soft); }
 .b-status-reviewed { color: var(--low); background: rgba(47,217,168,.16); }
 .b-status-dismissed { color: var(--text-3); background: var(--bg-sub); }
+.b-verdict-frameable { color: var(--high); background: rgba(229,103,90,.18); }
+.b-verdict-robust { color: var(--low); background: rgba(47,217,168,.16); }
 
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
 .bar-mini { display: inline-block; width: 46px; height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; vertical-align: middle; margin-left: 6px; }
@@ -411,6 +413,7 @@ table.dtable a { color: var(--accent-glow); }
   <button class="sidenav-item" data-page="clusters">Clusters</button>
   <button class="sidenav-item" data-page="alerts">Alerts</button>
   <button class="sidenav-item" data-page="graph">Graph</button>
+  <button class="sidenav-item" data-page="audit">Audit</button>
 </nav>
 
 <div class="shell">
@@ -420,6 +423,7 @@ table.dtable a { color: var(--accent-glow); }
     <button class="sidenav-item" data-page="clusters"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="3.2"/><circle cx="17" cy="6" r="2.3"/><circle cx="17.5" cy="15" r="3"/><circle cx="7" cy="16" r="2.3"/></svg>Clusters</button>
     <button class="sidenav-item" data-page="alerts"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Alerts</button>
     <button class="sidenav-item" data-page="graph"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/><path d="M6.9 7.4 10.3 16M17.1 7.4 13.7 16M7.3 6h9.4"/></svg>Graph</button>
+    <button class="sidenav-item" data-page="audit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6l-8-4Z"/><path d="m9 12 2 2 4-4"/></svg>Audit</button>
   </aside>
 
   <main class="main">
@@ -593,6 +597,39 @@ table.dtable a { color: var(--accent-glow); }
       </div>
     </section>
 
+    <!-- AUDIT (FrameCheck) -->
+    <section class="view" id="view-audit">
+      <div class="view-header"><div><h1>Audit</h1><p>Could an outsider have produced each flag without the wallet doing anything?</p></div></div>
+
+      <div class="panel" style="margin-bottom:16px;">
+        <div class="table-wrap">
+          <table class="dtable">
+            <thead><tr><th>Detector</th><th>Audited</th><th>Frameable</th><th>Frameable share</th><th>Framing cost (median)</th></tr></thead>
+            <tbody id="auditSummaryRows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="seg" id="auditFilterBar">
+          <button class="on" data-f="all">All</button>
+          <button data-f="bfs_proximity">BFS proximity</button>
+          <button data-f="sybil_cluster">Sybil cluster</button>
+          <button data-f="pagerank_threshold">PageRank threshold</button>
+          <button data-f="impurity">Impurity</button>
+          <button data-f="engaged_proximity">Engaged proximity</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="dtable">
+            <thead><tr><th>Detector</th><th>Wallet</th><th>Verdict</th><th>Framing cost</th><th>Method</th></tr></thead>
+            <tbody id="auditFlagRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
   </main>
 </div>
 
@@ -635,6 +672,30 @@ table.dtable a { color: var(--accent-glow); }
     <div class="modal-footer">
       <button class="btn" id="cmFocusBtn">Focus in graph</button>
       <button class="btn" data-close="clusterModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Flag evidence drill-down -->
+<div class="modal-overlay" id="flagModal">
+  <div class="modal-card wide">
+    <div class="modal-header"><h3 id="fmTitle" style="font-family:var(--font);">Flag</h3><div id="fmBadges" style="margin-top:8px;"></div></div>
+    <div class="modal-body">
+      <div class="stat-mini-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="stat-mini"><div class="sl">Verdict</div><div class="sv" id="fmVerdict">–</div></div>
+        <div class="stat-mini"><div class="sl">Framing cost</div><div class="sv" id="fmCost">–</div></div>
+        <div class="stat-mini"><div class="sl">Method</div><div class="sv" id="fmMethod">–</div></div>
+      </div>
+      <div class="side-title" style="margin-top:12px;">Evidence (block-ordered)</div>
+      <div class="table-wrap" style="max-height:320px;">
+        <table class="dtable">
+          <thead><tr><th>Tx hash</th><th>Hop</th><th>Block</th><th>Role</th></tr></thead>
+          <tbody id="fmEvidenceBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" data-close="flagModal">Close</button>
     </div>
   </div>
 </div>
@@ -733,6 +794,7 @@ const PAGE_META = {
   clusters: { title: "Clusters", sub: "Louvain community-detection output" },
   alerts:   { title: "Alerts",   sub: "Pattern-detection alerts across all runs" },
   graph:    { title: "Wallet graph", sub: "Force-directed view of the transaction graph" },
+  audit:    { title: "Audit", sub: "Could an outsider have produced each flag without the wallet doing anything?" },
 };
 let currentPage = "overview";
 
@@ -744,6 +806,7 @@ function go(name) {
   history.replaceState(null, "", `#${name}`);
   window.scrollTo({ top: 0 });
   if (name === "graph" && WALLETS.length) renderGraph();
+  if (name === "audit" && !auditLoaded) loadAudit();
 }
 window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
 document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));
@@ -1018,6 +1081,101 @@ function renderAlerts() {
       <td>${a.wallet_id ? `<a href="#" class="mono" onclick="event.preventDefault();openWalletModal(${a.wallet_id})">#${a.wallet_id}</a>` : "–"}</td>
       <td>${a.cluster_id ? `<a href="#" class="mono" onclick="event.preventDefault();openClusterModal(${a.cluster_id})">#${a.cluster_id}</a>` : "–"}</td>
     </tr>`).join("");
+}
+
+/* ════════════════════════════════════════
+   AUDIT (FrameCheck)
+════════════════════════════════════════ */
+let auditLoaded = false;
+let auditFilter = "all";
+let AUDIT_SUMMARY = [];
+let AUDIT_FLAGS = []; // flag rows merged with their audit result (verdict/cost/method), where audited
+
+function weiToEth(wei) {
+  if (wei == null) return "–";
+  return `${(Number(wei) / 1e18).toFixed(6)} ETH`;
+}
+
+async function loadAudit() {
+  auditLoaded = true;
+  document.getElementById("auditSummaryRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
+  document.getElementById("auditFlagRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
+
+  AUDIT_SUMMARY = await api("/audit/summary").catch(() => []);
+  renderAuditSummary();
+
+  // Bounded page of flags, then their audit results in parallel -- there
+  // is no bulk audit-lookup endpoint (unlike /cluster-membership for
+  // clusters), so this stays a small, fixed-size page rather than N+1
+  // over every flag a real run can produce (thousands for sybil_cluster).
+  const flags = await api("/flags", { limit: 50 }).catch(() => []);
+  const audits = await Promise.all(
+    flags.map(f => api(`/flags/${f.flag_id}/audit`).catch(() => null))
+  );
+  AUDIT_FLAGS = flags.map((f, i) => ({ ...f, audit: audits[i] }));
+  renderAuditFlags();
+}
+
+function renderAuditSummary() {
+  const tbody = document.getElementById("auditSummaryRows");
+  if (!AUDIT_SUMMARY.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">No audited flags yet.</div></td></tr>`; return; }
+  tbody.innerHTML = AUDIT_SUMMARY.map(s => `
+    <tr>
+      <td>${s.detector}</td>
+      <td class="num">${s.total_audited}</td>
+      <td class="num">${s.frameable_count}</td>
+      <td class="num">${(s.frameable_share * 100).toFixed(0)}%</td>
+      <td class="num">${weiToEth(s.framing_cost_median_wei)}</td>
+    </tr>`).join("");
+}
+
+document.getElementById("auditFilterBar").addEventListener("click", e => {
+  const btn = e.target.closest("button"); if (!btn) return;
+  auditFilter = btn.dataset.f;
+  document.querySelectorAll("#auditFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
+  renderAuditFlags();
+});
+
+function renderAuditFlags() {
+  const tbody = document.getElementById("auditFlagRows");
+  const list = AUDIT_FLAGS.filter(f => auditFilter === "all" || f.detector === auditFilter);
+  if (!list.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">Nothing matches this filter.</div></td></tr>`; return; }
+  tbody.innerHTML = list.map(f => {
+    const a = f.audit;
+    const verdictBadge = a ? `<span class="badge b-verdict-${a.verdict}">${a.verdict}</span>` : `<span class="badge b-status-new">not audited</span>`;
+    const cost = a && a.verdict === "frameable" ? weiToEth(a.framing_cost_wei) : "–";
+    const method = a ? a.method : "–";
+    return `
+    <tr onclick="openFlagModal(${f.flag_id})" style="cursor:pointer;">
+      <td>${f.detector}</td>
+      <td><a href="#" class="mono" onclick="event.preventDefault();event.stopPropagation();openWalletModal(${f.wallet_id})">#${f.wallet_id}</a></td>
+      <td>${verdictBadge}</td>
+      <td class="num">${cost}</td>
+      <td>${method}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function openFlagModal(flagId) {
+  const flag = AUDIT_FLAGS.find(f => f.flag_id === flagId);
+  const a = flag?.audit;
+  document.getElementById("fmTitle").textContent = `Flag #${flagId} — ${flag?.detector ?? ""}`;
+  document.getElementById("fmBadges").innerHTML = a
+    ? `<span class="badge b-verdict-${a.verdict}">${a.verdict}</span>`
+    : `<span class="badge b-status-new">not audited</span>`;
+  document.getElementById("fmVerdict").textContent = a?.verdict ?? "not audited";
+  document.getElementById("fmCost").textContent = a && a.verdict === "frameable" ? weiToEth(a.framing_cost_wei) : "–";
+  document.getElementById("fmMethod").textContent = a?.method ?? "–";
+
+  const evidence = await api(`/flags/${flagId}/evidence`).catch(() => []);
+  document.getElementById("fmEvidenceBody").innerHTML = evidence.map(e => `
+    <tr>
+      <td class="mono">${shortAddr(e.tx_hash)}</td>
+      <td class="num">${e.hop}</td>
+      <td class="num">${e.block_number}</td>
+      <td><span class="badge ${e.role === 'signed' ? 'b-status-reviewed' : 'b-status-new'}">${e.role}</span></td>
+    </tr>`).join("") || `<tr><td colspan="4"><div class="empty-hint">No evidence collected for this flag yet.</div></td></tr>`;
+  openModal("flagModal");
 }
 
 /* ════════════════════════════════════════
