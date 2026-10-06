@@ -117,12 +117,12 @@ class TestAuditLevelScenarios(unittest.TestCase):
 
     def test_launderer_is_robust_under_engaged_proximity_once_its_own_forwarding_is_removed(self):
         transfers_with_laundering = [
-            (SEED, 2, 100.0, 100),
-            (2, 9, 80.0, 105),  # wallet 2's OWN signed forwarding -- this is what gets removed
+            (SEED, 2, 100.0, None, 100),
+            (2, 9, 80.0, None, 105),  # wallet 2's OWN signed forwarding -- this is what gets removed
         ]
         signed_removed = [t for t in transfers_with_laundering if t[0] != 2]
         ratios = compute_engaged_outflow_ratios(signed_removed, SEED)
-        new_score = ratios.get(2, 0.0)
+        new_score = ratios.get(2, {}).get(None, 0.0)
         self.assertEqual(verdict_from_score(new_score, threshold=0.5), "robust")
 
     def test_dusted_wallet_stays_frameable_under_bfs_proximity_with_signed_removed(self):

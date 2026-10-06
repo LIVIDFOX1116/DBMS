@@ -35,11 +35,28 @@ Per-detector method:
   other four are, so "cheapest transfer to re-trigger it" isn't a
   well-posed question here.
 
+KNOWN GAP (token-triggered flags' framing cost): impurity/engaged_proximity
+now track taint per currency (native ETH + every ERC-20 token), but
+fetch_unsolicited_candidates' evidence still only ever comes from
+flag_evidence, which is collected by db/queries/evidence.sql's recursive
+CTE -- that CTE's hop=0 base case matches on transaction.to_wallet_id = W
+(the NATIVE recipient), which is the token CONTRACT's wallet for a token
+transfer, never W itself (W only appears as token_transfer.to_wallet_id).
+A flag that only crossed the threshold in some ERC-20 token therefore
+still gets a correct frameable/robust verdict (that's scored directly off
+the replay, not off evidence), but its framing-cost search currently has
+no real candidates to add back and comes back with method=
+greedy_upper_bound, framing_cost_wei=None -- a real gap, not a crash,
+found live auditing snapshot 5's one token-triggered impurity flag.
+Fixing it needs evidence.sql's hop=0 case extended with a token_transfer-
+based branch; out of scope for the session that found it.
+
     python -m graph.audit --snapshot-id 4 --seed-wallet-id 1476 --limit 50
 """
 import argparse
 import itertools
 import time
+from collections import defaultdict
 
 import pandas as pd
 import psycopg2
@@ -134,7 +151,7 @@ def fetch_flag(conn, flag_id: int) -> dict:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT f.flag_id, f.run_id, f.wallet_id, f.detector, f.score, f.threshold,
+            SELECT f.flag_id, f.run_id, f.wallet_id, f.detector, f.score, f.threshold, f.token_contract,
                    ar.snapshot_id, ar.parameters
             FROM flag f JOIN analysis_run ar ON ar.run_id = f.run_id
             WHERE f.flag_id = %s
@@ -238,35 +255,69 @@ def audit_bfs_proximity(conn, flag_id: int, snapshot_id: int, wallet_id: int, se
     }
 
 
+def _fetch_native_and_token_transfers_for_audit(cur, snapshot_id: int) -> list:
+    """Same shared fetch as graph/detectors.py's _fetch_native_and_token_
+    transfers, duplicated here (not imported) because the audit engine
+    additionally needs tx_hash on every row to strip/re-add by transaction
+    -- detectors.py's version never needs that. Returns
+    [(from_wallet_id, to_wallet_id, value, currency, block_number, tx_hash), ...]."""
+    cur.execute(
+        """
+        SELECT t.from_wallet_id, t.to_wallet_id, t.value_wei, NULL::char(42), t.block_number, t.tx_hash
+        FROM snapshot_edge_tx st
+        JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
+        JOIN transaction t ON t.tx_hash = st.tx_hash
+        WHERE se.snapshot_id = %s
+        ORDER BY t.block_number, t.tx_index
+        """,
+        (snapshot_id,),
+    )
+    native = cur.fetchall()
+    cur.execute(
+        """
+        SELECT t.from_wallet_id, tt.to_wallet_id, tt.token_amount, tok.contract_address, t.block_number, t.tx_hash
+        FROM snapshot_edge_tx st
+        JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
+        JOIN transaction t ON t.tx_hash = st.tx_hash
+        JOIN token_transfer tt ON tt.tx_hash = t.tx_hash
+        JOIN token tok ON tok.token_id = tt.token_id
+        WHERE se.snapshot_id = %s
+        ORDER BY t.block_number, tt.log_index
+        """,
+        (snapshot_id,),
+    )
+    token = cur.fetchall()
+    return native + token
+
+
 def _audit_haircut_detector(conn, flag_id: int, snapshot_id: int, wallet_id: int, seed_wallet_id: int,
-                             threshold: float, score_all_fn, extra_score_kwargs: dict, tuple_arity: int) -> dict:
+                             threshold: float, currency, score_all_fn, extra_score_kwargs: dict,
+                             tuple_arity: int) -> dict:
     """Shared body for impurity and engaged_proximity: both are scored by
     replaying the haircut model (compute_impurity_ratios /
-    compute_engaged_outflow_ratios) over a transfer list, so the audit
-    mechanics -- strip signed, check frameable/robust, add real
-    unsolicited transfers back cheapest-first on the doubly-stripped graph
-    -- are identical; only which score function is replayed, and that
-    function's expected tuple shape (tuple_arity: 3 for
-    compute_impurity_ratios, 4 -- with block_number -- for
-    compute_engaged_outflow_ratios), differ."""
+    compute_engaged_outflow_ratios) over a transfer list covering every
+    currency the wallet touched (native ETH and every ERC-20 token seen
+    in the crawl), then reading off the ONE currency this flag actually
+    fired for (`currency`, from flag.token_contract -- None for native
+    ETH) -- a flag that crossed the threshold in one token must stay
+    scoped to that token for its own audit, not get re-judged against
+    some OTHER currency's ratio. The audit mechanics -- strip signed,
+    check frameable/robust, add real unsolicited transfers back
+    cheapest-first on the doubly-stripped graph -- are identical between
+    the two detectors; only which score function is replayed, and that
+    function's expected tuple shape (tuple_arity: 4 for
+    compute_impurity_ratios -- (from,to,value,currency) -- or 5, with
+    block_number, for compute_engaged_outflow_ratios), differ."""
     t0 = time.time()
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT t.from_wallet_id, t.to_wallet_id, t.value_wei, t.block_number, t.tx_hash
-            FROM snapshot_edge_tx st
-            JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
-            JOIN transaction t ON t.tx_hash = st.tx_hash
-            WHERE se.snapshot_id = %s
-            ORDER BY t.block_number, t.tx_index
-            """,
-            (snapshot_id,),
-        )
-        all_transfers = cur.fetchall()
+        all_transfers = _fetch_native_and_token_transfers_for_audit(cur, snapshot_id)
+
+    def ratio_for(ratios: dict) -> float:
+        return ratios.get(wallet_id, {}).get(currency, 0.0)
 
     signed_removed = [row[:tuple_arity] for row in all_transfers if row[0] != wallet_id]
     ratios = score_all_fn(signed_removed, seed_wallet_id, **extra_score_kwargs)
-    new_score = ratios.get(wallet_id, 0.0)
+    new_score = ratio_for(ratios)
     verdict = verdict_from_score(new_score, threshold)
 
     framing_cost_wei = framing_gas = None
@@ -274,13 +325,16 @@ def _audit_haircut_detector(conn, flag_id: int, snapshot_id: int, wallet_id: int
     method = "exact"
     if verdict == "frameable":
         unsolicited_tx_hashes = {
-            row[4] for row in all_transfers if row[0] != wallet_id and row[1] == wallet_id
+            row[5] for row in all_transfers if row[0] != wallet_id and row[1] == wallet_id
         }
         doubly_stripped = [
             row[:tuple_arity] for row in all_transfers
-            if row[0] != wallet_id and not (row[1] == wallet_id and row[4] in unsolicited_tx_hashes)
+            if row[0] != wallet_id and not (row[1] == wallet_id and row[5] in unsolicited_tx_hashes)
         ]
-        by_hash = {row[4]: row for row in all_transfers if row[4] in unsolicited_tx_hashes}
+        by_hash = defaultdict(list)
+        for row in all_transfers:
+            if row[5] in unsolicited_tx_hashes:
+                by_hash[row[5]].append(row)
 
         candidates_cost = fetch_unsolicited_candidates(conn, flag_id, wallet_id, snapshot_id, seed_wallet_id)
         cost_by_hash = {
@@ -290,10 +344,10 @@ def _audit_haircut_detector(conn, flag_id: int, snapshot_id: int, wallet_id: int
         candidates = [(h, cost_by_hash[h]) for h in unsolicited_tx_hashes if h in cost_by_hash]
 
         def score_fn(tx_hashes):
-            subset = doubly_stripped + [by_hash[h][:tuple_arity] for h in tx_hashes]
-            subset.sort(key=lambda r: r[3] if tuple_arity > 3 else 0)
+            subset = doubly_stripped + [row[:tuple_arity] for h in tx_hashes for row in by_hash[h]]
+            subset.sort(key=lambda r: r[4] if tuple_arity > 4 else 0)
             r = score_all_fn(subset, seed_wallet_id, **extra_score_kwargs)
-            return r.get(wallet_id, 0.0)
+            return ratio_for(r)
 
         tx_hashes, cost, method = cheapest_subset_reaching_threshold(candidates, score_fn, threshold)
         if tx_hashes:
@@ -308,15 +362,17 @@ def _audit_haircut_detector(conn, flag_id: int, snapshot_id: int, wallet_id: int
     }
 
 
-def audit_impurity(conn, flag_id: int, snapshot_id: int, wallet_id: int, seed_wallet_id: int, threshold: float) -> dict:
-    return _audit_haircut_detector(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold,
-                                    compute_impurity_ratios, {}, tuple_arity=3)
+def audit_impurity(conn, flag_id: int, snapshot_id: int, wallet_id: int, seed_wallet_id: int, threshold: float,
+                    currency=None) -> dict:
+    return _audit_haircut_detector(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold, currency,
+                                    compute_impurity_ratios, {}, tuple_arity=4)
 
 
 def audit_engaged_proximity(conn, flag_id: int, snapshot_id: int, wallet_id: int, seed_wallet_id: int,
-                             threshold: float, window_blocks: int = DEFAULT_ENGAGED_WINDOW_BLOCKS) -> dict:
-    return _audit_haircut_detector(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold,
-                                    compute_engaged_outflow_ratios, {"window_blocks": window_blocks}, tuple_arity=4)
+                             threshold: float, window_blocks: int = DEFAULT_ENGAGED_WINDOW_BLOCKS,
+                             currency=None) -> dict:
+    return _audit_haircut_detector(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold, currency,
+                                    compute_engaged_outflow_ratios, {"window_blocks": window_blocks}, tuple_arity=5)
 
 
 def audit_pagerank_threshold(conn, flag_id: int, snapshot_id: int, wallet_id: int, seed_wallet_id: int,
@@ -420,10 +476,12 @@ def audit_flag(conn, flag_id: int, seed_wallet_id: int) -> dict:
         bfs_run_id = flag["parameters"].get("bfs_run_id")
         result = audit_bfs_proximity(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold, bfs_run_id)
     elif detector == "impurity":
-        result = audit_impurity(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold)
+        result = audit_impurity(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold,
+                                 currency=flag["token_contract"])
     elif detector == "engaged_proximity":
         window_blocks = flag["parameters"].get("window_blocks", DEFAULT_ENGAGED_WINDOW_BLOCKS)
-        result = audit_engaged_proximity(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold, window_blocks)
+        result = audit_engaged_proximity(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold,
+                                          window_blocks, currency=flag["token_contract"])
     elif detector == "pagerank_threshold":
         result = audit_pagerank_threshold(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id, threshold)
     elif detector == "sybil_cluster":

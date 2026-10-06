@@ -91,22 +91,22 @@ class TestLaundererScenarioMath(unittest.TestCase):
         block_in = SYNTHETIC_BLOCK_BASE
         block_out = block_in + LAUNDER_FORWARD_BLOCK_OFFSET
         transfers = [
-            (self.SEED, self.LAUNDERER, self.AMOUNT_WEI, block_in),
-            (self.LAUNDERER, self.DOWNSTREAM, forward_wei, block_out),
+            (self.SEED, self.LAUNDERER, self.AMOUNT_WEI, None, block_in),
+            (self.LAUNDERER, self.DOWNSTREAM, forward_wei, None, block_out),
         ]
         ratios = compute_engaged_outflow_ratios(transfers, self.SEED)
-        self.assertAlmostEqual(ratios[self.LAUNDERER], DEFAULT_LAUNDER_FORWARD_FRACTION, places=9)
-        self.assertGreaterEqual(ratios[self.LAUNDERER], DEFAULT_ENGAGED_OUTFLOW_THRESHOLD)
+        self.assertAlmostEqual(ratios[self.LAUNDERER][None], DEFAULT_LAUNDER_FORWARD_FRACTION, places=9)
+        self.assertGreaterEqual(ratios[self.LAUNDERER][None], DEFAULT_ENGAGED_OUTFLOW_THRESHOLD)
 
     def test_a_passive_dust_victim_never_clears_it(self):
         """Contrast case: a wallet that only ever RECEIVES (never signs
         an outgoing transfer, like a dust target) shows up with ratio
         exactly 0.0 -- present (it did receive tainted inflow), but never
         qualifying, since outflow_in_window has nothing recorded for it."""
-        transfers = [(self.SEED, self.LAUNDERER, self.AMOUNT_WEI, SYNTHETIC_BLOCK_BASE)]
+        transfers = [(self.SEED, self.LAUNDERER, self.AMOUNT_WEI, None, SYNTHETIC_BLOCK_BASE)]
         ratios = compute_engaged_outflow_ratios(transfers, self.SEED)
-        self.assertEqual(ratios[self.LAUNDERER], 0.0)
-        self.assertLess(ratios[self.LAUNDERER], DEFAULT_ENGAGED_OUTFLOW_THRESHOLD)
+        self.assertEqual(ratios[self.LAUNDERER][None], 0.0)
+        self.assertLess(ratios[self.LAUNDERER][None], DEFAULT_ENGAGED_OUTFLOW_THRESHOLD)
 
 
 class _FakeCursor:
