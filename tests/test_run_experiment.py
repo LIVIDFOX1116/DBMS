@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "scripts"))
 
-from run_experiment import sim_env
+from run_experiment import sim_env, experiment_snapshot_name
 from simulate_framing import SIM_DB_NAME
 
 
@@ -30,6 +30,14 @@ class TestSimEnv(unittest.TestCase):
         os.environ.pop("PGDATABASE", None)
         sim_env()
         self.assertNotIn("PGDATABASE", os.environ)
+
+
+class TestExperimentSnapshotName(unittest.TestCase):
+    def test_dust_only_matches_the_original_naming(self):
+        self.assertEqual(experiment_snapshot_name(3), "experiment_3")
+
+    def test_with_launderer_scenario_includes_both_ids(self):
+        self.assertEqual(experiment_snapshot_name(3, 4), "experiment_3_4")
 
 
 if __name__ == "__main__":
