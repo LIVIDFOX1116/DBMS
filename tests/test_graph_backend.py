@@ -80,6 +80,24 @@ class _GraphBackendTests:
         self.assertEqual(start_row.distance, 0)
         self.assertEqual(start_row.predecessor, -1)
 
+    def test_pagerank_excluding_signed_edges_removes_that_wallets_outgoing_influence(self):
+        """graph/audit.py's frameable/robust check for pagerank_threshold:
+        masking out a wallet's signed (outgoing) edges before re-running
+        PageRank. Run on both the CPU and GPU backends (GPU skipped
+        automatically without RAPIDS) -- same assertion on both proves the
+        masking isn't a backend-specific no-op."""
+        edges_df = synthetic_edges()
+        full = self.backend.pagerank(self.G)
+        full_score_1 = float(full[full.wallet_id == 1].iloc[0].score)
+
+        masked = self.backend.pagerank_excluding_signed_edges(edges_df, exclude_wallet_id=2)
+        self.assertEqual(set(masked.columns), {"wallet_id", "score"})
+        masked_score_1 = float(masked[masked.wallet_id == 1].iloc[0].score)
+
+        # wallet 2 -> 1 (weight 5.0, wallet 1's single largest inbound edge)
+        # is removed -- wallet 1's rank must measurably drop.
+        self.assertLess(masked_score_1, full_score_1)
+
 
 class TestGraphBackendCPU(_GraphBackendTests, unittest.TestCase):
     force_cpu = True

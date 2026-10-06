@@ -119,6 +119,31 @@ class GraphBackend:
         log.info("pagerank (%s): %d vertices in %.2fs", self.backend_name, len(df), time.time() - t0)
         return df
 
+    def pagerank_excluding_signed_edges(self, edges_df, exclude_wallet_id,
+                                         src="src_wallet_id", dst="dst_wallet_id", weight="edge_weight"):
+        """Re-runs PageRank with every edge SIGNED by `exclude_wallet_id`
+        (every row where it's the source) masked out first -- the audit
+        engine's (graph/audit.py) frameable/robust check for
+        pagerank_threshold: does wallet W's rank still clear the flag's
+        threshold once W's own outgoing activity is removed from the
+        graph? On GPU, the mask is a cuDF boolean filter applied before
+        rebuilding the graph, so the masking itself runs GPU-side, not
+        just the pagerank call after it; on CPU, the same filter via
+        pandas. Returns the same pandas.DataFrame[wallet_id, score] shape
+        pagerank() does."""
+        if self.use_gpu:
+            gdf = self._cudf.from_pandas(edges_df)
+            masked = gdf[gdf[src] != exclude_wallet_id]
+            G = self._cugraph.Graph(directed=True)
+            G.from_cudf_edgelist(masked, source=src, destination=dst, edge_attr=weight,
+                                  renumber=True, store_transposed=True)
+        else:
+            masked_df = edges_df[edges_df[src] != exclude_wallet_id]
+            G = self._networkx.from_pandas_edgelist(
+                masked_df, source=src, target=dst, edge_attr=weight, create_using=self._networkx.DiGraph(),
+            )
+        return self.pagerank(G)
+
     def louvain(self, G):
         """Returns (pandas.DataFrame[wallet_id, community_label], modularity_score)."""
         t0 = time.time()
