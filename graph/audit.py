@@ -487,6 +487,14 @@ def audit_flag(conn, flag_id: int, seed_wallet_id: int) -> dict:
     elif detector == "sybil_cluster":
         louvain_run_id = flag["parameters"].get("louvain_run_id")
         result = audit_sybil_cluster(conn, snapshot_id, wallet_id, louvain_run_id)
+        # sybil_cluster's yes_no method never calls fetch_unsolicited_
+        # candidates (no framing cost to search for), so unlike the other
+        # four detectors it never triggers evidence collection as a side
+        # effect -- without this, every sybil_cluster flag's dashboard
+        # drill-down would show "No evidence collected for this flag yet"
+        # forever, even though the detector-agnostic evidence chain is
+        # just as collectible for it as for any other flag.
+        collect_evidence_for_flag(conn, flag_id, snapshot_id, wallet_id, seed_wallet_id)
     else:
         raise ValueError(f"unknown detector: {detector}")
 

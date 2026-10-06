@@ -8,11 +8,13 @@ the real database by hand, same split as the rest of this project).
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import pandas as pd
 
+import graph.audit as audit_module
 from graph.audit import (
     verdict_from_score,
     cheapest_qualifying_bfs_transfer,
@@ -166,6 +168,38 @@ class TestAuditLevelScenarios(unittest.TestCase):
         reduced_distance_2 = float(reduced[reduced.wallet_id == 2].iloc[0].distance)
 
         self.assertEqual(full_distance_2, reduced_distance_2)
+
+
+class TestAuditFlagCollectsEvidenceForSybilCluster(unittest.TestCase):
+    """sybil_cluster's yes_no method never calls fetch_unsolicited_
+    candidates (no framing cost to search for), so unlike the other four
+    detectors it never triggers evidence collection as a side effect --
+    found live: a real audited sybil_cluster flag's dashboard drill-down
+    showed "No evidence collected for this flag yet" forever. audit_flag
+    must call collect_evidence_for_flag itself for this one detector.
+    Wiring-only test (mocks every DB-I/O call) -- the real collection was
+    verified by hand against the database (flag_id=16188, wallet 2339:
+    505 evidence rows collected, now showing a real signed/unsolicited
+    mix in the dashboard)."""
+
+    def test_sybil_cluster_dispatch_calls_collect_evidence_for_flag(self):
+        fake_flag = {
+            "flag_id": 99, "run_id": 1, "wallet_id": 2339, "detector": "sybil_cluster",
+            "score": 50.0, "threshold": None, "token_contract": None,
+            "snapshot_id": 5, "parameters": {"louvain_run_id": 7},
+        }
+        with mock.patch.object(audit_module, "fetch_flag", return_value=fake_flag), \
+             mock.patch.object(audit_module, "audit_sybil_cluster",
+                                return_value={"verdict": "robust", "framing_cost_wei": None,
+                                              "framing_gas": None, "minimal_tx_set": None,
+                                              "method": "yes_no", "backend": "cpu-replay", "runtime_ms": 1}) as mock_audit, \
+             mock.patch.object(audit_module, "collect_evidence_for_flag") as mock_collect, \
+             mock.patch.object(audit_module, "persist_audit") as mock_persist:
+            audit_module.audit_flag(conn=object(), flag_id=99, seed_wallet_id=1476)
+
+        mock_audit.assert_called_once()
+        mock_collect.assert_called_once_with(mock.ANY, 99, 5, 2339, 1476)
+        mock_persist.assert_called_once()
 
 
 if __name__ == "__main__":
