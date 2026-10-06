@@ -190,6 +190,33 @@ def set_internal_api_key(body: ApiKeyUpdate, request: Request):
     return {"status": "ok"}
 
 
+@app.get("/stats/overview")
+def stats_overview():
+    """True totals for the dashboard's Overview stat cards. /wallets,
+    /clusters, and /alerts are all capped (50/200-by-request, 100, 100
+    respectively, when unfiltered) -- real row counts on a real database
+    are far larger (found live: 52,581 wallets, 70,254 clusters, 197
+    alerts vs. the 200/100/100 those endpoints return unfiltered), so the
+    Overview page must not use len() of those capped responses as if it
+    were a total. This endpoint exists so it doesn't have to."""
+    if using_mock():
+        mock = load_mock()
+        return {
+            "wallet_count": len(mock["wallets"]),
+            "cluster_count": len(mock["clusters"]),
+            "alert_count": len(mock["alerts"]),
+        }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM wallet")
+            wallet_count = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM cluster")
+            cluster_count = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM alert")
+            alert_count = cur.fetchone()[0]
+    return {"wallet_count": wallet_count, "cluster_count": cluster_count, "alert_count": alert_count}
+
+
 @app.get("/wallets")
 def list_wallets(limit: int = 50):
     if using_mock():

@@ -285,21 +285,39 @@
   "audit_summary": [
     {
       "detector": "bfs_proximity",
-      "total_audited": 1,
-      "frameable_count": 1,
-      "framing_cost_min_wei": 4365121796310332,
-      "framing_cost_median_wei": 4365121796310332,
-      "framing_cost_max_wei": 4365121796310332,
+      "total_audited": 61,
+      "frameable_count": 61,
+      "framing_cost_min_wei": 189423000000000,
+      "framing_cost_median_wei": 10127040000000000,
+      "framing_cost_max_wei": 13370793246008787000,
+      "frameable_share": 1.0
+    },
+    {
+      "detector": "impurity",
+      "total_audited": 2,
+      "frameable_count": 2,
+      "framing_cost_min_wei": 13370793246008787000,
+      "framing_cost_median_wei": 13370793246008787000,
+      "framing_cost_max_wei": 13370793246008787000,
+      "frameable_share": 1.0
+    },
+    {
+      "detector": "pagerank_threshold",
+      "total_audited": 29,
+      "frameable_count": 29,
+      "framing_cost_min_wei": 429731280000112,
+      "framing_cost_median_wei": 48841439999934000,
+      "framing_cost_max_wei": 148980658267918000000,
       "frameable_share": 1.0
     },
     {
       "detector": "sybil_cluster",
-      "total_audited": 1,
-      "frameable_count": 0,
+      "total_audited": 52,
+      "frameable_count": 5,
       "framing_cost_min_wei": null,
       "framing_cost_median_wei": null,
       "framing_cost_max_wei": null,
-      "frameable_share": 0.0
+      "frameable_share": 0.09615384615384616
     }
   ]
 }
