@@ -23,3 +23,30 @@ Separate from algorithm time above -- this is graph/run_analysis.py's execute_va
 |---|---|
 | persist_vertex_metric | 1076.4 ms median (range 850.8-1878.3 ms, n=5) |
 | persist_clusters | 1833.6 ms median (range 1683.8-1858.8 ms, n=5) |
+
+## Audit benchmark: flags audited per minute (FrameCheck Phase 9)
+
+`scripts/benchmark_audit.py`, run against the full-extent snapshot
+(snapshot_id=4, 30,322 vertices) on this CPU-only machine (no RAPIDS). GPU
+numbers for `pagerank_threshold` (the one detector whose audit routes
+through `GraphBackend.pagerank_excluding_signed_edges`, which is GPU-
+accelerated when RAPIDS + `TXGRAPH_USE_GPU_GRAPH=1` are available) still
+need a RAPIDS-capable machine to fill in -- re-run the script unmodified
+there.
+
+| Detector | Backend | n | median s/flag | flags/min |
+|---|---|---|---|---|
+| sybil_cluster | CPU | 3 | 2.48 | 24.2 |
+| pagerank_threshold | CPU | 1 | 3.19 | 18.8 |
+
+**Caveat on the `pagerank_threshold` row**: `n=1` here, and that one
+sampled flag happened to audit quickly -- consistent with a `robust`
+verdict (one masked-PageRank re-run, no further cost-search needed), not
+a `frameable` one (which loops a masked-PageRank re-run per candidate
+sender added back during the cheapest-first search, and can take
+substantially longer). A single sample does not characterize the real
+distribution; treat 18.8 flags/min as optimistic, not representative,
+until a larger run with a mix of verdicts fills this in. `bfs_proximity`,
+`impurity`, and `engaged_proximity` are not yet benchmarked here (their
+audits are fast, real-Postgres-dependent CPU replay with no separate GPU
+path to compare against -- see `graph/audit.py`'s module docstring).
