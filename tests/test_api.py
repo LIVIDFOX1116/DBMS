@@ -179,6 +179,59 @@ class TestRunMetrics:
         assert resp.json() == []
 
 
+class TestFlags:
+    def test_list_flags_returns_all(self):
+        resp = client.get("/flags")
+        assert resp.status_code == 200
+        flags = resp.json()
+        assert len(flags) == 2
+        assert {"flag_id", "run_id", "wallet_id", "detector", "score", "threshold"} <= flags[0].keys()
+
+    def test_list_flags_filters_by_detector(self):
+        resp = client.get("/flags", params={"detector": "sybil_cluster"})
+        flags = resp.json()
+        assert len(flags) == 1
+        assert flags[0]["detector"] == "sybil_cluster"
+
+    def test_list_flags_filters_by_wallet_id(self):
+        resp = client.get("/flags", params={"wallet_id": 2})
+        flags = resp.json()
+        assert len(flags) == 1
+        assert flags[0]["wallet_id"] == 2
+
+    def test_evidence_returns_rows_for_the_flag(self):
+        resp = client.get("/flags/1/evidence")
+        assert resp.status_code == 200
+        evidence = resp.json()
+        assert len(evidence) == 1
+        assert {"tx_hash", "hop", "block_number", "role"} <= evidence[0].keys()
+
+    def test_evidence_empty_list_for_unknown_flag_not_error(self):
+        resp = client.get("/flags/9999/evidence")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_audit_returns_the_audit_result(self):
+        resp = client.get("/flags/1/audit")
+        assert resp.status_code == 200
+        result = resp.json()
+        assert result["verdict"] == "frameable"
+        assert result["method"] == "exact"
+
+    def test_audit_404_for_unaudited_flag(self):
+        resp = client.get("/flags/9999/audit")
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "flag not audited yet"}
+
+    def test_audit_summary_returns_per_detector_rows(self):
+        resp = client.get("/audit/summary")
+        assert resp.status_code == 200
+        summary = resp.json()
+        assert len(summary) == 2
+        bfs_row = next(r for r in summary if r["detector"] == "bfs_proximity")
+        assert bfs_row["frameable_share"] == 1.0
+
+
 class _FakeCursor:
     """Records the query text instead of touching a real database. rows_as_dicts()
     calls .description and .fetchall() on the way out, so both need to work even
