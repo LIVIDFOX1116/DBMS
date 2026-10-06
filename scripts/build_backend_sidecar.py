@@ -11,7 +11,7 @@ before `cargo build --release` / `cargo tauri build`:
 
     python scripts/build_backend_sidecar.py
 
-Output goes to src-tauri/binaries/txgraph-backend-<target-triple>.exe --
+Output goes to src-tauri/binaries/framecheck-backend-<target-triple>.exe --
 that exact name (Tauri's externalBin convention: <name>-<host-triple>)
 is what tauri.conf.json's bundle.externalBin and backend.rs's release-mode
 sidecar resolution both expect. The triple is read from `rustc -vV` rather
@@ -24,7 +24,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BINARIES_DIR = REPO_ROOT / "src-tauri" / "binaries"
-SIDECAR_NAME = "txgraph-backend"
+SIDECAR_NAME = "framecheck-backend"
 
 # api/main.py's only non-code dependency at runtime (see MOCK_PATH there).
 # Bundled as api/mock_data.json inside the frozen archive so Path(__file__)

@@ -240,7 +240,7 @@ ON CONFLICT (algorithm_name) DO NOTHING;
 -- project -- see API_CONTRACT.md's known simplifications). Without this,
 -- graph/run_analysis.py's default analyst_id=1 has nothing to point at.
 INSERT INTO analyst (username, email, password_hash, role, organisation)
-VALUES ('system', 'system@local.dev', 'unused-no-auth-in-this-project---------------------------', 'admin', 'txgraph-analyzer')
+VALUES ('system', 'system@local.dev', 'unused-no-auth-in-this-project---------------------------', 'admin', 'framecheck')
 ON CONFLICT (username) DO NOTHING;
 
 -- Migration (2026-09): per-run graph library version, alongside the

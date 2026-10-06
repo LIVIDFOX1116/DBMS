@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TXGraph — Transaction Graph Analyzer</title>
-  <meta name="description" content="A GPU-accelerated Ethereum transaction-graph analyzer: PageRank, Louvain clustering and BFS path-tracing over a real, well-documented case study." />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A7A6E'/%3E%3Ctext x='16' y='21' font-family='DM Sans, sans-serif' font-size='13' font-weight='700' fill='white' text-anchor='middle'%3ETX%3C/text%3E%3C/svg%3E" />
+  <title>FrameCheck — Ethereum Framing Audit</title>
+  <meta name="description" content="FrameCheck audits flagged Ethereum wallets for frameability: GPU-accelerated PageRank, Louvain clustering and BFS path-tracing over a real, well-documented case study, plus a counterfactual audit of every flag it raises." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A7A6E'/%3E%3Ctext x='16' y='21' font-family='DM Sans, sans-serif' font-size='13' font-weight='700' fill='white' text-anchor='middle'%3EFC%3C/text%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,300&family=Playfair+Display:ital,wght@0,700;1,600&display=swap" rel="stylesheet" />
@@ -26,7 +26,7 @@
   <!-- ── NAV ── -->
   <nav class="nav" id="mainNav" role="navigation" aria-label="Main navigation">
     <div class="nav-inner">
-      <a href="#" class="nav-logo"><span class="nav-logo-mark">TX</span>TX<em>Graph</em></a>
+      <a href="#" class="nav-logo"><span class="nav-logo-mark">FC</span>Frame<em>Check</em></a>
       <ul class="nav-links" role="list">
         <li><a href="#features">Features</a></li>
         <li><a href="#how">How it works</a></li>
@@ -53,12 +53,13 @@
             <span><strong>DBMS course project</strong> — Ethereum transaction graphs</span>
           </div>
           <h1 class="hero-title reveal reveal-delay-1">
-            See through the<br><em>transaction graph.</em>
+            See through the<br><em>frame.</em>
           </h1>
           <p class="hero-sub reveal reveal-delay-2">
-            TXGraph ingests a bounded Ethereum subgraph, runs PageRank, Louvain clustering and BFS
-            path-tracing over it, and turns the result into wallet risk scores and pattern alerts —
-            every number traceable back to the graph it came from.
+            FrameCheck ingests a bounded Ethereum subgraph, runs PageRank, Louvain clustering and BFS
+            path-tracing over it, turns the result into wallet risk scores and pattern alerts — and
+            then audits every flag it raises: could an outsider have produced it just by sending the
+            wallet unsolicited funds, and how cheaply?
           </p>
           <div class="hero-actions reveal reveal-delay-3">
             <a href="dashboard.html" class="btn-primary-lg">
@@ -421,7 +422,7 @@
           <div class="spotlight-label">✦ Case Study</div>
           <h2 class="spotlight-title">The Poly Network<br>exploit, <em>traced</em></h2>
           <p class="spotlight-body">
-            TXGraph's default seed is <span class="mono-addr">0xC8a6…8963</span> — the address behind the
+            FrameCheck's default seed is <span class="mono-addr">0xC8a6…8963</span> — the address behind the
             August 2021 Poly Network exploit, one of the largest and best-documented DeFi hacks on record.
             The on-chain trail is public and the funds were ultimately returned, and its fan-out/consolidation
             structure gives PageRank, Louvain and BFS something real to find. Point the pipeline at a
@@ -492,10 +493,10 @@
         <div class="faq-list reveal reveal-delay-1" id="faqList">
           <div class="faq-item">
             <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
-              What is TXGraph?
+              What is FrameCheck?
               <div class="faq-icon">+</div>
             </div>
-            <div class="faq-answer"><div class="faq-answer-inner">A GPU-accelerated Ethereum transaction-graph analyzer, built as a DBMS course project. It ingests a bounded on-chain subgraph, runs graph algorithms against it, and surfaces the results — wallet risk, clusters, pattern alerts — through this dashboard.</div></div>
+            <div class="faq-answer"><div class="faq-answer-inner">A GPU-accelerated Ethereum transaction-graph analyzer and framing audit, built as a DBMS course project. It ingests a bounded on-chain subgraph, runs graph algorithms against it, surfaces the results — wallet risk, clusters, pattern alerts — through this dashboard, and then audits every flag it raises for whether an outsider could have produced it just by sending the wallet unsolicited funds.</div></div>
           </div>
           <div class="faq-item">
             <div class="faq-question" tabindex="0" role="button" aria-expanded="false">
@@ -562,8 +563,8 @@
     <div class="container">
       <div class="footer-grid">
         <div class="footer-brand">
-          <a href="#" class="nav-logo">TX<span style="color:var(--accent-light)">Graph</span></a>
-          <p class="footer-brand-desc">A GPU-accelerated Ethereum transaction-graph analyzer, built as a DBMS course project around a real, publicly-documented on-chain case study.</p>
+          <a href="#" class="nav-logo">Frame<span style="color:var(--accent-light)">Check</span></a>
+          <p class="footer-brand-desc">A GPU-accelerated Ethereum transaction-graph analyzer and framing audit, built as a DBMS course project around a real, publicly-documented on-chain case study.</p>
         </div>
         <div>
           <div class="footer-col-label">Product</div>
@@ -583,7 +584,7 @@
         </div>
       </div>
       <div class="footer-bottom">
-        <div class="footer-copy">© 2026 TXGraph — a DBMS course project.</div>
+        <div class="footer-copy">© 2026 FrameCheck — a DBMS course project.</div>
         <div class="footer-note">Landing page design adapted from a TemplateMo layout.</div>
       </div>
     </div>

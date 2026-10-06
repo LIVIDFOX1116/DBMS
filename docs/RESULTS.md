@@ -61,7 +61,7 @@ Real data has zero positive `engaged_proximity` cases to audit (see §3/§5), so
 experiment is what actually demonstrates this detector works as designed: 20 synthetic dusted
 *victims* (passive — never sign anything) and, in some runs, 20 synthetic *launderers* (receive
 from the seed, forward ≥80% onward within 50 blocks to a fresh wallet), injected into an isolated
-`txgraph_sim` clone and cleaned up after. Run 5 times total — 3 dust-only (victims only) and 2
+`framecheck_sim` clone and cleaned up after. Run 5 times total — 3 dust-only (victims only) and 2
 more victims+launderers alongside the one from the original run — specifically to check whether
 single-run numbers generalize. **They mostly do, with one clear exception.**
 

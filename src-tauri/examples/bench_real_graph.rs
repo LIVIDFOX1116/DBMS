@@ -6,7 +6,7 @@
 //! standalone, e.g. on a different machine, without going through the full
 //! desktop app UI.
 //!
-//! Usage: start the Python backend in live mode first (TXGRAPH_API_MODE=live),
+//! Usage: start the Python backend in live mode first (FRAMECHECK_API_MODE=live),
 //! then:
 //!   cargo run --release --example bench_real_graph -- <backend_base_url> <snapshot_id> [max_edges]
 //! e.g.:
@@ -46,7 +46,7 @@ fn main() {
         .get(format!("{base_url}/snapshots/{snapshot_id}/edges"))
         .query(&[("limit", max_edges.to_string())])
         .send()
-        .unwrap_or_else(|e| panic!("could not reach backend at {base_url}: {e}\n(is the Python backend running in live mode? TXGRAPH_API_MODE=live)"));
+        .unwrap_or_else(|e| panic!("could not reach backend at {base_url}: {e}\n(is the Python backend running in live mode? FRAMECHECK_API_MODE=live)"));
     if !resp.status().is_success() {
         panic!("backend returned HTTP {} fetching snapshot edges", resp.status());
     }

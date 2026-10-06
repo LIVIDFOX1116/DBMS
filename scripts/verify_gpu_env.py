@@ -14,7 +14,7 @@ just tells you, plainly, which path you're on.
 NOTE: this script checks whether RAPIDS is *importable* -- it does not turn
 GPU usage on. graph/backend.py's GraphBackend is opt-in: even after this
 script prints "PHASE 0 GPU CHECK: COMPLETE", the pipeline still runs CPU
-(pandas+NetworkX) unless TXGRAPH_USE_GPU_GRAPH=1 is also set when you invoke
+(pandas+NetworkX) unless FRAMECHECK_USE_GPU_GRAPH=1 is also set when you invoke
 it. This is deliberate -- see graph/backend.py's module docstring for why a
 wallet clustering tool can't let GPU availability alone silently change
 which algorithm produced a run's clusters.

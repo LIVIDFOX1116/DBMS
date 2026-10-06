@@ -2,11 +2,11 @@
 FrameCheck Phase 5: framing simulator.
 
 Injects a synthetic dust-attack scenario -- NEVER into the main database.
-Runs entirely against a separate `txgraph_sim` database, created from the
+Runs entirely against a separate `framecheck_sim` database, created from the
 main one via CREATE DATABASE ... TEMPLATE (a fast native clone, no dump/
 restore round-trip) the first time it's needed. This script's injection
 path never connects to the main database (config.PG_DSN) at all -- only
-to 'postgres' (to create/drop the clone) and to txgraph_sim itself.
+to 'postgres' (to create/drop the clone) and to framecheck_sim itself.
 
     python scripts/simulate_framing.py --snapshot-id 4 --seed-wallet-id 1476
     python scripts/simulate_framing.py --cleanup 3
@@ -31,7 +31,7 @@ from psycopg2.extras import execute_values
 
 from ingestion import config
 
-SIM_DB_NAME = "txgraph_sim"
+SIM_DB_NAME = "framecheck_sim"
 SYNTHETIC_BLOCK_BASE = 900_000_000  # comfortably above any real Ethereum block number
 SYNTHETIC_TX_PREFIX = "deadbeef"    # clearly non-real; never a valid keccak256 digest in practice
 
@@ -56,7 +56,7 @@ def _sim_dsn(dbname: str = SIM_DB_NAME) -> dict:
 
 
 def ensure_sim_db_exists() -> bool:
-    """Clones the main database into txgraph_sim via CREATE DATABASE ...
+    """Clones the main database into framecheck_sim via CREATE DATABASE ...
     TEMPLATE, if it doesn't already exist. Connects to 'postgres' (the
     maintenance DB), never to the main database itself -- same pattern
     db/init_db.py's ensure_database_exists() uses for the main DB.

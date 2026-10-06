@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "txgraph-desktop",
+  "productName": "framecheck-desktop",
   "version": "0.1.0",
-  "identifier": "com.txgraph.analyzer",
+  "identifier": "com.framecheck.app",
   "build": {
     "frontendDist": "../frontend"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "TxGraph Analyzer",
+        "title": "FrameCheck",
         "url": "dashboard.html",
         "width": 1440,
         "height": 900,
@@ -27,7 +27,7 @@
     "active": true,
     "targets": "all",
     "externalBin": [
-      "binaries/txgraph-backend"
+      "binaries/framecheck-backend"
     ],
     "icon": [
       "icons/32x32.png",

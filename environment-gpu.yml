@@ -8,12 +8,12 @@
 #        curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
 #        bash Miniforge3-$(uname)-$(uname -m).sh
 #   4. conda env create -f environment-gpu.yml
-#   5. conda activate txgraph-gpu
+#   5. conda activate framecheck-gpu
 #   6. python scripts/verify_gpu_env.py   <- must print "PHASE 0 GPU CHECK: COMPLETE"
 #
 # NOTE: installing this env and passing step 6 makes RAPIDS *importable* --
 # it does not turn GPU usage on. graph/backend.py's GraphBackend is opt-in;
-# set TXGRAPH_USE_GPU_GRAPH=1 when invoking the pipeline to actually use it,
+# set FRAMECHECK_USE_GPU_GRAPH=1 when invoking the pipeline to actually use it,
 # otherwise it still runs CPU (pandas+NetworkX) even in this env. See
 # graph/backend.py's module docstring for why.
 #
@@ -31,7 +31,7 @@
 # release selector at https://docs.rapids.ai/install/ (choose Conda, your
 # CUDA version, Python 3.11) and use its channel/package list in place of
 # the versions below if they don't resolve.
-name: txgraph-gpu
+name: framecheck-gpu
 channels:
   - rapidsai
   - conda-forge

@@ -1,13 +1,13 @@
 """
 The API layer both halves of the project share (project bible, Section 7.2).
 
-Two modes, controlled by the TXGRAPH_API_MODE env var:
+Two modes, controlled by the FRAMECHECK_API_MODE env var:
   - "mock" (default): serves api/mock_data.json. Your partner runs this from
     day one -- no Postgres, no GPU, no ingestion needed at all.
   - "live": queries the real Postgres schema.
 
 The endpoint shapes are IDENTICAL in both modes -- that's the whole point.
-Switching TXGRAPH_API_MODE=live is meant to be a data-source swap for the
+Switching FRAMECHECK_API_MODE=live is meant to be a data-source swap for the
 frontend, not a rebuild (see the bible's Section 7.3).
 
 Run it:
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Transaction Graph Analyzer API",
+    title="FrameCheck API",
     version="0.1.0",
     description="Shared contract between the GPU/backend half and the frontend half. See docs/API_CONTRACT.md.",
     lifespan=lifespan,
@@ -100,7 +100,7 @@ MOCK_PATH = pathlib.Path(__file__).parent / "mock_data.json"
 
 
 def using_mock() -> bool:
-    return os.getenv("TXGRAPH_API_MODE", "mock").lower() != "live"
+    return os.getenv("FRAMECHECK_API_MODE", "mock").lower() != "live"
 
 
 def load_mock() -> dict:
@@ -161,7 +161,7 @@ def health():
 # stays exactly as-is for direct CLI/dev use (`python -m ingestion...`,
 # scripts/run_pipeline.py); the two are unrelated and never synced.
 #
-# TXGRAPH_INTERNAL_TOKEN is a random value Rust generates fresh per app
+# FRAMECHECK_INTERNAL_TOKEN is a random value Rust generates fresh per app
 # launch and passes at spawn alongside the key -- /internal/api-key requires
 # it on every call, so no other local process can silently overwrite the key
 # this process is holding just because it can reach the loopback port. Not
@@ -169,8 +169,8 @@ def health():
 # a compromised/malicious page loaded in the webview can't reach this route
 # via fetch() -- only Rust's direct HTTP calls (not subject to CORS) can.
 _runtime_state = {
-    "etherscan_api_key": os.getenv("TXGRAPH_ETHERSCAN_API_KEY", ""),
-    "internal_token": os.getenv("TXGRAPH_INTERNAL_TOKEN", ""),
+    "etherscan_api_key": os.getenv("FRAMECHECK_ETHERSCAN_API_KEY", ""),
+    "internal_token": os.getenv("FRAMECHECK_INTERNAL_TOKEN", ""),
 }
 
 

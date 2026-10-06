@@ -1,18 +1,22 @@
-# txgraph-analyzer + FrameCheck
+# FrameCheck
 
 ## What this project is
 
-**txgraph-analyzer** is a GPU-accelerated Ethereum transaction-graph analyzer: Etherscan ingestion
--> PostgreSQL (18-table schema) -> Parquet snapshots -> PageRank/Louvain/BFS via cuGraph with a
-pandas/NetworkX CPU fallback -> FastAPI -> a dashboard + Tauri desktop app. Full rationale lives in
+**FrameCheck** is a GPU-accelerated Ethereum transaction-graph analyzer and framing audit:
+Etherscan ingestion -> PostgreSQL (18-table schema) -> Parquet snapshots -> PageRank/Louvain/BFS
+via cuGraph with a pandas/NetworkX CPU fallback -> five flag detectors -> an audit layer -> FastAPI
+-> a dashboard + Tauri desktop app. Full rationale for the original analyzer lives in
 `docs/Project_Bible_TransactionGraphAnalyzer.docx`; this file is about how to work in the repo, not
-why it exists.
+why it exists. (The repo folder and a few internal references still read `txgraph-analyzer` — the
+project itself, every endpoint, every page, and the desktop app are FrameCheck.)
 
-**FrameCheck** is a new audit layer on top of it, built for a 24-hour hackathon (DBTHON, 2 PM 7 Oct
-- 2 PM 8 Oct 2026). On Ethereum, anyone can send funds to any wallet and the receiver cannot refuse
-it — so an attacker can make an innocent wallet look connected to a hack just by sending it dust.
-FrameCheck audits every flag the existing detectors raise and answers: could an outsider have
-produced this flag without the wallet owner doing anything, and how cheaply?
+The audit layer is what makes this FrameCheck rather than just a graph analyzer: on Ethereum,
+anyone can send funds to any wallet and the receiver cannot refuse it — so an attacker can make an
+innocent wallet look connected to a hack just by sending it dust. FrameCheck audits every flag its
+detectors raise and answers: could an outsider have produced this flag without the wallet owner
+doing anything, and how cheaply? Originally built in a 24-hour hackathon (DBTHON, 2 PM 7 Oct - 2 PM
+8 Oct 2026) as a layer added to an existing analyzer; the project has since been rebranded
+end-to-end as FrameCheck.
 
 FrameCheck builds on, and must never claim to compete with or have invented, Liu et al., "Evasion
 Under Blockchain Sanctions" (WWW '26) — dusting attacks and the proportional "impurity" score

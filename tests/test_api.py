@@ -3,7 +3,7 @@ Tests for api/main.py in mock mode -- this is the contract the frontend is
 built against (docs/API_CONTRACT.md), so every shape here matters.
 
 Runs against api/mock_data.json, not Postgres. Forced explicitly, not just
-relying on TXGRAPH_API_MODE being unset -- a developer's own .env can (and,
+relying on FRAMECHECK_API_MODE being unset -- a developer's own .env can (and,
 on the machine this was found on, does) set it to "live" for their own
 Postgres-backed dev work, which would otherwise leak in via
 ingestion.config's load_dotenv() and silently point this suite at a real
@@ -13,7 +13,7 @@ override an already-set env var, so this wins.
 """
 import os
 
-os.environ["TXGRAPH_API_MODE"] = "mock"
+os.environ["FRAMECHECK_API_MODE"] = "mock"
 
 import threading  # noqa: E402
 import time  # noqa: E402

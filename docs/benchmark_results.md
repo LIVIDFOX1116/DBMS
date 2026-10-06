@@ -30,7 +30,7 @@ Separate from algorithm time above -- this is graph/run_analysis.py's execute_va
 (snapshot_id=4, 30,322 vertices) on this CPU-only machine (no RAPIDS). GPU
 numbers for `pagerank_threshold` (the one detector whose audit routes
 through `GraphBackend.pagerank_excluding_signed_edges`, which is GPU-
-accelerated when RAPIDS + `TXGRAPH_USE_GPU_GRAPH=1` are available) still
+accelerated when RAPIDS + `FRAMECHECK_USE_GPU_GRAPH=1` are available) still
 need a RAPIDS-capable machine to fill in -- re-run the script unmodified
 there.
 

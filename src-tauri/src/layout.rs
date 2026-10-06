@@ -463,7 +463,7 @@ pub fn create_gpu_device(prefer_discrete: Option<bool>) -> Option<(wgpu::Device,
     // even on hardware that supports it fine.
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
-            label: Some("txgraph-layout"),
+            label: Some("framecheck-layout"),
             required_features: wgpu::Features::empty(),
             required_limits: adapter.limits(),
             memory_hints: wgpu::MemoryHints::Performance,

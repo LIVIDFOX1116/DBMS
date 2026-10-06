@@ -24,7 +24,7 @@ load_dotenv()
 
 HOST = os.getenv("PGHOST", "localhost")
 PORT = os.getenv("PGPORT", "5432")
-DBNAME = os.getenv("PGDATABASE", "txgraph")
+DBNAME = os.getenv("PGDATABASE", "framecheck")
 USER = os.getenv("PGUSER", "postgres")
 PASSWORD = os.getenv("PGPASSWORD", "")
 

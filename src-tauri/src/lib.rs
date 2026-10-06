@@ -77,8 +77,8 @@ fn apply_dark_titlebar(hwnd: windows::Win32::Foundation::HWND) {
 /// file (survives even if the dialog fails) and, on Windows, shows a native
 /// message box so a real end user isn't left staring at nothing.
 fn report_fatal_startup_error(message: &str) {
-    let log_path = std::env::temp_dir().join("txgraph-desktop-startup-error.log");
-    let _ = std::fs::write(&log_path, format!("TxGraph Analyzer failed to start:\n{message}\n"));
+    let log_path = std::env::temp_dir().join("framecheck-desktop-startup-error.log");
+    let _ = std::fs::write(&log_path, format!("FrameCheck failed to start:\n{message}\n"));
 
     #[cfg(windows)]
     {
@@ -87,7 +87,7 @@ fn report_fatal_startup_error(message: &str) {
         let script = format!(
             "Add-Type -AssemblyName System.Windows.Forms; \
              [System.Windows.Forms.MessageBox]::Show(\"{escaped}`n`nDetails written to: {}\", \
-             'TxGraph Analyzer failed to start', 'OK', 'Error') | Out-Null",
+             'FrameCheck failed to start', 'OK', 'Error') | Out-Null",
             log_path.display()
         );
         let _ = std::process::Command::new("powershell")
