@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "framecheck-desktop",
+  "productName": "FrameCheck",
   "version": "0.1.0",
   "identifier": "com.framecheck.app",
   "build": {

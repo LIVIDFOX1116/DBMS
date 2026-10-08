@@ -26,7 +26,7 @@ be built and unit-tested without touching a GPU at all.
 ## One-time setup (Zenbook, or any machine — no GPU needed)
 
 ```bash
-cd txgraph-analyzer
+cd DBMS
 python3 -m venv .venv && source .venv/bin/activate     # or your preferred env tool
 pip install -r requirements.txt
 cp .env.example .env                                    # then fill in ETHERSCAN_API_KEY
