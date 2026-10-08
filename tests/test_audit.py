@@ -202,5 +202,102 @@ class TestAuditFlagCollectsEvidenceForSybilCluster(unittest.TestCase):
         mock_persist.assert_called_once()
 
 
+class TestPhase3SpecFixes(unittest.TestCase):
+    """Fixes from the Phase 3 review of the audit engine against
+    docs/FRAMECHECK.md. Each test pins one discrepancy."""
+
+    def test_impurity_framing_cost_replays_added_back_transfer_in_its_original_position(self):
+        # S -> X (100 tainted), X -> W (100, unsolicited, block 3), then X receives
+        # 300 clean from Z at block 5. Replayed in order, X forwards 100% tainted to W
+        # (ratio 1.0); replayed at the END, X's balance is 400 and only 25% is tainted.
+        seed, w, x, z = 1, 10, 20, 30
+        all_transfers = [
+            (seed, x, 100, None, 1, "h1"),
+            (x, w, 100, None, 3, "h3"),
+            (z, x, 300, None, 5, "h4"),
+        ]
+        candidates = [("h3", x, 100, 21000, 1, 3)]
+        conn = mock.MagicMock()
+        with mock.patch.object(audit_module, "_fetch_native_and_token_transfers_for_audit",
+                               return_value=all_transfers), \
+             mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates):
+            result = audit_module.audit_impurity(conn, 1, 1, w, seed, threshold=0.5)
+        self.assertEqual(result["verdict"], "frameable")
+        self.assertEqual(result["minimal_tx_set"], ["h3"])
+        self.assertEqual(result["framing_cost_wei"], 100 + 21000)
+
+    def test_bfs_framing_cost_ignores_senders_only_reachable_through_the_flagged_wallet(self):
+        # seed(1) -> A(2) -> W(10); W -> S(3) (W's own signed edge); A -> W and S -> W are
+        # both unsolicited candidates. S is only reachable via W, so once W's signed edges
+        # are removed it is not a valid cheap path; A must be picked even though S is cheaper.
+        seed, a, w, s = 1, 2, 10, 3
+        edges = pd.DataFrame({
+            "src_wallet_id": [seed, a, w, s, a],
+            "dst_wallet_id": [a, w, s, w, w],
+            "edge_weight": [1.0] * 5,
+        })
+        candidates = [
+            ("tx_s", s, 1, 0, 0, 3),
+            ("tx_a", a, 100, 0, 0, 2),
+        ]
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("ignored.parquet",)
+        with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
+             mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates):
+            result = audit_module.audit_bfs_proximity(conn, 1, 1, w, seed, threshold=10.0, bfs_run_id=None)
+        self.assertEqual(result["verdict"], "frameable")
+        self.assertEqual(result["minimal_tx_set"], ["tx_a"])
+
+    def test_replay_fetches_exclude_reverted_transactions(self):
+        from graph import detectors
+
+        for fetch in (
+            lambda cur: audit_module._fetch_native_and_token_transfers_for_audit(cur, 1),
+            lambda cur: detectors._fetch_native_and_token_transfers(cur, 1, with_block=True),
+        ):
+            cur = mock.MagicMock()
+            cur.fetchall.return_value = []
+            fetch(cur)
+            queries = [c.args[0] for c in cur.execute.call_args_list]
+            self.assertEqual(len(queries), 2)
+            for q in queries:
+                self.assertIn(detectors.NOT_REVERTED_SQL, q)
+
+    def test_reverted_filter_only_applies_from_byzantium_on(self):
+        from graph.detectors import BYZANTIUM_BLOCK, NOT_REVERTED_SQL
+
+        self.assertEqual(BYZANTIUM_BLOCK, 4_370_000)
+        self.assertIn("t.status IS FALSE", NOT_REVERTED_SQL)
+        self.assertIn(f"t.block_number >= {BYZANTIUM_BLOCK}", NOT_REVERTED_SQL)
+
+    def test_pagerank_cost_search_skips_senders_with_no_edge_into_the_wallet(self):
+        # token_sender only appears in a token transfer, so there is no src->W edge to restore
+        w, native_sender, token_sender = 10, 2, 3
+        edges = pd.DataFrame({
+            "src_wallet_id": [native_sender, 4, w],
+            "dst_wallet_id": [w, native_sender, 4],
+            "edge_weight": [1.0, 1.0, 1.0],
+        })
+        candidates = [
+            ("tx_token", token_sender, 0, 21000, 1, 1),
+            ("tx_native", native_sender, 5, 21000, 1, 2),
+        ]
+        seen = []
+
+        def fake_search(cands, score_fn, threshold, **kw):
+            seen.extend(cands)
+            return None, None, "greedy_upper_bound"
+
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("ignored.parquet",)
+        with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
+             mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
+             mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
+             mock.patch.object(GraphBackend, "pagerank_excluding_signed_edges",
+                               return_value=pd.DataFrame({"wallet_id": [w], "score": [1.0]})):
+            audit_module.audit_pagerank_threshold(conn, 1, 1, w, 1, threshold_value=0.5)
+        self.assertEqual([c[0] for c in seen], [native_sender])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

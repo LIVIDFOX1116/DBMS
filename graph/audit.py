@@ -56,6 +56,7 @@ import psycopg2
 from graph.backend import GraphBackend
 from graph.detectors import (
     DEFAULT_ENGAGED_WINDOW_BLOCKS,
+    NOT_REVERTED_SQL,
     bfs_proximity_score,
     compute_engaged_outflow_ratios,
     compute_impurity_ratios,
@@ -224,12 +225,10 @@ def audit_bfs_proximity(conn, flag_id: int, snapshot_id: int, wallet_id: int, se
     framing_cost_wei = framing_gas = None
     minimal_tx_set = None
     if verdict == "frameable":
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT wallet_id, metric_value FROM vertex_metric WHERE run_id = %s AND metric_name LIKE 'bfs_distance_from_%%'",
-                (bfs_run_id,),
-            )
-            distances = dict(cur.fetchall())
+        # Distances come from the graph with W's signed edges removed, so a
+        # sender whose own path to the seed ran through W isn't credited
+        # with a distance an attacker could not reproduce.
+        distances = dict(zip(bfs_df.wallet_id, bfs_df.distance))
         candidates = fetch_unsolicited_candidates(conn, flag_id, wallet_id, snapshot_id, seed_wallet_id)
         prepared = [
             (tx_hash, float(value_wei), float(gas_used or 0) * float(gas_price or 0), distances.get(from_id, float("inf")))
@@ -256,26 +255,26 @@ def _fetch_native_and_token_transfers_for_audit(cur, snapshot_id: int) -> list:
     -- detectors.py's version never needs that. Returns
     [(from_wallet_id, to_wallet_id, value, currency, block_number, tx_hash), ...]."""
     cur.execute(
-        """
+        f"""
         SELECT t.from_wallet_id, t.to_wallet_id, t.value_wei, NULL::char(42), t.block_number, t.tx_hash
         FROM snapshot_edge_tx st
         JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
         JOIN transaction t ON t.tx_hash = st.tx_hash
-        WHERE se.snapshot_id = %s
+        WHERE se.snapshot_id = %s AND {NOT_REVERTED_SQL}
         ORDER BY t.block_number, t.tx_index
         """,
         (snapshot_id,),
     )
     native = cur.fetchall()
     cur.execute(
-        """
+        f"""
         SELECT t.from_wallet_id, tt.to_wallet_id, tt.token_amount, tok.contract_address, t.block_number, t.tx_hash
         FROM snapshot_edge_tx st
         JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
         JOIN transaction t ON t.tx_hash = st.tx_hash
         JOIN token_transfer tt ON tt.tx_hash = t.tx_hash
         JOIN token tok ON tok.token_id = tt.token_id
-        WHERE se.snapshot_id = %s
+        WHERE se.snapshot_id = %s AND {NOT_REVERTED_SQL}
         ORDER BY t.block_number, tt.log_index
         """,
         (snapshot_id,),
@@ -321,14 +320,18 @@ def _audit_haircut_detector(conn, flag_id: int, snapshot_id: int, wallet_id: int
         unsolicited_tx_hashes = {
             row[5] for row in all_transfers if row[0] != wallet_id and row[1] == wallet_id
         }
+        # Rows keep their position in all_transfers (already chronological
+        # within each currency), so a transfer added back replays where it
+        # originally happened, not after the rest of the history.
+        indexed = list(enumerate(all_transfers))
         doubly_stripped = [
-            row[:tuple_arity] for row in all_transfers
+            (pos, row) for pos, row in indexed
             if row[0] != wallet_id and not (row[1] == wallet_id and row[5] in unsolicited_tx_hashes)
         ]
         by_hash = defaultdict(list)
-        for row in all_transfers:
-            if row[5] in unsolicited_tx_hashes:
-                by_hash[row[5]].append(row)
+        for pos, row in indexed:
+            if row[0] != wallet_id and row[1] == wallet_id:
+                by_hash[row[5]].append((pos, row))
 
         candidates_cost = fetch_unsolicited_candidates(conn, flag_id, wallet_id, snapshot_id, seed_wallet_id)
         cost_by_hash = {
@@ -338,9 +341,8 @@ def _audit_haircut_detector(conn, flag_id: int, snapshot_id: int, wallet_id: int
         candidates = [(h, cost_by_hash[h]) for h in unsolicited_tx_hashes if h in cost_by_hash]
 
         def score_fn(tx_hashes):
-            subset = doubly_stripped + [row[:tuple_arity] for h in tx_hashes for row in by_hash[h]]
-            subset.sort(key=lambda r: r[4] if tuple_arity > 4 else 0)
-            r = score_all_fn(subset, seed_wallet_id, **extra_score_kwargs)
+            merged = sorted(doubly_stripped + [pr for h in tx_hashes for pr in by_hash[h]], key=lambda pr: pr[0])
+            r = score_all_fn([row[:tuple_arity] for _pos, row in merged], seed_wallet_id, **extra_score_kwargs)
             return ratio_for(r)
 
         tx_hashes, cost, method = cheapest_subset_reaching_threshold(candidates, score_fn, threshold)
@@ -397,10 +399,12 @@ def audit_pagerank_threshold(conn, flag_id: int, snapshot_id: int, wallet_id: in
             cost = float(value_wei) + float(gas_used or 0) * float(gas_price or 0)
             cost_by_sender[from_id] = cost_by_sender.get(from_id, 0.0) + cost
             tx_hashes_by_sender.setdefault(from_id, []).append(tx_hash)
-        candidates = list(cost_by_sender.items())  # [(sender_wallet_id, cost_wei), ...]
-
         doubly_stripped = edges_df[(edges_df.src_wallet_id != wallet_id) & (edges_df.dst_wallet_id != wallet_id)]
         inbound_edges = edges_df[(edges_df.dst_wallet_id == wallet_id) & (edges_df.src_wallet_id != wallet_id)]
+        # A token-only sender has no src->W edge to restore, so re-running
+        # PageRank for it could never change the score.
+        edge_senders = set(inbound_edges.src_wallet_id)
+        candidates = [(s, c) for s, c in cost_by_sender.items() if s in edge_senders]
 
         def score_fn(senders):
             restore = inbound_edges[inbound_edges.src_wallet_id.isin(senders)]
