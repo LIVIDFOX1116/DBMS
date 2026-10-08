@@ -35,9 +35,9 @@ or:
 Opt in to the GPU path (also requires RAPIDS actually importable) with:
     FRAMECHECK_USE_GPU_GRAPH=1 python ...
 """
+import logging
 import os
 import time
-import logging
 
 log = logging.getLogger("graph.backend")
 
@@ -67,8 +67,8 @@ class GraphBackend:
             self._cugraph = cugraph
             self.library_version = cugraph.__version__
         else:
-            import pandas
             import networkx
+            import pandas
             self._pandas = pandas
             self._networkx = networkx
             self.library_version = networkx.__version__

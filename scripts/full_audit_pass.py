@@ -41,8 +41,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import psycopg2
 from psycopg2 import errors as pg_errors
 
-from ingestion import config
 from graph.audit import audit_flag
+from ingestion import config
 
 DEFAULT_HUB_INDEGREE_CUTOFF = 500
 DEFAULT_PAGERANK_LIMIT = 30

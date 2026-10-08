@@ -61,13 +61,15 @@ from collections import defaultdict
 import pandas as pd
 import psycopg2
 
-from ingestion import config
 from graph.backend import GraphBackend
-from graph.evidence import collect_evidence_for_flag, fetch_evidence_chain
 from graph.detectors import (
-    bfs_proximity_score, compute_impurity_ratios, compute_engaged_outflow_ratios,
     DEFAULT_ENGAGED_WINDOW_BLOCKS,
+    bfs_proximity_score,
+    compute_engaged_outflow_ratios,
+    compute_impurity_ratios,
 )
+from graph.evidence import collect_evidence_for_flag
+from ingestion import config
 
 EXACT_SUBSET_CUTOFF = 15  # 2**15 = 32768 subsets -- fast; above this, fall back to greedy
 

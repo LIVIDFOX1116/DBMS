@@ -23,6 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 os.environ.setdefault("FRAMECHECK_USE_GPU_GRAPH", "1")
 
 import pandas as pd
+
 from graph.backend import GraphBackend, gpu_available
 
 

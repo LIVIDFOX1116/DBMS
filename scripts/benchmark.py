@@ -34,9 +34,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 import psycopg2
 
-from ingestion import config
 from graph.backend import GraphBackend, gpu_available
-from graph.run_analysis import start_run, persist_vertex_metric, persist_clusters, compute_internal_edges
+from graph.run_analysis import compute_internal_edges, persist_clusters, persist_vertex_metric, start_run
+from ingestion import config
 
 ALGORITHMS = ("load_edgelist", "pagerank", "louvain", "bfs")
 

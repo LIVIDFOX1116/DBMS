@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "scripts"))
 
-from run_experiment import sim_env, experiment_snapshot_name
+from run_experiment import experiment_snapshot_name, sim_env
 from simulate_framing import SIM_DB_NAME
 
 

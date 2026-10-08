@@ -7,7 +7,7 @@ code in ingestion/etherscan_client.py.
 import pathlib
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 

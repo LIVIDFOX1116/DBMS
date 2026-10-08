@@ -23,12 +23,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))         # scripts/ itse
 sys.stdout.reconfigure(line_buffering=True)
 
 import psycopg2
-
 from simulate_framing import (
-    SIM_DB_NAME, ensure_sim_db_exists, drop_sim_db, cleanup_scenario,
-    inject_framing_scenario, inject_launderer_scenario, cleanup_launderer_scenario,
-    resolve_latest_bfs_run_id, _sim_dsn,
-    DEFAULT_NUM_LAUNDERERS, DEFAULT_LAUNDER_ETH, DEFAULT_LAUNDER_FORWARD_FRACTION, LAUNDER_FORWARD_BLOCK_OFFSET,
+    DEFAULT_LAUNDER_ETH,
+    DEFAULT_LAUNDER_FORWARD_FRACTION,
+    LAUNDER_FORWARD_BLOCK_OFFSET,
+    SIM_DB_NAME,
+    _sim_dsn,
+    cleanup_launderer_scenario,
+    cleanup_scenario,
+    drop_sim_db,
+    ensure_sim_db_exists,
+    inject_framing_scenario,
+    inject_launderer_scenario,
+    resolve_latest_bfs_run_id,
 )
 
 SNAPSHOT_ID_RE = re.compile(r"snapshot_id=(\d+)")
@@ -189,8 +196,8 @@ def main():
     # injected, so collecting/auditing everyone else's flags would be
     # pure waste. In-process (not a subprocess per flag) against the sim
     # database directly.
-    from graph.evidence import collect_evidence_for_flag
     from graph.audit import audit_flag
+    from graph.evidence import collect_evidence_for_flag
 
     subject_wallet_ids = list(target_wallet_ids) + list(launderer_wallet_ids)
     sim_conn = psycopg2.connect(**_sim_dsn())

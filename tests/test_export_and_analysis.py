@@ -17,8 +17,12 @@ import pandas as pd
 
 from graph.export_snapshot import write_parquet
 from graph.run_analysis import (
-    persist_vertex_metric, persist_clusters, start_run, finish_run,
-    compute_internal_edges, classify_clusters,
+    classify_clusters,
+    compute_internal_edges,
+    finish_run,
+    persist_clusters,
+    persist_vertex_metric,
+    start_run,
 )
 
 

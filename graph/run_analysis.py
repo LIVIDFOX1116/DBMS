@@ -20,8 +20,8 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 
-from ingestion import config
 from graph.backend import GraphBackend
+from ingestion import config
 
 
 def get_algorithm_id(conn, name: str) -> int:
@@ -75,7 +75,7 @@ def persist_vertex_metric(conn, run_id: int, df: pd.DataFrame, metric_name: str,
     one transaction it controls and rolls back itself, rather than each call
     committing on its own."""
     rows = [
-        (run_id, int(getattr(row, "wallet_id")), metric_name, float(getattr(row, value_col)), rank)
+        (run_id, int(row.wallet_id), metric_name, float(getattr(row, value_col)), rank)
         for rank, row in enumerate(df.itertuples(), start=1)
     ]
     if rows:

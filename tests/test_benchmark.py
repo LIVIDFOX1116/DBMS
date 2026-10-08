@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from scripts.benchmark import time_it, format_report
+from scripts.benchmark import format_report, time_it
 
 
 class TestTimeIt(unittest.TestCase):

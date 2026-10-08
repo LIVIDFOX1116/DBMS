@@ -5,13 +5,12 @@ lookups are exercised by hand against a real database, not here -- same
 split as tests/test_export_and_analysis.py and tests/test_benchmark.py.
 """
 import pathlib
-import re
 import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from scripts.run_pipeline import parse_snapshot_id, default_snapshot_name
+from scripts.run_pipeline import default_snapshot_name, parse_snapshot_id
 
 
 class TestParseSnapshotId(unittest.TestCase):

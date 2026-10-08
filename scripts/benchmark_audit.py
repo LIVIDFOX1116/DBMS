@@ -32,9 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import psycopg2
 
-from ingestion import config
-from graph.backend import gpu_available
 from graph.audit import audit_flag
+from graph.backend import gpu_available
+from ingestion import config
 
 DETECTORS = ("bfs_proximity", "sybil_cluster", "pagerank_threshold", "impurity", "engaged_proximity")
 

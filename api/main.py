@@ -369,7 +369,7 @@ def cluster_membership(cluster_ids: str):
     try:
         ids = [int(x) for x in cluster_ids.split(",") if x.strip()]
     except ValueError:
-        raise HTTPException(422, "cluster_ids must be a comma-separated list of integers")
+        raise HTTPException(422, "cluster_ids must be a comma-separated list of integers") from None
     if not ids:
         return {}
     if using_mock():
