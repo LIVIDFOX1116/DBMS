@@ -82,6 +82,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, StarletteHTTPException):
         return await http_exception_handler(request, exc)
     log.exception("Unhandled error handling %s %s", request.method, request.url.path)
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        return JSONResponse(status_code=503, content={"detail": "database unavailable"})
     return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
 

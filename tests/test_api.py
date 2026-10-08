@@ -546,6 +546,18 @@ class TestUnhandledErrors:
         assert "password_hash" not in resp.text
         assert "RuntimeError" not in resp.text
 
+    def test_database_unreachable_returns_503_not_500(self, monkeypatch):
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+
+        def _down():
+            raise api_main.OperationalError("connection refused: host=secret-host")
+
+        monkeypatch.setattr(api_main, "get_conn", _down)
+        resp = TestClient(app, raise_server_exceptions=False).get("/wallets")
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "database unavailable"}
+        assert "secret-host" not in resp.text
+
     def test_known_http_exceptions_are_unaffected_by_the_generic_handler(self):
         # A real, existing 404 (mock mode, unknown wallet_id) must still
         # come through with its own specific detail message, not get
