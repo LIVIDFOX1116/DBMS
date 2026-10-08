@@ -215,8 +215,13 @@ class TestExactSearchBudget(unittest.TestCase):
         f = audit_module.max_probes_for_budget
         self.assertEqual(f(1_000, 50_000_000), 50_000)
         self.assertEqual(f(254_000, 50_000_000), 196)
-        # One probe costing more than the whole budget still buys one probe.
-        self.assertEqual(f(60_000_000, 50_000_000), 1)
+        # Snapshot 2: 842,231 replayed rows per probe.
+        self.assertEqual(f(842_231, 20_000_000), 23)
+        # A probe costing more than the whole budget still gets one full
+        # sweep of the size-1 subsets -- the single-transfer framing is the
+        # realistic attack and the case where exact is both cheaper and
+        # tighter than greedy, so it must never be budgeted away.
+        self.assertEqual(f(60_000_000, 20_000_000), audit_module.EXACT_SUBSET_CUTOFF)
         # Unknown/empty cost must not silently meter the search.
         self.assertIsNone(f(0, 50_000_000))
 
@@ -253,6 +258,35 @@ class TestExactSearchBudget(unittest.TestCase):
         # greedy adds one candidate at a time. Unbudgeted this was 32,767.
         self.assertEqual(len(probes), 2 * len(candidates))
 
+    def test_many_candidates_use_a_logarithmic_prefix_search(self):
+        # A flagged wallet can have thousands of real unsolicited senders
+        # (919 on one snapshot-2 impurity flag). Probing after every single
+        # addition took over an hour there, so above the budget the search
+        # doubles-then-bisects over the cheapest-first prefix instead.
+        candidates = [(f"h{i}", 1.0) for i in range(3184)]
+        probes = []
+
+        def score_fn(tx_hashes):
+            probes.append(len(tx_hashes))
+            return float(len(tx_hashes))  # needs 700 of them
+
+        tx_hashes, cost, method = audit_module.cheapest_subset_reaching_threshold(
+            candidates, score_fn, threshold=700.0, max_probes=23)
+        self.assertEqual(method, "greedy_upper_bound")
+        self.assertEqual(len(tx_hashes), 700)
+        self.assertEqual(cost, 700.0)
+        # ~2*log2(3184) to locate the prefix, plus the budgeted prune pass --
+        # the candidate-by-candidate scan would have been 700+.
+        self.assertLess(len(probes), 60)
+
+    def test_prefix_search_reports_no_cost_when_every_candidate_together_falls_short(self):
+        candidates = [(f"h{i}", 1.0) for i in range(100)]
+        tx_hashes, cost, method = audit_module.cheapest_subset_reaching_threshold(
+            candidates, lambda hs: float(len(hs)), threshold=1_000.0, max_probes=5)
+        self.assertIsNone(tx_hashes)
+        self.assertIsNone(cost)
+        self.assertEqual(method, "greedy_upper_bound")
+
     def test_unreachable_threshold_within_budget_still_reports_exact(self):
         # Small enough to enumerate fully: "no subset works" is then a real
         # exact answer, not a budget bail-out.
@@ -281,9 +315,9 @@ class TestExactSearchBudget(unittest.TestCase):
                                return_value=all_transfers), \
              mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
              mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
-             mock.patch.object(audit_module, "EXACT_REPLAY_ROW_BUDGET", 9):
+             mock.patch.object(audit_module, "EXACT_REPLAY_ROW_BUDGET", 60):
             audit_module.audit_impurity(conn, 1, 1, w, seed, threshold=0.5)
-        self.assertEqual(captured["max_probes"], 3)  # 9 rows of budget / 3 rows per replay
+        self.assertEqual(captured["max_probes"], 20)  # 60 rows of budget / 3 rows per replay
 
     def test_pagerank_audit_meters_the_search_by_edge_count(self):
         w, s1, s2 = 10, 2, 3
@@ -304,13 +338,13 @@ class TestExactSearchBudget(unittest.TestCase):
         with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
              mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
              mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
-             mock.patch.object(audit_module, "EXACT_PAGERANK_EDGE_BUDGET", 600), \
+             mock.patch.object(audit_module, "EXACT_PAGERANK_EDGE_BUDGET", 9_000), \
              mock.patch.object(audit_module, "PAGERANK_PASSES_PER_PROBE", 100), \
              mock.patch.object(GraphBackend, "pagerank_excluding_signed_edges",
                                return_value=pd.DataFrame({"wallet_id": [w], "score": [1.0]})):
             audit_module.audit_pagerank_threshold(conn, 1, 1, w, 1, threshold_value=0.5)
-        # 600 edge visits of budget / (3 edges * 100 iterations) per probe
-        self.assertEqual(captured["max_probes"], 2)
+        # 9,000 edge visits of budget / (3 edges * 100 iterations) per probe
+        self.assertEqual(captured["max_probes"], 30)
 
 
 class TestAuditCliFlagSelection(unittest.TestCase):

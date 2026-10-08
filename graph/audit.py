@@ -76,7 +76,7 @@ EXACT_SUBSET_CUTOFF = 15  # 2**15 = 32768 subsets -- fast; above this, fall back
 # hours for a single flag. These budgets cap the total probe work; the search
 # spends them on the smallest subset sizes first and only drops to greedy once
 # the next size is unaffordable (and says so in `method`).
-EXACT_REPLAY_ROW_BUDGET = 50_000_000      # replayed transfer rows
+EXACT_REPLAY_ROW_BUDGET = 20_000_000      # replayed transfer rows
 EXACT_PAGERANK_EDGE_BUDGET = 20_000_000   # edges visited across PageRank runs
 # A PageRank probe is not one pass over the edge list: it iterates to
 # convergence (max_iter=100 in both NetworkX and cuGraph), so one probe
@@ -87,10 +87,16 @@ PAGERANK_PASSES_PER_PROBE = 100
 
 def max_probes_for_budget(cost_per_call: int, budget: int) -> int | None:
     """How many score_fn probes `budget` units of work buys, when one probe
-    costs `cost_per_call` units. None means unmetered (unknown cost)."""
+    costs `cost_per_call` units. None means unmetered (unknown cost).
+
+    Never returns less than EXACT_SUBSET_CUTOFF: one sweep of the size-1
+    subsets is always worth affording, because a single unsolicited
+    transfer is the framing an attacker actually sends, and it's the case
+    where exact beats greedy on both cost and accuracy. Below that floor
+    the search would skip straight to greedy and be slower AND looser."""
     if cost_per_call <= 0:
         return None
-    return max(1, budget // cost_per_call)
+    return max(EXACT_SUBSET_CUTOFF, budget // cost_per_call)
 
 
 # --- Pure verdict/cost logic (no DB) ----------------------------------------
@@ -161,21 +167,57 @@ def cheapest_subset_reaching_threshold(candidates: list, score_fn, threshold: fl
             return None, None, "exact"
 
     ordered = sorted(candidates, key=lambda c: c[1])
-    chosen = []
-    for tx_hash, cost in ordered:
-        chosen.append((tx_hash, cost))
-        if score_fn([c[0] for c in chosen]) >= threshold:
-            break
+    if max_probes is not None and len(ordered) > max_probes:
+        chosen = _smallest_prefix_reaching_threshold(ordered, score_fn, threshold)
     else:
+        chosen = None
+        for i in range(len(ordered)):
+            if score_fn([c[0] for c in ordered[:i + 1]]) >= threshold:
+                chosen = ordered[:i + 1]
+                break
+    if chosen is None:
         return None, None, "greedy_upper_bound"
 
+    # Pruning the most expensive members first is where the cost actually
+    # drops, so a budget-truncated prune pass still tightens the bound.
     pruned = list(chosen)
-    for candidate in list(pruned):
+    for candidate in sorted(chosen, key=lambda c: -c[1])[:max_probes or len(chosen)]:
         trial = [c for c in pruned if c[0] != candidate[0]]
-        if score_fn([c[0] for c in trial]) >= threshold:
+        if trial and score_fn([c[0] for c in trial]) >= threshold:
             pruned = trial
     tx_hashes = [c[0] for c in pruned]
     return tx_hashes, sum(c[1] for c in pruned), "greedy_upper_bound"
+
+
+def _smallest_prefix_reaching_threshold(ordered: list, score_fn, threshold: float):
+    """The shortest cheapest-first prefix of `ordered` that reaches
+    `threshold`, found by doubling then bisecting -- ~2*log2(n) probes
+    instead of one per candidate. Needed because a flagged wallet can have
+    thousands of real unsolicited senders (one snapshot-2 impurity flag has
+    919), and probing after every single addition took over an hour.
+
+    This assumes adding more cheap inbound transfers moves the score toward
+    the threshold monotonically. Where it doesn't, the prefix found may be
+    larger than the one a candidate-by-candidate scan would have found --
+    which is why this path is only ever reported as an upper bound, and why
+    the scan is still used whenever it fits the probe budget."""
+    n = len(ordered)
+    size, last_failed = 1, 0
+    while True:
+        if score_fn([c[0] for c in ordered[:size]]) >= threshold:
+            break
+        if size >= n:
+            return None  # even every candidate together doesn't reach it
+        last_failed = size
+        size = min(size * 2, n)
+    lo, hi = last_failed, size
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if score_fn([c[0] for c in ordered[:mid]]) >= threshold:
+            hi = mid
+        else:
+            lo = mid
+    return ordered[:hi]
 
 
 # --- DB-I/O: shared fetchers -------------------------------------------------
