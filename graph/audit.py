@@ -560,6 +560,10 @@ def main():
             if args.detector is not None:
                 query += " AND f.detector = %s"
                 params.append(args.detector)
+            # Ordered so that --limit takes a reproducible sample: a bounded
+            # run is how the big detectors get audited at all, and its
+            # numbers end up quoted in docs.
+            query += " ORDER BY f.flag_id"
             if args.limit is not None:
                 query += " LIMIT %s"
                 params.append(args.limit)

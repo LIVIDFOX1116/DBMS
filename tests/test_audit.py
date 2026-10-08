@@ -311,6 +311,24 @@ class TestExactSearchBudget(unittest.TestCase):
         self.assertEqual(captured["max_probes"], 2)  # 6 edges of budget / 3 edges per run
 
 
+class TestAuditCliFlagSelection(unittest.TestCase):
+    def test_limit_takes_a_reproducible_sample(self):
+        # The big detectors (60k sybil flags) can only be audited as a
+        # bounded sample, and those numbers get quoted in docs -- so the
+        # sample must not depend on whatever order Postgres felt like.
+        conn = mock.MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.fetchall.return_value = []
+        argv = ["graph.audit", "--snapshot-id", "2", "--seed-wallet-id", "2",
+                "--detector", "sybil_cluster", "--limit", "25"]
+        with mock.patch.object(audit_module.psycopg2, "connect", return_value=conn), \
+             mock.patch.object(sys, "argv", argv):
+            audit_module.main()
+        query = cur.execute.call_args.args[0]
+        self.assertIn("ORDER BY f.flag_id", query)
+        self.assertLess(query.index("ORDER BY f.flag_id"), query.index("LIMIT"))
+
+
 class TestPhase3SpecFixes(unittest.TestCase):
     """Fixes from the Phase 3 review of the audit engine against
     docs/FRAMECHECK.md. Each test pins one discrepancy."""
