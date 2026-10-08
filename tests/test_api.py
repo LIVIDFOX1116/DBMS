@@ -641,3 +641,11 @@ class TestGetPoolIsThreadSafe:
             t.join()
 
         assert construct_count == 1
+
+
+def test_audit_verdicts_one_row_per_audited_flag():
+    rows = client.get("/audit/verdicts").json()
+    by_flag = {r["flag_id"]: r for r in rows}
+    assert by_flag[1]["verdict"] == "frameable"
+    assert by_flag[2]["verdict"] == "robust"
+    assert all(r["flag_id"] for r in rows)
