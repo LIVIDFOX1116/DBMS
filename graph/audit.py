@@ -20,7 +20,8 @@ Per-detector method:
   combination of transfers is ever needed, so this is exact, not
   approximated.
 - impurity / engaged_proximity: exact for small candidate sets (<=
-  EXACT_SUBSET_CUTOFF real unsolicited senders -- tries every subset),
+  EXACT_SUBSET_CUTOFF real unsolicited senders, and while the subset
+  sizes it has to try fit the replay budget -- tries every subset),
   greedy_upper_bound (cheapest-first, then pruned) above that cutoff.
   Labelled honestly per-flag, not claimed exact when it wasn't.
 - pagerank_threshold: greedy_upper_bound. PageRank is global -- there's no
@@ -47,6 +48,7 @@ priced, since the attacker mints or already holds the dust token.
 """
 import argparse
 import itertools
+import math
 import time
 from collections import defaultdict
 
@@ -65,6 +67,25 @@ from graph.evidence import collect_evidence_for_flag
 from ingestion import config
 
 EXACT_SUBSET_CUTOFF = 15  # 2**15 = 32768 subsets -- fast; above this, fall back to greedy
+
+# One score_fn probe is not free: a haircut audit replays the snapshot's whole
+# transfer history, and a pagerank audit runs PageRank over the whole edge
+# list. The exact search stops at the first subset size that works, so a flag
+# an attacker can produce with one transfer stays cheap -- but a threshold NO
+# subset reaches forces all 2**n subsets, which on a 254k-transfer snapshot is
+# hours for a single flag. These budgets cap the total probe work; the search
+# spends them on the smallest subset sizes first and only drops to greedy once
+# the next size is unaffordable (and says so in `method`).
+EXACT_REPLAY_ROW_BUDGET = 50_000_000      # replayed transfer rows
+EXACT_PAGERANK_EDGE_BUDGET = 20_000_000   # edges visited across PageRank runs
+
+
+def max_probes_for_budget(cost_per_call: int, budget: int) -> int | None:
+    """How many score_fn probes `budget` units of work buys, when one probe
+    costs `cost_per_call` units. None means unmetered (unknown cost)."""
+    if cost_per_call <= 0:
+        return None
+    return max(1, budget // cost_per_call)
 
 
 # --- Pure verdict/cost logic (no DB) ----------------------------------------
@@ -88,17 +109,20 @@ def cheapest_qualifying_bfs_transfer(candidates: list, threshold: float):
 
 
 def cheapest_subset_reaching_threshold(candidates: list, score_fn, threshold: float,
-                                        exact_cutoff: int = EXACT_SUBSET_CUTOFF):
+                                        exact_cutoff: int = EXACT_SUBSET_CUTOFF,
+                                        max_probes: int | None = None):
     """candidates: [(tx_hash, cost_wei), ...] -- real unsolicited transfers
     into W, each with a precomputed cost (value_wei + gas). score_fn(subset
     of tx_hashes) -> the resulting score/ratio if exactly that subset of
     candidates is added back to the doubly-stripped graph.
 
-    <= exact_cutoff candidates: tries every subset, returns the true
-    minimum-cost one reaching `threshold` ('exact'). Above that: greedy
-    cheapest-first addition until the threshold is reached, then a prune
-    pass that drops any member whose removal still leaves the threshold
-    met ('greedy_upper_bound').
+    <= exact_cutoff candidates: tries every subset, smallest first, and
+    returns the true minimum-cost one reaching `threshold` ('exact').
+    Above that -- or once the next subset size would cost more than
+    `max_probes` score_fn calls, which is what an unreachable threshold
+    runs into -- greedy cheapest-first addition until the threshold is
+    reached, then a prune pass that drops any member whose removal still
+    leaves the threshold met ('greedy_upper_bound').
 
     Returns (tx_hashes: list, cost_wei: float, method: str) or
     (None, None, method) if no subset of ALL candidates reaches the
@@ -109,8 +133,16 @@ def cheapest_subset_reaching_threshold(candidates: list, score_fn, threshold: fl
 
     if len(candidates) <= exact_cutoff:
         best = None
+        probes = 0
+        exhaustive = True
         for r in range(1, len(candidates) + 1):
+            if max_probes is not None and probes + math.comb(len(candidates), r) > max_probes:
+                # Can't afford this subset size, so "no subset works" can no
+                # longer be concluded -- hand over to greedy.
+                exhaustive = False
+                break
             for combo in itertools.combinations(candidates, r):
+                probes += 1
                 tx_hashes = [c[0] for c in combo]
                 if score_fn(tx_hashes) >= threshold:
                     cost = sum(c[1] for c in combo)
@@ -118,9 +150,10 @@ def cheapest_subset_reaching_threshold(candidates: list, score_fn, threshold: fl
                         best = (tx_hashes, cost)
             if best is not None:
                 break  # smaller r already found a solution; larger r can't be cheaper on sane cost data
-        if best is None:
+        if best is not None:
+            return best[0], best[1], "exact"
+        if exhaustive:
             return None, None, "exact"
-        return best[0], best[1], "exact"
 
     ordered = sorted(candidates, key=lambda c: c[1])
     chosen = []
@@ -345,7 +378,9 @@ def _audit_haircut_detector(conn, flag_id: int, snapshot_id: int, wallet_id: int
             r = score_all_fn([row[:tuple_arity] for _pos, row in merged], seed_wallet_id, **extra_score_kwargs)
             return ratio_for(r)
 
-        tx_hashes, cost, method = cheapest_subset_reaching_threshold(candidates, score_fn, threshold)
+        tx_hashes, cost, method = cheapest_subset_reaching_threshold(
+            candidates, score_fn, threshold,
+            max_probes=max_probes_for_budget(len(all_transfers), EXACT_REPLAY_ROW_BUDGET))
         if tx_hashes:
             minimal_tx_set = tx_hashes
             framing_cost_wei = cost
@@ -413,7 +448,9 @@ def audit_pagerank_threshold(conn, flag_id: int, snapshot_id: int, wallet_id: in
             row = scored[scored.wallet_id == wallet_id]
             return float(row.iloc[0].score) if len(row) else 0.0
 
-        senders, cost, method = cheapest_subset_reaching_threshold(candidates, score_fn, threshold_value)
+        senders, cost, method = cheapest_subset_reaching_threshold(
+            candidates, score_fn, threshold_value,
+            max_probes=max_probes_for_budget(len(edges_df), EXACT_PAGERANK_EDGE_BUDGET))
         if senders:
             minimal_tx_set = [h for s in senders for h in tx_hashes_by_sender[s]]
             framing_cost_wei = cost
