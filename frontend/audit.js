@@ -19,7 +19,9 @@ const FC_METHOD = {
 const FC_SIGNED_COLOR = "#4C9AFF";
 const FC_UNSOLICITED_COLOR = "#E5675A";
 
-const FC = { snapshotId: undefined, filter: "all", flags: {}, selected: null, detailGen: 0, loadGen: 0 };
+const FC_FLAG_PAGE = 100;
+const FC = { snapshotId: undefined, filter: "all", flags: {}, selected: null, detailGen: 0, loadGen: 0,
+             search: "", verdict: "all" };
 
 const fcEsc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fcDetectorName = d => FC_DETECTORS[d] || d;
@@ -269,6 +271,163 @@ async function fcEnsureSignedIn() {
   }
 }
 
+/* ── Run analysis ── */
+let fcJobPoll = null;
+
+async function fcOpenAnalysisView() {
+  const sel = document.getElementById("fcRunSnapshot");
+  if (sel && !sel.options.length) {
+    try {
+      const snapshots = await api("/snapshots");
+      sel.innerHTML = snapshots.map(s =>
+        `<option value="${s.snapshot_id}">#${s.snapshot_id} — ${fcEsc(s.snapshot_name || "")} (${Number(s.edge_count || 0).toLocaleString()} edges)</option>`
+      ).join("");
+      const p = loadPref();
+      if (p.runSnapshotId) sel.value = p.runSnapshotId;
+      if (p.runSeedWalletId) document.getElementById("fcRunSeed").value = p.runSeedWalletId;
+    } catch (err) {
+      document.getElementById("fcJobStatus").innerHTML = fcErrorBlock(err.message, "analysis");
+      return;
+    }
+  }
+  fcRefreshJobs();
+}
+
+function fcSaveRunPrefs() {
+  try {
+    const p = loadPref();
+    p.runSnapshotId = document.getElementById("fcRunSnapshot").value;
+    p.runSeedWalletId = document.getElementById("fcRunSeed").value;
+    savePref(p);
+  } catch { /* private mode */ }
+}
+
+function fcRenderJob(job) {
+  const host = document.getElementById("fcJobStatus");
+  if (!host) return;
+  if (!job) { host.innerHTML = ""; return; }
+  const pct = job.total ? Math.round((job.completed / job.total) * 100) : 0;
+  const done = ["done", "failed", "cancelled"].includes(job.status);
+  const summary = job.job_type === "detectors"
+    ? (job.result?.flags_total != null ? `${job.result.flags_total} flags raised` : "")
+    : (job.result?.verdicts ? Object.entries(job.result.verdicts).map(([k, v]) => `${v} ${k}`).join(", ") : "");
+  host.innerHTML = `<div class="fc-job" data-job-id="${fcEsc(job.job_id)}">
+    <div class="fc-job-head">
+      <strong>${fcEsc(job.job_type === "detectors" ? "Detectors" : "Audit")}</strong>
+      <span class="fc-job-status ${job.status}">${fcEsc(job.status)}</span>
+      <span class="fc-muted">${job.elapsed_seconds}s</span>
+    </div>
+    <div class="fc-progress"><div class="fc-progress-bar" style="width:${pct}%"></div></div>
+    <div class="fc-job-msg">${fcEsc(job.message || "")}${job.total ? ` — ${job.completed}/${job.total}` : ""}</div>
+    ${summary ? `<div class="fc-job-summary">${fcEsc(summary)}</div>` : ""}
+    ${job.error ? `<div class="fc-job-error">${fcEsc(job.error)}</div>` : ""}
+  </div>`;
+  document.getElementById("fcCancelJob").hidden = done;
+  document.getElementById("fcRunDetectors").disabled = !done;
+  document.getElementById("fcRunAudit").disabled = !done;
+  if (done && job.job_type && job.status === "done") {
+    // New flags/audits exist now, so the cached Flags view is stale.
+    FC.flags = {};
+    FC.snapshotId = undefined;
+  }
+}
+
+async function fcRefreshJobs() {
+  try {
+    const rows = await api("/jobs");
+    const tbody = document.getElementById("fcJobRows");
+    if (tbody) {
+      tbody.innerHTML = rows.length ? rows.slice(0, 10).map(j => `<tr>
+        <td>${fcEsc(j.job_type)}</td><td class="mono">#${j.snapshot_id}</td>
+        <td><span class="fc-job-status ${j.status}">${fcEsc(j.status)}</span></td>
+        <td>${j.total ? `${j.completed}/${j.total}` : "–"}</td>
+        <td>${j.elapsed_seconds}s</td></tr>`).join("")
+        : `<tr><td colspan="5"><div class="empty-hint">No jobs run yet.</div></td></tr>`;
+    }
+    const live = rows.find(j => ["queued", "running"].includes(j.status));
+    if (live) { fcTrackJob(live.job_id); } else { fcRenderJob(rows[0] || null); }
+  } catch (err) {
+    document.getElementById("fcJobStatus").innerHTML = fcErrorBlock(err.message, "analysis");
+  }
+}
+
+function fcTrackJob(jobId) {
+  if (fcJobPoll) clearInterval(fcJobPoll);
+  const tick = async () => {
+    try {
+      const job = await api(`/jobs/${jobId}`);
+      fcRenderJob(job);
+      if (["done", "failed", "cancelled"].includes(job.status)) {
+        clearInterval(fcJobPoll);
+        fcJobPoll = null;
+        fcRefreshJobs();
+      }
+    } catch (err) {
+      clearInterval(fcJobPoll);
+      fcJobPoll = null;
+      document.getElementById("fcJobStatus").innerHTML = fcErrorBlock(err.message, "analysis");
+    }
+  };
+  tick();
+  fcJobPoll = setInterval(tick, 1000);
+}
+
+async function fcStartJob(jobType) {
+  fcSaveRunPrefs();
+  const body = {
+    job_type: jobType,
+    snapshot_id: Number(document.getElementById("fcRunSnapshot").value),
+    seed_wallet_id: Number(document.getElementById("fcRunSeed").value) || 1,
+    detector: document.getElementById("fcRunDetector").value,
+  };
+  const limit = Number(document.getElementById("fcRunLimit").value);
+  if (jobType === "audit" && limit > 0) body.limit = limit;
+  try {
+    const res = await fetch(apiBase() + "/jobs", {
+      method: "POST", credentials: "include",
+      headers: fcJsonHeaders(),
+      body: JSON.stringify(body),
+    });
+    const job = await res.json();
+    if (!res.ok) throw new Error(job.detail || `${res.status} ${res.statusText}`);
+    fcTrackJob(job.job_id);
+  } catch (err) {
+    document.getElementById("fcJobStatus").innerHTML = fcErrorBlock(err.message, "analysis");
+  }
+}
+
+async function fcDownloadCsv(flagId) {
+  // Fetched rather than linked: the session is an HttpOnly cookie in the
+  // browser but a bearer token in the desktop shell, and a plain <a href>
+  // cannot carry the latter.
+  try {
+    const bearer = fcStoredSessionToken();
+    const res = await fetch(`${apiBase()}/flags/${flagId}/audit.csv`, {
+      credentials: "include",
+      headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `${res.status} ${res.statusText}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `framecheck-flag-${flagId}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(`Export failed: ${err.message || err}`, "error");
+  }
+}
+
+function fcJsonHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  const bearer = fcStoredSessionToken();
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  return headers;
+}
+
 /* ── Benchmarks view ── */
 function fcSeconds(s) {
   if (s == null) return "–";
@@ -332,7 +491,7 @@ async function fcLoadBenchmarks() {
 async function fcLoadFlags(filter) {
   if (FC.flags[filter]) return FC.flags[filter];
   const snap = await fcSnapshotId();
-  const params = { limit: 100 };
+  const params = { limit: FC_FLAG_PAGE };
   if (snap != null) params.snapshot_id = snap;
   if (filter !== "all") params.detector = filter;
   const flags = await api("/flags", params);
@@ -373,13 +532,69 @@ async function fcOpenFlagsView() {
   fcRenderFlagRows();
 }
 
+/* Filters survive a reload: coming back to a half-finished investigation
+   and finding the list reset to "all flags" is the kind of small loss that
+   makes a tool feel disposable. Stored next to the other prefs. */
+function fcSaveFlagPrefs() {
+  try {
+    const p = loadPref();
+    p.flagFilter = FC.filter;
+    p.flagSearch = FC.search;
+    p.flagVerdict = FC.verdict;
+    savePref(p);
+  } catch { /* private mode */ }
+}
+
+function fcRestoreFlagPrefs() {
+  let p = {};
+  try { p = loadPref() || {}; } catch { return; }
+  FC.filter = p.flagFilter || "all";
+  FC.search = p.flagSearch || "";
+  FC.verdict = p.flagVerdict || "all";
+  const search = document.getElementById("fcFlagSearch");
+  if (search) search.value = FC.search;
+  const verdict = document.getElementById("fcVerdictFilter");
+  if (verdict) verdict.value = FC.verdict;
+  document.querySelectorAll("#auditFilterBar button").forEach(
+    b => b.classList.toggle("on", b.dataset.f === FC.filter));
+}
+
+function fcFlagMatches(f) {
+  if (FC.verdict !== "all") {
+    const verdict = f.audit ? f.audit.verdict : "unaudited";
+    if (verdict !== FC.verdict) return false;
+  }
+  const q = (FC.search || "").trim().toLowerCase();
+  if (!q) return true;
+  return String(f.flag_id) === q
+    || String(f.wallet_id) === q.replace(/^#/, "")
+    || (f.address || "").toLowerCase().includes(q)
+    || fcDetectorName(f.detector).toLowerCase().includes(q);
+}
+
 function fcRenderFlagRows() {
   const tbody = document.getElementById("auditFlagRows");
-  const list = FC.flags[FC.filter] || [];
+  const all = FC.flags[FC.filter] || [];
+  const list = all.filter(fcFlagMatches);
+  const count = document.getElementById("fcFlagCount");
+  if (count) {
+    count.textContent = all.length
+      ? (list.length === all.length ? `${all.length} flags` : `${list.length} of ${all.length}`)
+      : "";
+  }
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="4"><div class="empty-hint">${FC.filter === "all"
-      ? "No flags yet. Run the detectors and the audit to create some."
-      : "No flags from this detector on this snapshot."}</div></td></tr>`;
+    const narrowed = all.length > 0;
+    // Search filters what is loaded, and the list is capped at FC_FLAG_PAGE.
+    // Saying "no matches" when the match may simply be flag 4,312 of 60,000
+    // would be a lie by omission.
+    const capped = all.length >= FC_FLAG_PAGE;
+    tbody.innerHTML = `<tr><td colspan="4"><div class="empty-hint">${narrowed
+      ? (capped
+        ? `No matches among the ${all.length} flags loaded. Only the first ${FC_FLAG_PAGE} are fetched — narrow by detector, or run the audit on a smaller snapshot.`
+        : "No flags match this search or verdict filter.")
+      : (FC.filter === "all"
+        ? "No flags yet. Run the detectors and the audit to create some."
+        : "No flags from this detector on this snapshot.")}</div></td></tr>`;
     return;
   }
   tbody.innerHTML = list.map(f => `
@@ -478,7 +693,11 @@ function fcDetailHtml(flagId, flag, edges, audit) {
         <div class="fc-d-title">Flag #${flagId} <span class="fc-d-det">${fcEsc(flag ? fcDetectorName(flag.detector) : "")}</span></div>
         <div class="fc-d-wallet">Wallet ${wid != null ? "#" + wid : ""} <span class="mono">${waddr ? fcEsc(waddr) : ""}</span></div>
       </div>
-      <button class="btn" data-fc-graph="${flagId}" ${edges.length ? "" : "disabled"}>View in graph</button>
+      <div class="fc-d-actions">
+        <button class="btn" data-fc-graph="${flagId}" ${edges.length ? "" : "disabled"}>View in graph</button>
+        <button class="btn" data-fc-csv="${flagId}">CSV</button>
+        <button class="btn" data-fc-print="${flagId}">PDF</button>
+      </div>
     </div>
     <div class="fc-step"><div class="fc-step-n">1</div><div class="fc-step-b"><h4>Evidence</h4>${evidence}</div></div>
     <div class="fc-step"><div class="fc-step-n">2</div><div class="fc-step-b"><h4>Verdict</h4>${verdict}</div></div>
@@ -604,7 +823,33 @@ function fcInit() {
     if (!btn) return;
     FC.filter = btn.dataset.f;
     document.querySelectorAll("#auditFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
+    fcSaveFlagPrefs();
     fcOpenFlagsView();
+  });
+  const search = document.getElementById("fcFlagSearch");
+  if (search) {
+    search.addEventListener("input", e => {
+      FC.search = e.target.value;
+      fcSaveFlagPrefs();
+      fcRenderFlagRows();
+    });
+  }
+  const verdict = document.getElementById("fcVerdictFilter");
+  if (verdict) {
+    verdict.addEventListener("change", e => {
+      FC.verdict = e.target.value;
+      fcSaveFlagPrefs();
+      fcRenderFlagRows();
+    });
+  }
+  fcRestoreFlagPrefs();
+  document.getElementById("fcRunDetectors")?.addEventListener("click", () => fcStartJob("detectors"));
+  document.getElementById("fcRunAudit")?.addEventListener("click", () => fcStartJob("audit"));
+  document.getElementById("fcCancelJob")?.addEventListener("click", async () => {
+    const id = document.querySelector("#fcJobStatus .fc-job")?.dataset.jobId;
+    try {
+      await fetch(`${apiBase()}/jobs/${id || ""}/cancel`, { method: "POST", credentials: "include", headers: fcJsonHeaders() });
+    } catch { /* the poll will surface it */ }
   });
   const rows = document.getElementById("auditFlagRows");
   rows.addEventListener("click", e => {
@@ -628,9 +873,14 @@ function fcInit() {
       else if (what === "flags") { FC.flags = {}; fcOpenFlagsView(); }
       else if (what === "graph") renderGraph();
       else if (what === "benchmarks") { FC.benchmarks = undefined; fcLoadBenchmarks(); }
+      else if (what === "analysis") fcOpenAnalysisView();
       else if (what.startsWith("detail:")) fcSelectFlag(Number(what.slice(7)));
       return;
     }
+    const csv = e.target.closest("[data-fc-csv]");
+    if (csv) { fcDownloadCsv(Number(csv.dataset.fcCsv)); return; }
+    const printBtn = e.target.closest("[data-fc-print]");
+    if (printBtn) { window.print(); return; }
     const g = e.target.closest("[data-fc-graph]");
     if (g) {
       const flagId = g.dataset.fcGraph;
