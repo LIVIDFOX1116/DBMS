@@ -85,8 +85,11 @@ Five detectors write `flag` rows (one per `(run_id, wallet_id, detector)`), each
   `SYBIL`. Reads that existing output; does not re-detect.
 - **`pagerank_threshold`**: flags the top 1% of wallets by PageRank, excluding the seed.
   Default: `DEFAULT_PAGERANK_PERCENTILE = 0.01`.
-- **`impurity`**: a simplified Liu et al. haircut over native ETH transfers in block order within
-  the subgraph — the seed is a pure taint source (100% of its outflow is tainted regardless of
+- **`impurity`**: a simplified Liu et al. haircut over native ETH and ERC-20 transfers in block
+  order within the subgraph (each currency tracked on its own ledger; a flag fires if any one
+  currency crosses the threshold, and `flag.token_contract` records which). Reverted transactions
+  (`transaction.status` false, from the Byzantium fork at block 4,370,000 on) move no value and are
+  left out of the replay — the seed is a pure taint source (100% of its outflow is tainted regardless of
   its own balance); every other wallet's taint-out is `value × (tainted_balance / balance)` at
   the time it sends, floored at 0. Flags at ≥ 10% of balance
   (`DEFAULT_IMPURITY_THRESHOLD = 0.10`). **Known limitation**: this only sees transfers visible in
@@ -114,7 +117,12 @@ For a flagged wallet `W`, `graph/evidence.py` runs the recursive CTE in
 `db/queries/evidence.sql` and persists one `flag_evidence` row per discovered transaction:
 
 - **hop=0** captures both of `W`'s directions: role `signed` if `W` is the sender, `unsolicited`
-  if it's the receiver and didn't sign. These are the only rows the audit engine can ever add
+  if it's the receiver and didn't sign. For an ERC-20 transfer the native recipient is the token
+  contract, so a second hop-0 branch matches `token_transfer.to_wallet_id = W` (role `unsolicited`
+  unless `W` signed it, in which case the native branch already has it as `signed`). The signer is
+  always `transaction.from_wallet_id`; `token_transfer.from_wallet_id` is never read. A flag that
+  only crossed the threshold in a token therefore gets real framing-cost candidates; their cost is
+  gas only, since `transaction.value_wei` is 0 for a token call and the token amount is not priced. These are the only rows the audit engine can ever add
   back or strip — an attacker can only add transfers *into* the target, never rewrite an
   ancestor's history.
 - **hop≥1** recursively follows each unsolicited predecessor's own earliest inbound transaction
@@ -124,6 +132,13 @@ For a flagged wallet `W`, `graph/evidence.py` runs the recursive CTE in
 Evidence is collected lazily (on first need, triggered from `graph/audit.py`), not bulk-computed
 for every flag up front — a real snapshot can produce thousands of flags, most of which nobody
 will ever drill into.
+
+Both terms are driven from `snapshot_edge` (its source/destination indexes) into
+`snapshot_edge_tx`'s `(snapshot_edge_id, tx_hash)` primary key, and each recursive generation is
+deduplicated by `from_wallet_id`, so a wallet with thousands of inbound transfers walks each
+distinct sender once. No migration or new index was needed. The wallet-26 query (1,997 inbound
+transfers) went from 689.8 s to 83 ms with identical output; plans are in
+`docs/perf/evidence_before.md` and `docs/perf/evidence_after.md`.
 
 ```bash
 python -m graph.evidence --snapshot-id 4 --seed-wallet-id 1476 --run-id 20
@@ -174,32 +189,45 @@ python -m graph.audit --snapshot-id 4 --seed-wallet-id 1476 --limit 50
 
 Dispatches each flag to its detector's audit method (table above), persists one `flag_audit` row
 per flag (`verdict`, `framing_cost_wei`, `framing_gas`, `minimal_tx_set`, `method`, `backend`,
-`runtime_ms`). `--limit N` audits only the first `N` flags per detector — useful on a full run
-where `pagerank_threshold`'s cost search (a masked-PageRank re-run per candidate) is the slow
-path; see "Benchmark" below for real numbers.
+`runtime_ms`). `--limit N` audits only the first `N` matching flags in total (combine it with `--detector` to
+cap one detector) — useful where `pagerank_threshold`'s cost search (a masked-PageRank re-run per
+candidate) is the slow path; see "Benchmark" below for real numbers.
+
+Phase 3 spec review fixed five things here, each with a test: impurity/engaged framing cost
+replayed re-added transfers at the end of history instead of at their original position; the
+`bfs_proximity` cost used distances that could route through `W` (it now uses the graph with
+`W`'s signed edges removed); `pagerank_threshold` no longer spends a PageRank run on token-only
+senders that have no edge to restore; reverted transactions no longer count as value moved; and
+`/audit/summary` counts each flag's latest audit once instead of every audit row.
 
 ## API
 
-Four endpoints, additive only (never renaming or changing an existing one — see
-`docs/API_CONTRACT.md`'s "additive only" rule):
+Additive only (never renaming or changing an existing endpoint — see `docs/API_CONTRACT.md`'s
+"additive only" rule):
 
-- `GET /flags` — filterable by `run_id`, `detector`, `wallet_id`.
+- `GET /flags` — filterable by `run_id`, `snapshot_id`, `detector`, `wallet_id`.
 - `GET /flags/{id}/evidence` — never computes on demand; returns `[]` if evidence hasn't been
   collected for that flag yet.
+- `GET /flags/{id}/evidence-edges` — the same evidence with the wallet pair per transaction
+  (signer and recipient), for the Graph view's signed/unsolicited overlay.
 - `GET /flags/{id}/audit` — `404` ("flag not audited yet") distinct from a `200` with
   `verdict: "robust"` — those are different facts and must not be conflated.
-- `GET /audit/summary` — per-detector aggregates (flag counts, frameable share, median framing
-  cost) computed directly in PostgreSQL via `FILTER` and
-  `PERCENTILE_CONT(0.5) WITHIN GROUP`.
+- `GET /audit/verdicts` — the latest audit per flag in one call (the Flags list uses it).
+- `GET /audit/overview` — flags per detector, share frameable and the true median framing cost.
+- `GET /audit/summary` — per-detector aggregates (audited counts, frameable share, min/median/max
+  framing cost) computed in PostgreSQL via `FILTER` and `PERCENTILE_CONT(0.5) WITHIN GROUP`,
+  over each flag's latest audit.
 
 Full request/response shapes, with real captured examples, are in `docs/API_CONTRACT.md`.
 
 ## Dashboard
 
-A new **Audit** view in `frontend/dashboard.html`: a per-detector summary table
-(`/audit/summary`), a detector-filterable flags table (`/flags`, each row's verdict/cost filled
-in via `/flags/{id}/audit`), and an evidence drill-down modal (`/flags/{id}/evidence`) — same
-visual language and lazy-load-on-first-visit pattern as the existing Graph view.
+The dashboard (`frontend/dashboard.html`, with `audit.js` / `audit.css`) is organised around the
+audit: **Overview** shows FrameCheck's headline metrics (flags per detector, share frameable,
+median framing cost); **Flags** is a searchable list that opens a three-step detail — evidence,
+verdict (frameable or robust) and framing cost with its method label (`exact`, `greedy_upper_bound`
+or `yes_no`); the **Graph** view can overlay a selected flag's evidence, drawing signed edges and
+unsolicited edges in different colours. Wallets, Clusters and Alerts remain as supporting views.
 
 ## Benchmark
 
@@ -234,18 +262,10 @@ See `docs/benchmark_results.md`'s "Audit benchmark" section for real numbers on 
 - **`sybil_cluster` has no framing cost**: cluster membership isn't a per-transfer-additive
   threshold, so "cheapest transfer to re-trigger it" isn't a well-posed question for this one
   detector; its audit is `yes_no` only.
-- **Evidence collection has a performance cliff for high-inbound-degree wallets.** `db/queries/
-  evidence.sql`'s recursive CTE spawns one backward-walk branch per hop=0 row, and the hop=0 base
-  case produces one row *per direct inbound transaction*, not per distinct sender — a wallet with
-  many direct senders (or many transactions from the same sender) produces that many redundant
-  branches, each paying its own indexed lookup every hop. Found live on the full-extent snapshot:
-  auditing flags on a wallet with 2,005 inbound transactions took 26+ seconds and climbing per
-  flag (killed before completion); auditing 15 `bfs_proximity` flags on *other* wallets (excluding
-  that one) took between 0.17s and 183.67s each, the slow outliers all correlating with higher
-  in-degree, not with audit complexity — every one of those 15 was `method: exact`, the cheapest
-  possible audit path, confirming the variance is entirely evidence-collection cost, not the audit
-  algorithm. `sybil_cluster`'s audit never calls into evidence collection (no framing cost to
-  compute), and was unaffected: 30/30 sampled flags audited in a tight 2.56-3.24s band. A fix
-  (deduplicating the recursive term's branches by `from_wallet_id` before recursing, since the
-  final `SELECT DISTINCT` already collapses duplicate output rows) was scoped but not implemented
-  under this session's time budget — noted here rather than silently worked around.
+- **Reverted transactions in graph metrics**: the haircut replay (impurity, engaged proximity and
+  their audits) skips reverted transactions, but the snapshot edges behind BFS, PageRank and
+  Louvain still include them, as an edge records an attempted transfer. `transaction.status` is
+  stored as `txreceipt_status == "1"`, which is also false for every pre-Byzantium block (the
+  receipt status is empty there), so "reverted" is only inferred from block 4,370,000 on.
+- **Token framing cost is gas only**: a token-triggered flag's candidates cost the gas of the
+  transfer, not the token amount.
