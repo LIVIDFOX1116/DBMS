@@ -111,3 +111,55 @@ above unrepeatable.
 - `pagerank_threshold` and `sybil_cluster` on snapshot 2 are sampled, not exhaustive (above).
 - The GPU path is untouched here -- that is Phase 4.
 
+## Phase 4: CPU vs GPU benchmark (2026-10-08)
+
+Method: RAPIDS 26.08 installed in WSL2 (`docs/GPU_SETUP.md`), benchmarks run there so both
+backends share one process; live API on port 8001 against Postgres; the new Benchmarks tab driven
+over the DevTools protocol in headless Chrome, with the API up and with it pointed at a dead port.
+
+| Check | Result |
+|---|---|
+| `scripts/verify_gpu_env.py` under WSL | PHASE 0 GPU CHECK: COMPLETE — cudf 26.08.01, cugraph 26.08.00, GTX 1650 visible (4.3 GB total, 3.5 GB free) |
+| Benchmarks on snapshots 1, 2, 3, CPU and GPU, 3 repeats | all completed; see `docs/benchmark_results.md` |
+| Audit-pass benchmark, CPU pass and GPU pass | 13.49 s/flag -> 0.72 s/flag; each pass deleted exactly the `flag_audit` rows it created |
+| `flag_audit` row counts after both benchmark passes | unchanged from Phase 3 (74 / 2 / 25 / 25) — the benchmark left the DB as it found it |
+| `GET /benchmarks` live | 200, 3 runs, 4 tasks each, GPU column present |
+| Benchmarks tab, live API | 3 panels, 12 rows, correct speedups, no console errors, no horizontal page scroll |
+| Benchmarks tab, API unreachable | error card with the API base and a Retry button; not blank, no uncaught exceptions |
+| `GET /benchmarks` with the results file missing or corrupt | 200 `[]` (unit tests), and the tab shows an empty state with the command to run |
+| Full suite | 173 passed, 5 skipped; ruff clean |
+
+### Findings and fixes
+
+1. **The exact framing-cost search's sibling problem, found in the UI**: sub-millisecond timings
+   rendered as `0 ms`, which reads as "free" rather than "fast". CPU BFS on snapshot 1 really is
+   0.4 ms. Now shown as `0.40 ms`.
+2. **`scripts/benchmark_audit.py` hardcoded every result row as `CPU`**, so a GPU run would have
+   produced a table labelled CPU containing GPU numbers. Rows are now labelled by the backend
+   actually in effect, which is what makes the two-pass comparison readable.
+3. **CPU and GPU PageRank disagree materially** on snapshot 3 (disjoint top-5, 84/100 top-100
+   overlap, GPU top scores ~3.5x larger), while Spearman rank correlation stays at 0.9995. Ruled
+   out: dropped edge weights (an unweighted CPU run matches the GPU *less*) and float32 precision
+   (cuGraph keeps `edge_weight` float64). Cause: `edge_weight` is wei transferred, 71.3% of edges
+   carry weight 0 on that snapshot, and the two libraries resolve zero-out-weight (dangling)
+   vertices differently. This is **not fixed** — `pagerank_threshold` compares against an absolute
+   threshold, so every candidate fix changes which wallets past runs would have flagged. Written
+   up in `docs/benchmark_results.md`; needs a deliberate decision.
+
+### Process notes
+
+The RAPIDS install was killed twice by the host's low-memory watchdog (16 GB machine, WSL holding
+~4.3 GB, ~2.4 GB free at the worst point). It completed after being restarted staged and
+`--no-cache-dir`, run detached inside WSL rather than as a watched background task. Worth knowing
+before anyone repeats the setup on this machine.
+
+### Not covered
+
+- **The desktop (Tauri) window has now not been launched for three phases running.** The newest
+  local build (`src-tauri/target/debug/app.exe`) predates the Phase 2 rebrand and every frontend
+  change since, so launching it would have exercised stale code rather than the current app; a
+  rebuild was not attempted while the machine was already memory-constrained. Compilation and
+  installer packaging are covered by CI (Phase 1), but **no one has clicked through the native
+  window since the UI was rebuilt**. This should stop being deferred.
+- `pagerank_threshold` and `sybil_cluster` on snapshot 2 remain sampled, not exhaustive (Phase 3).
+
