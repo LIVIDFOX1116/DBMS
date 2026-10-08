@@ -8,6 +8,9 @@ mod keychain;
 // gpu-bench, run manually against a live backend) can call it directly
 // instead of duplicating the settle/benchmark logic a second time.
 pub mod layout;
+// pub so the loopback redirect parsing is testable without standing up a
+// browser and a Google consent screen.
+pub mod oauth;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -145,6 +148,7 @@ pub fn run() {
             commands::detect_gpus,
             commands::run_layout,
             commands::benchmark_layout,
+            commands::google_signin,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
