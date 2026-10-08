@@ -726,7 +726,17 @@ const runId   = () => Number(loadPref().runId) || 1;
 async function api(path, params = {}) {
   const url = new URL(apiBase() + path);
   Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null) url.searchParams.set(k, v); });
-  const res = await fetch(url);
+  const headers = {};
+  // The desktop shell has no cookie jar shared with the sidecar, so it
+  // keeps the session token itself; the browser uses the HttpOnly cookie
+  // and never sees one.
+  const bearer = fcStoredSessionToken();
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  const res = await fetch(url, { credentials: "include", headers });
+  if (res.status === 401) {
+    fcShowSignIn();
+    throw new Error("sign-in required");
+  }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
   return res.json();
 }
@@ -1685,7 +1695,10 @@ document.addEventListener("keydown", e => {
   applyPrefs();
   fcInit();
   go(location.hash.slice(1) || "overview");
-  loadAll();
+  // Gate before loading: with auth required, firing the full load first
+  // would just produce a screenful of 401 error cards behind the sign-in
+  // prompt.
+  if (await fcEnsureSignedIn()) loadAll();
 })();
 </script>
 </html>

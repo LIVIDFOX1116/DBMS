@@ -117,14 +117,18 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
 
-# No auth and no mutating endpoints (see API_CONTRACT.md "Known simplifications"),
-# so a wildcard origin doesn't widen the attack surface -- it just lets the
-# frontend be opened as a static file or served from any local dev port
-# without per-origin config.
+# Phase 5 ended the wildcard: a session cookie is credentialed, and the CORS
+# spec refuses `Access-Control-Allow-Origin: *` together with credentials --
+# the browser drops the response outright. So the origin is echoed back, but
+# only for local ones: the dashboard on any localhost dev port, and the Tauri
+# webview (which serves the app from http://tauri.localhost on Windows and
+# tauri://localhost elsewhere). POST joins GET because signing in and out
+# are mutating.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost)$",
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 

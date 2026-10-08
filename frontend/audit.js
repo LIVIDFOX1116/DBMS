@@ -110,6 +110,135 @@ function fcShowApiDown(err) {
   }
 }
 
+/* ── Sign-in ──
+   The browser does the PKCE authorization-code flow and exchanges the code
+   with Google directly: with PKCE the client is public, so no client secret
+   is involved anywhere on this path, and the backend only ever sees the
+   resulting ID token. */
+const FC_SESSION_KEY = "framecheck_session_token";
+const FC_PKCE_KEY = "framecheck_pkce_verifier";
+
+function fcStoredSessionToken() {
+  try { return localStorage.getItem(FC_SESSION_KEY) || ""; } catch { return ""; }
+}
+
+function fcRedirectUri() {
+  return `${location.origin}${location.pathname}`;
+}
+
+function fcShowSignIn(message) {
+  if (document.getElementById("fcSignIn")) return;
+  const el = document.createElement("div");
+  el.id = "fcSignIn";
+  el.className = "fc-signin-backdrop";
+  el.innerHTML = `<div class="fc-signin-card">
+    <div class="fc-signin-brand">Frame<em>Check</em></div>
+    <h2>Sign in to continue</h2>
+    <p>This FrameCheck backend requires a Google account.</p>
+    <div class="fc-signin-msg" id="fcSignInMsg">${message ? fcEsc(message) : ""}</div>
+    <button class="btn primary" id="fcSignInBtn">Sign in with Google</button>
+  </div>`;
+  document.body.appendChild(el);
+  document.getElementById("fcSignInBtn").addEventListener("click", fcStartSignIn);
+}
+
+function fcHideSignIn() {
+  document.getElementById("fcSignIn")?.remove();
+}
+
+function fcSignInMessage(text) {
+  const el = document.getElementById("fcSignInMsg");
+  if (el) el.textContent = text;
+}
+
+async function fcStartSignIn() {
+  try {
+    const cfg = await (await fetch(apiBase() + "/auth/login")).json();
+    if (!cfg.client_id) throw new Error(cfg.detail || "Google sign-in is not configured on this server");
+    try { localStorage.setItem(FC_PKCE_KEY, cfg.code_verifier); } catch { /* private mode */ }
+    const url = new URL(cfg.authorization_endpoint);
+    url.searchParams.set("client_id", cfg.client_id);
+    url.searchParams.set("redirect_uri", fcRedirectUri());
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", cfg.scope);
+    url.searchParams.set("code_challenge", cfg.code_challenge);
+    url.searchParams.set("code_challenge_method", cfg.code_challenge_method);
+    location.assign(url.toString());
+  } catch (err) {
+    fcSignInMessage(err.message || String(err));
+  }
+}
+
+async function fcCompleteSignIn() {
+  // Called on load: if Google has just redirected back, there is a ?code=.
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  if (params.get("error")) {
+    fcShowSignIn(`Google returned "${params.get("error")}".`);
+    history.replaceState(null, "", location.pathname);
+    return false;
+  }
+  if (!code) return false;
+  history.replaceState(null, "", location.pathname);
+  let verifier = "";
+  try { verifier = localStorage.getItem(FC_PKCE_KEY) || ""; } catch { /* private mode */ }
+  if (!verifier) {
+    fcShowSignIn("This sign-in did not start in this browser. Try again.");
+    return false;
+  }
+  try {
+    const cfg = await (await fetch(apiBase() + "/auth/login")).json();
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: cfg.client_id, code, code_verifier: verifier,
+        grant_type: "authorization_code", redirect_uri: fcRedirectUri(),
+      }),
+    });
+    const tokens = await tokenRes.json();
+    if (!tokens.id_token) throw new Error(tokens.error_description || "Google did not return an ID token");
+    const res = await fetch(apiBase() + "/auth/callback", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id_token: tokens.id_token }),
+    });
+    if (!res.ok) throw new Error("The server rejected this sign-in.");
+    const body = await res.json();
+    try {
+      localStorage.setItem(FC_SESSION_KEY, body.session_token);
+      localStorage.removeItem(FC_PKCE_KEY);
+    } catch { /* private mode */ }
+    fcHideSignIn();
+    return true;
+  } catch (err) {
+    fcShowSignIn(err.message || String(err));
+    return false;
+  }
+}
+
+async function fcEnsureSignedIn() {
+  // Returns true when the app may load. Public endpoints still work when
+  // this returns false, which is why the gate is a modal over the app
+  // rather than a redirect away from it.
+  if (await fcCompleteSignIn()) return true;
+  try {
+    const bearer = fcStoredSessionToken();
+    const res = await fetch(apiBase() + "/auth/session", {
+      credentials: "include",
+      headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
+    });
+    const body = await res.json();
+    if (body.authenticated) { fcHideSignIn(); return true; }
+    fcShowSignIn();
+    return false;
+  } catch {
+    // API unreachable: that is the existing "API down" path's job to
+    // report, not a sign-in failure.
+    return true;
+  }
+}
+
 /* ── Benchmarks view ── */
 function fcSeconds(s) {
   if (s == null) return "–";
