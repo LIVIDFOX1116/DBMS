@@ -47,6 +47,13 @@ DEFAULT_BFS_PROXIMITY_THRESHOLD = 50.0   # score >= this -> flag. 90 - 2*20 = 50
 DEFAULT_PAGERANK_PERCENTILE = 0.01       # top 1% by PageRank
 DEFAULT_IMPURITY_THRESHOLD = 0.10        # >= 10% of a wallet's (subgraph-visible) balance
 
+# A reverted transaction moves no value. transaction.status is stored as
+# (txreceipt_status == "1"), which is also False for every pre-Byzantium
+# block (Etherscan leaves the receipt status empty there), so status only
+# means "reverted" from the Byzantium fork onward.
+BYZANTIUM_BLOCK = 4_370_000
+NOT_REVERTED_SQL = f"NOT (t.status IS FALSE AND t.block_number >= {BYZANTIUM_BLOCK})"
+
 
 # --- Pure detection logic (no DB) -------------------------------------------
 
@@ -431,7 +438,7 @@ def _fetch_native_and_token_transfers(cur, snapshot_id: int, with_block: bool) -
         FROM snapshot_edge_tx st
         JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
         JOIN transaction t ON t.tx_hash = st.tx_hash
-        WHERE se.snapshot_id = %s
+        WHERE se.snapshot_id = %s AND {NOT_REVERTED_SQL}
         ORDER BY t.block_number, t.tx_index
         """,
         (snapshot_id,),
@@ -445,7 +452,7 @@ def _fetch_native_and_token_transfers(cur, snapshot_id: int, with_block: bool) -
         JOIN transaction t ON t.tx_hash = st.tx_hash
         JOIN token_transfer tt ON tt.tx_hash = t.tx_hash
         JOIN token tok ON tok.token_id = tt.token_id
-        WHERE se.snapshot_id = %s
+        WHERE se.snapshot_id = %s AND {NOT_REVERTED_SQL}
         ORDER BY t.block_number, tt.log_index
         """,
         (snapshot_id,),
