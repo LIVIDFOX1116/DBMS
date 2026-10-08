@@ -712,7 +712,9 @@ def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = Non
                        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fa.framing_cost_wei)
                            FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_median_wei,
                        MAX(fa.framing_cost_wei) FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_max_wei
-                FROM flag_audit fa JOIN flag f ON f.flag_id = fa.flag_id
+                FROM (SELECT DISTINCT ON (flag_id) * FROM flag_audit
+                      ORDER BY flag_id, created_at DESC, flag_audit_id DESC) fa
+                JOIN flag f ON f.flag_id = fa.flag_id
             """
             params = []
             if run_id is not None:
