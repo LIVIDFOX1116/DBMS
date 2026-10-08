@@ -24,7 +24,7 @@ import threading
 from contextlib import asynccontextmanager, contextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -33,6 +33,7 @@ from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from api import auth
 from ingestion import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -69,6 +70,35 @@ app = FastAPI(
     description="Shared contract between the GPU/backend half and the frontend half. See docs/API_CONTRACT.md.",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def require_session(request: Request, call_next):
+    """Gates every route except auth.PUBLIC_PATHS. A middleware rather
+    than a per-route dependency so that a route added later is protected
+    by default -- forgetting to add a dependency would silently expose a
+    new endpoint, while forgetting to add a path to PUBLIC_PATHS only
+    makes a public route ask for a session, which is the safe direction
+    to fail in."""
+    if auth.auth_mode() == "disabled" or request.method == "OPTIONS":
+        return await call_next(request)
+    if request.url.path in auth.PUBLIC_PATHS:
+        return await call_next(request)
+
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    header = request.headers.get("authorization", "")
+    if not token and header.lower().startswith("bearer "):
+        token = header[7:].strip()
+    if not token:
+        return JSONResponse(status_code=401, content={"detail": "sign-in required"})
+    try:
+        request.state.session = auth.read_session(token)
+    except auth.AuthError as e:
+        # The reason (expired vs tampered vs unconfigured secret) goes to
+        # the log, not to the caller.
+        log.info("Rejected session on %s: %s", request.url.path, e)
+        return JSONResponse(status_code=401, content={"detail": "sign-in required"})
+    return await call_next(request)
 
 
 @app.exception_handler(Exception)
@@ -732,6 +762,98 @@ def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = Non
             for row in rows:
                 row["frameable_share"] = row["frameable_count"] / row["total_audited"] if row["total_audited"] else 0.0
             return rows
+
+
+class GoogleCallback(BaseModel):
+    id_token: str
+
+
+# Swapped out in tests so the suite never reaches Google. Never a way to
+# skip verification in a real run -- the default is the real check.
+_verify_id_token = auth.verify_google_id_token
+
+
+@app.get("/auth/login")
+def auth_login():
+    """PKCE parameters for the client to start the flow with. The verifier
+    is returned to the caller because the caller is the one that must keep
+    it and present it when exchanging the code -- that is what binds the
+    code to this client."""
+    client_id = auth.google_client_id()
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured on this server")
+    verifier, challenge = auth.new_pkce_pair()
+    return {
+        "client_id": client_id,
+        "code_verifier": verifier,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "scope": "openid email profile",
+    }
+
+
+@app.post("/auth/callback")
+def auth_callback(body: GoogleCallback, response: Response):
+    """Verifies Google's ID token, upserts the user, and issues our own
+    session. The browser gets it as an HttpOnly cookie (so page scripts
+    cannot read it); the desktop app reads `session_token` from the body,
+    because its webview and the sidecar do not share a cookie jar."""
+    client_id = auth.google_client_id()
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured on this server")
+    try:
+        claims = _verify_id_token(body.id_token, client_id)
+    except auth.AuthError as e:
+        log.info("Rejected Google ID token: %s", e)
+        raise HTTPException(status_code=401, detail="sign-in failed") from e
+    except Exception as e:
+        log.warning("Google ID token verification error: %s", e)
+        raise HTTPException(status_code=401, detail="sign-in failed") from e
+
+    with get_conn() as conn:
+        user = auth.upsert_user(conn, claims)
+    token = auth.issue_session(user)
+    response.set_cookie(
+        auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
+        max_age=auth.SESSION_TTL_SECONDS,
+        # secure=False: this backend is served over plain http on
+        # localhost (and as a Tauri sidecar). Setting Secure here would
+        # mean the cookie is never stored at all.
+        secure=False,
+    )
+    return {"user": {k: user[k] for k in ("user_id", "email", "display_name", "picture_url")},
+            "session_token": token}
+
+
+@app.get("/auth/session")
+def auth_session(request: Request):
+    """Who am I? Public so the UI can ask before it has a session and get
+    a plain answer instead of a 401 it has to special-case."""
+    if auth.auth_mode() == "disabled":
+        return {"authenticated": True, "auth_mode": "disabled", "user": None}
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    header = request.headers.get("authorization", "")
+    if not token and header.lower().startswith("bearer "):
+        token = header[7:].strip()
+    if not token:
+        return {"authenticated": False, "auth_mode": "required", "user": None}
+    try:
+        session = auth.read_session(token)
+    except auth.AuthError:
+        return {"authenticated": False, "auth_mode": "required", "user": None}
+    with get_conn() as conn:
+        user = auth.pg_user_fetch(conn, session["user_id"])
+    if user is None:
+        return {"authenticated": False, "auth_mode": "required", "user": None}
+    return {"authenticated": True, "auth_mode": "required",
+            "user": {k: user[k] for k in ("user_id", "email", "display_name", "picture_url")}}
+
+
+@app.post("/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(auth.SESSION_COOKIE)
+    return {"status": "signed out"}
 
 
 BENCHMARKS_PATH = pathlib.Path(__file__).parent.parent / "docs" / "perf" / "benchmarks.json"

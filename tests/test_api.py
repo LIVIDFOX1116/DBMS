@@ -14,6 +14,11 @@ override an already-set env var, so this wins.
 import os
 
 os.environ["FRAMECHECK_API_MODE"] = "mock"
+# Auth is required by default (api/auth.py fails closed). These tests cover
+# the endpoints' own behaviour, so they run with it off and the auth
+# behaviour itself is covered explicitly in tests/test_auth.py, which turns
+# it back on rather than assuming the default.
+os.environ["FRAMECHECK_AUTH_MODE"] = "disabled"
 
 import json  # noqa: E402
 import threading  # noqa: E402
