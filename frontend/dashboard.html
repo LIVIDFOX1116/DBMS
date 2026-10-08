@@ -416,6 +416,7 @@ table.dtable a { color: var(--accent-glow); }
   <button class="sidenav-item" data-page="clusters">Clusters</button>
   <button class="sidenav-item" data-page="alerts">Alerts</button>
   <button class="sidenav-item" data-page="graph">Graph</button>
+  <button class="sidenav-item" data-page="analysis">Run analysis</button>
   <button class="sidenav-item" data-page="benchmarks">Benchmarks</button>
 </nav>
 
@@ -427,6 +428,7 @@ table.dtable a { color: var(--accent-glow); }
     <button class="sidenav-item" data-page="clusters"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="3.2"/><circle cx="17" cy="6" r="2.3"/><circle cx="17.5" cy="15" r="3"/><circle cx="7" cy="16" r="2.3"/></svg>Clusters</button>
     <button class="sidenav-item" data-page="alerts"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Alerts</button>
     <button class="sidenav-item" data-page="graph"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/><path d="M6.9 7.4 10.3 16M17.1 7.4 13.7 16M7.3 6h9.4"/></svg>Graph</button>
+    <button class="sidenav-item" data-page="analysis"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/></svg>Run analysis</button>
     <button class="sidenav-item" data-page="benchmarks"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><rect x="4" y="12" width="4" height="7" rx="1"/><rect x="10" y="7" width="4" height="12" rx="1"/><rect x="16" y="14" width="4" height="5" rx="1"/></svg>Benchmarks</button>
   </aside>
 
@@ -552,6 +554,40 @@ table.dtable a { color: var(--accent-glow); }
     </section>
 
     <!-- GRAPH -->
+    <section class="view" id="view-analysis">
+      <div class="view-header"><div><h1>Run analysis</h1><p>Run the detectors and the framing audit without leaving the app</p></div></div>
+      <div class="panel">
+        <div class="fc-run-form">
+          <label>Snapshot <select id="fcRunSnapshot"></select></label>
+          <label>Seed wallet <input type="number" id="fcRunSeed" min="1" value="2" /></label>
+          <label>Detector <select id="fcRunDetector">
+            <option value="all">All detectors</option>
+            <option value="bfs_proximity">BFS proximity</option>
+            <option value="sybil_cluster">Sybil cluster</option>
+            <option value="pagerank_threshold">PageRank threshold</option>
+            <option value="impurity">Impurity</option>
+            <option value="engaged_proximity">Engaged proximity</option>
+          </select></label>
+          <label>Audit limit <input type="number" id="fcRunLimit" min="1" placeholder="all" /></label>
+          <div class="fc-run-actions">
+            <button class="btn" id="fcRunDetectors">Run detectors</button>
+            <button class="btn primary" id="fcRunAudit">Run audit</button>
+            <button class="btn" id="fcCancelJob" hidden>Cancel</button>
+          </div>
+        </div>
+        <p class="fc-muted fc-run-note">Auditing every flag on a large snapshot can take hours — set a limit to audit a
+          reproducible sample (lowest flag ids first), the same sample the command line would take.</p>
+        <div id="fcJobStatus"></div>
+      </div>
+      <div class="panel" style="margin-top:14px;">
+        <div class="panel-head"><h2>Recent jobs</h2><span class="fc-muted">Forgotten when the backend restarts</span></div>
+        <div class="table-wrap"><table class="dtable">
+          <thead><tr><th>Type</th><th>Snapshot</th><th>Status</th><th>Progress</th><th>Elapsed</th></tr></thead>
+          <tbody id="fcJobRows"></tbody>
+        </table></div>
+      </div>
+    </section>
+
     <section class="view" id="view-benchmarks">
       <div class="view-header"><div><h1>Benchmarks</h1><p>CPU (pandas + NetworkX) vs GPU (cudf + cuGraph) on this machine</p></div></div>
       <div id="benchmarkPanels"></div>
@@ -632,6 +668,14 @@ table.dtable a { color: var(--accent-glow); }
           <button data-f="impurity">Impurity</button>
           <button data-f="engaged_proximity">Engaged proximity</button>
         </div>
+        <input type="search" id="fcFlagSearch" class="fc-search" placeholder="Search wallet, address or flag id…" autocomplete="off" />
+        <select id="fcVerdictFilter" class="fc-select">
+          <option value="all">Any verdict</option>
+          <option value="frameable">Frameable</option>
+          <option value="robust">Robust</option>
+          <option value="unaudited">Not audited</option>
+        </select>
+        <span class="fc-muted" id="fcFlagCount"></span>
       </div>
       <div class="fc-split">
         <div class="panel fc-list">
@@ -802,6 +846,7 @@ const PAGE_META = {
   alerts:   { title: "Alerts",   sub: "Pattern-detection alerts across all runs" },
   graph:    { title: "Wallet graph", sub: "Force-directed view of the transaction graph" },
   flags:    { title: "Flags", sub: "Could an outsider have produced each flag without the wallet doing anything?" },
+  analysis: { title: "Run analysis", sub: "Run the detectors and the framing audit without leaving the app" },
   benchmarks: { title: "Benchmarks", sub: "CPU (pandas + NetworkX) vs GPU (cudf + cuGraph) on this machine" },
 };
 let currentPage = "overview";
@@ -818,6 +863,7 @@ function go(name) {
   if (name === "flags") fcOpenFlagsView();
   if (name === "graph") fcPopulateGraphFlagSelect();
   if (name === "benchmarks") fcLoadBenchmarks();
+  if (name === "analysis") fcOpenAnalysisView();
 }
 window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
 document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));
