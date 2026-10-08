@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Dashboard — FrameCheck</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A7A6E'/%3E%3Ctext x='16' y='21' font-family='DM Sans, sans-serif' font-size='13' font-weight='700' fill='white' text-anchor='middle'%3ETX%3C/text%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231A7A6E'/%3E%3Ctext x='16' y='21' font-family='DM Sans, sans-serif' font-size='13' font-weight='700' fill='white' text-anchor='middle'%3EFC%3C/text%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,500&family=Playfair+Display:ital,wght@1,600&display=swap" rel="stylesheet">
@@ -14,6 +14,8 @@
      on the real 19,119-node/35,756-edge graph, inside the actual Tauri
      window, with pan/zoom live -- see spikes/webgl2-instanced/. -->
 <script src="graph-webgl.js"></script>
+<script src="audit.js"></script>
+<link rel="stylesheet" href="audit.css">
 <style>
 :root {
   --bg:        #0D1614;
@@ -409,30 +411,42 @@ table.dtable a { color: var(--accent-glow); }
 
 <nav class="mobile-nav" id="mobileNav">
   <button class="sidenav-item active" data-page="overview">Overview</button>
+  <button class="sidenav-item" data-page="flags">Flags</button>
   <button class="sidenav-item" data-page="wallets">Wallets</button>
   <button class="sidenav-item" data-page="clusters">Clusters</button>
   <button class="sidenav-item" data-page="alerts">Alerts</button>
   <button class="sidenav-item" data-page="graph">Graph</button>
-  <button class="sidenav-item" data-page="audit">Audit</button>
 </nav>
 
 <div class="shell">
   <aside class="sidenav" id="sidenav">
     <button class="sidenav-item active" data-page="overview"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+    <button class="sidenav-item" data-page="flags"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6l-8-4Z"/><path d="m9 12 2 2 4-4"/></svg>Flags</button>
     <button class="sidenav-item" data-page="wallets"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7H5a2 2 0 0 1 0-4h13v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h3v-4Z"/></svg>Wallets</button>
     <button class="sidenav-item" data-page="clusters"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="3.2"/><circle cx="17" cy="6" r="2.3"/><circle cx="17.5" cy="15" r="3"/><circle cx="7" cy="16" r="2.3"/></svg>Clusters</button>
     <button class="sidenav-item" data-page="alerts"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Alerts</button>
     <button class="sidenav-item" data-page="graph"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/><path d="M6.9 7.4 10.3 16M17.1 7.4 13.7 16M7.3 6h9.4"/></svg>Graph</button>
-    <button class="sidenav-item" data-page="audit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6l-8-4Z"/><path d="m9 12 2 2 4-4"/></svg>Audit</button>
   </aside>
 
   <main class="main">
 
     <!-- OVERVIEW -->
     <section class="view active" id="view-overview">
-      <div class="view-header"><div><h1>Overview</h1><p>GPU-accelerated Ethereum framing audit</p></div></div>
+      <div class="view-header"><div><h1>Overview</h1><p>Could an outsider have produced each flag? FrameCheck audits every flag for framing</p></div></div>
 
-      <div class="stat-strip">
+      <div class="stat-strip" id="fcMetrics">
+        <div class="stat-cell" data-page="flags"><div class="stat-rule amber"></div><div class="stat-num" id="fcFlags">–</div><div class="stat-lbl">Flags raised</div></div>
+        <div class="stat-cell" data-page="flags"><div class="stat-rule"></div><div class="stat-num" id="fcAudited">–</div><div class="stat-lbl" id="fcAuditedLbl">Audited</div></div>
+        <div class="stat-cell" data-page="flags"><div class="stat-rule rose"></div><div class="stat-num" id="fcFrameable">–</div><div class="stat-lbl" id="fcFrameableLbl">Frameable</div></div>
+        <div class="stat-cell" data-page="flags"><div class="stat-rule"></div><div class="stat-num" id="fcMedian">–</div><div class="stat-lbl">Median framing cost</div></div>
+      </div>
+      <div class="panel" style="margin-bottom:20px;">
+        <div class="panel-hdr">Flags per detector <span class="fc-legend"><i class="fc-sw frameable"></i>frameable <i class="fc-sw robust"></i>robust <i class="fc-sw unaudited"></i>not audited</span></div>
+        <div class="panel-body" id="fcDetectorBars"><div class="empty-hint">Loading…</div></div>
+      </div>
+
+      <div class="fc-section-title">Graph data</div>
+      <div class="stat-strip fc-secondary">
         <div class="stat-cell" data-page="wallets">
           <div class="stat-rule"></div>
           <div class="stat-num" id="statWallets">–</div><div class="stat-lbl">Wallets</div>
@@ -549,6 +563,7 @@ table.dtable a { color: var(--accent-glow); }
               <option value="5000">5,000 edges</option>
               <option value="1000000">Full graph</option>
             </select>
+            <select id="graphFlagSelect" title="Draw one flag's evidence edges: signed vs unsolicited"><option value="">Flag evidence: none</option></select>
             <button class="btn" id="graphRedrawBtn">↻ Redraw</button>
             <button class="btn" id="graphBenchmarkBtn" title="Compare CPU single-thread, CPU rayon, and GPU on this snapshot's full graph">⚡ Benchmark layout</button>
             <span class="mono" id="layoutDeviceBadge" style="font-size:11px;color:var(--muted,#7C948F);"></span>
@@ -561,6 +576,7 @@ table.dtable a { color: var(--accent-glow); }
               <span id="clusterAttractionIndicator" class="mono">cluster pull: 40</span>
               <input type="range" id="clusterAttractionSlider" min="0" max="200" step="5" value="40" style="width:120px;">
             </label>
+            <div class="fc-graph-legend" id="fcGraphLegend" hidden><span><i class="fc-line signed"></i>signed by the flagged wallet</span><span><i class="fc-line unsolicited"></i>unsolicited (outsider)</span><span><i class="fc-dot"></i>flagged wallet</span></div>
             <div class="graph-legend-inline">
               <span>Color = risk tier</span>
               <span>Size = tx count</span>
@@ -597,19 +613,9 @@ table.dtable a { color: var(--accent-glow); }
       </div>
     </section>
 
-    <!-- AUDIT (FrameCheck) -->
-    <section class="view" id="view-audit">
-      <div class="view-header"><div><h1>Audit</h1><p>Could an outsider have produced each flag without the wallet doing anything? <span id="auditSnapshotLabel" class="mono" style="opacity:0.7;"></span></p></div></div>
-
-      <div class="panel" style="margin-bottom:16px;">
-        <div class="table-wrap">
-          <table class="dtable">
-            <thead><tr><th>Detector</th><th>Audited</th><th>Frameable</th><th>Frameable share</th><th>Framing cost (median)</th></tr></thead>
-            <tbody id="auditSummaryRows"></tbody>
-          </table>
-        </div>
-      </div>
-
+    <!-- FLAGS (FrameCheck audit) -->
+    <section class="view" id="view-flags">
+      <div class="view-header"><div><h1>Flags</h1><p>Flag &rarr; evidence &rarr; verdict &rarr; framing cost <span id="auditSnapshotLabel" class="mono" style="opacity:0.7;"></span></p></div></div>
       <div class="toolbar">
         <div class="seg" id="auditFilterBar">
           <button class="on" data-f="all">All</button>
@@ -620,13 +626,16 @@ table.dtable a { color: var(--accent-glow); }
           <button data-f="engaged_proximity">Engaged proximity</button>
         </div>
       </div>
-      <div class="panel">
-        <div class="table-wrap">
-          <table class="dtable">
-            <thead><tr><th>Detector</th><th>Wallet</th><th>Verdict</th><th>Framing cost</th><th>Method</th></tr></thead>
-            <tbody id="auditFlagRows"></tbody>
-          </table>
+      <div class="fc-split">
+        <div class="panel fc-list">
+          <div class="table-wrap">
+            <table class="dtable">
+              <thead><tr><th>Detector</th><th>Wallet</th><th class="num">Score</th><th>Verdict</th></tr></thead>
+              <tbody id="auditFlagRows"></tbody>
+            </table>
+          </div>
         </div>
+        <div class="panel fc-detail" id="fcDetail"><div class="empty-hint">Select a flag to see its evidence, verdict and framing cost.</div></div>
       </div>
     </section>
 
@@ -672,30 +681,6 @@ table.dtable a { color: var(--accent-glow); }
     <div class="modal-footer">
       <button class="btn" id="cmFocusBtn">Focus in graph</button>
       <button class="btn" data-close="clusterModal">Close</button>
-    </div>
-  </div>
-</div>
-
-<!-- Flag evidence drill-down -->
-<div class="modal-overlay" id="flagModal">
-  <div class="modal-card wide">
-    <div class="modal-header"><h3 id="fmTitle" style="font-family:var(--font);">Flag</h3><div id="fmBadges" style="margin-top:8px;"></div></div>
-    <div class="modal-body">
-      <div class="stat-mini-grid" style="grid-template-columns:repeat(3,1fr);">
-        <div class="stat-mini"><div class="sl">Verdict</div><div class="sv" id="fmVerdict">–</div></div>
-        <div class="stat-mini"><div class="sl">Framing cost</div><div class="sv" id="fmCost">–</div></div>
-        <div class="stat-mini"><div class="sl">Method</div><div class="sv" id="fmMethod">–</div></div>
-      </div>
-      <div class="side-title" style="margin-top:12px;">Evidence (block-ordered)</div>
-      <div class="table-wrap" style="max-height:320px;">
-        <table class="dtable">
-          <thead><tr><th>Tx hash</th><th>Hop</th><th>Block</th><th>Role</th></tr></thead>
-          <tbody id="fmEvidenceBody"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn" data-close="flagModal">Close</button>
     </div>
   </div>
 </div>
@@ -799,11 +784,12 @@ const PAGE_META = {
   clusters: { title: "Clusters", sub: "Louvain community-detection output" },
   alerts:   { title: "Alerts",   sub: "Pattern-detection alerts across all runs" },
   graph:    { title: "Wallet graph", sub: "Force-directed view of the transaction graph" },
-  audit:    { title: "Audit", sub: "Could an outsider have produced each flag without the wallet doing anything?" },
+  flags:    { title: "Flags", sub: "Could an outsider have produced each flag without the wallet doing anything?" },
 };
 let currentPage = "overview";
 
 function go(name) {
+  if (name === "audit") name = "flags";
   if (!PAGE_META[name]) name = "overview";
   currentPage = name;
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
@@ -811,7 +797,8 @@ function go(name) {
   history.replaceState(null, "", `#${name}`);
   window.scrollTo({ top: 0 });
   if (name === "graph" && WALLETS.length) renderGraph();
-  if (name === "audit" && !auditLoaded) loadAudit();
+  if (name === "flags") fcOpenFlagsView();
+  if (name === "graph") fcPopulateGraphFlagSelect();
 }
 window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
 document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));
@@ -867,6 +854,7 @@ async function loadAll() {
     renderAll();
   } catch (err) {
     setHealth("err", "API unreachable");
+    fcShowApiDown(err);
     toast(`Could not reach the API (${apiBase()}): ${err.message}`, "error");
   }
 }
@@ -881,6 +869,7 @@ function renderAll() {
   renderClusters();
   renderAlerts();
   renderSnapshotSelect();
+  fcLoadOverview();
   if (currentPage === "graph") renderGraph();
 }
 
@@ -1105,137 +1094,6 @@ function renderAlerts() {
 }
 
 /* ════════════════════════════════════════
-   AUDIT (FrameCheck)
-════════════════════════════════════════ */
-let auditLoaded = false;
-let auditFilter = "all";
-let auditSnapshotId = null; // resolved once per loadAudit() -- the latest snapshot; see resolveLatestSnapshotId
-let AUDIT_SUMMARY = [];
-let AUDIT_FLAGS = []; // flag rows merged with their audit result (verdict/cost/method), where audited
-const AUDIT_FLAGS_BY_FILTER = {}; // cache keyed by filter ("all" or a detector name) -- see loadAuditFlagsFor
-
-function weiToEth(wei) {
-  if (wei == null) return "–";
-  return `${(Number(wei) / 1e18).toFixed(6)} ETH`;
-}
-
-// The Audit view always shows one snapshot's data, deduped to the latest
-// run per detector on it (see api/main.py's resolve_latest_run_ids) --
-// otherwise a re-run detector's older flags double-count alongside the
-// newest run's. Defaults to the most recently created snapshot; there is
-// no per-view snapshot picker yet (unlike the Graph view's), so this is
-// the one place "current snapshot" is decided for Audit.
-async function resolveLatestSnapshotId() {
-  const snapshots = await api("/snapshots").catch(() => []);
-  return snapshots.length ? snapshots[0].snapshot_id : null;
-}
-
-// Bounded page of flags for one filter, then their audit results in
-// parallel -- there is no bulk audit-lookup endpoint (unlike
-// /cluster-membership for clusters), so this stays a small, fixed-size
-// page rather than N+1 over every flag a real run can produce (thousands
-// for sybil_cluster). Fetched per filter (not client-filtered from a
-// single global page): /flags with no detector always returns the
-// globally lowest flag_ids, which in practice is always whichever
-// detector happens to run first each pipeline run -- a client-side filter
-// over that one page would silently show "nothing matches" for every
-// other detector even when it has real audited flags.
-async function loadAuditFlagsFor(filter) {
-  if (AUDIT_FLAGS_BY_FILTER[filter]) return AUDIT_FLAGS_BY_FILTER[filter];
-  const params = { limit: 50 };
-  if (auditSnapshotId != null) params.snapshot_id = auditSnapshotId;
-  if (filter !== "all") params.detector = filter;
-  const flags = await api("/flags", params).catch(() => []);
-  const audits = await Promise.all(
-    flags.map(f => api(`/flags/${f.flag_id}/audit`).catch(() => null))
-  );
-  const merged = flags.map((f, i) => ({ ...f, audit: audits[i] }));
-  AUDIT_FLAGS_BY_FILTER[filter] = merged;
-  return merged;
-}
-
-async function loadAudit() {
-  auditLoaded = true;
-  document.getElementById("auditSummaryRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
-  document.getElementById("auditFlagRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
-
-  auditSnapshotId = await resolveLatestSnapshotId();
-  document.getElementById("auditSnapshotLabel").textContent =
-    auditSnapshotId != null ? `(snapshot ${auditSnapshotId})` : "";
-
-  const summaryParams = auditSnapshotId != null ? { snapshot_id: auditSnapshotId } : {};
-  AUDIT_SUMMARY = await api("/audit/summary", summaryParams).catch(() => []);
-  renderAuditSummary();
-
-  AUDIT_FLAGS = await loadAuditFlagsFor(auditFilter);
-  renderAuditFlags();
-}
-
-function renderAuditSummary() {
-  const tbody = document.getElementById("auditSummaryRows");
-  if (!AUDIT_SUMMARY.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">No audited flags yet.</div></td></tr>`; return; }
-  tbody.innerHTML = AUDIT_SUMMARY.map(s => `
-    <tr>
-      <td>${s.detector}</td>
-      <td class="num">${s.total_audited}</td>
-      <td class="num">${s.frameable_count}</td>
-      <td class="num">${(s.frameable_share * 100).toFixed(0)}%</td>
-      <td class="num">${weiToEth(s.framing_cost_median_wei)}</td>
-    </tr>`).join("");
-}
-
-document.getElementById("auditFilterBar").addEventListener("click", async e => {
-  const btn = e.target.closest("button"); if (!btn) return;
-  auditFilter = btn.dataset.f;
-  document.querySelectorAll("#auditFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
-  document.getElementById("auditFlagRows").innerHTML = `<tr><td colspan="5"><div class="empty-hint">Loading…</div></td></tr>`;
-  AUDIT_FLAGS = await loadAuditFlagsFor(auditFilter);
-  renderAuditFlags();
-});
-
-function renderAuditFlags() {
-  const tbody = document.getElementById("auditFlagRows");
-  const list = AUDIT_FLAGS;
-  if (!list.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">Nothing matches this filter.</div></td></tr>`; return; }
-  tbody.innerHTML = list.map(f => {
-    const a = f.audit;
-    const verdictBadge = a ? `<span class="badge b-verdict-${a.verdict}">${a.verdict}</span>` : `<span class="badge b-status-new">not audited</span>`;
-    const cost = a && a.verdict === "frameable" ? weiToEth(a.framing_cost_wei) : "–";
-    const method = a ? a.method : "–";
-    return `
-    <tr onclick="openFlagModal(${f.flag_id})" style="cursor:pointer;">
-      <td>${f.detector}</td>
-      <td><a href="#" class="mono" onclick="event.preventDefault();event.stopPropagation();openWalletModal(${f.wallet_id})">#${f.wallet_id}</a></td>
-      <td>${verdictBadge}</td>
-      <td class="num">${cost}</td>
-      <td>${method}</td>
-    </tr>`;
-  }).join("");
-}
-
-async function openFlagModal(flagId) {
-  const flag = AUDIT_FLAGS.find(f => f.flag_id === flagId);
-  const a = flag?.audit;
-  document.getElementById("fmTitle").textContent = `Flag #${flagId} — ${flag?.detector ?? ""}`;
-  document.getElementById("fmBadges").innerHTML = a
-    ? `<span class="badge b-verdict-${a.verdict}">${a.verdict}</span>`
-    : `<span class="badge b-status-new">not audited</span>`;
-  document.getElementById("fmVerdict").textContent = a?.verdict ?? "not audited";
-  document.getElementById("fmCost").textContent = a && a.verdict === "frameable" ? weiToEth(a.framing_cost_wei) : "–";
-  document.getElementById("fmMethod").textContent = a?.method ?? "–";
-
-  const evidence = await api(`/flags/${flagId}/evidence`).catch(() => []);
-  document.getElementById("fmEvidenceBody").innerHTML = evidence.map(e => `
-    <tr>
-      <td class="mono">${shortAddr(e.tx_hash)}</td>
-      <td class="num">${e.hop}</td>
-      <td class="num">${e.block_number}</td>
-      <td><span class="badge ${e.role === 'signed' ? 'b-status-reviewed' : 'b-status-new'}">${e.role}</span></td>
-    </tr>`).join("") || `<tr><td colspan="4"><div class="empty-hint">No evidence collected for this flag yet.</div></td></tr>`;
-  openModal("flagModal");
-}
-
-/* ════════════════════════════════════════
    GRAPH
 ════════════════════════════════════════ */
 let graphRenderer = null; // the one GraphRenderer instance (graph-webgl.js) for the current view
@@ -1380,6 +1238,7 @@ function renderPagerankBars() {
 
 async function renderGraph() {
   const myGeneration = ++renderGraphGeneration;
+  if (fcGraphOverlayWanted()) return fcDrawFlagOverlay(myGeneration);
   const container = document.getElementById("graphCanvas");
   const tooltip = document.getElementById("graphTooltip");
   const snapshotId = document.getElementById("snapshotSelect").value || (SNAPSHOTS[0]?.snapshot_id ?? 1);
@@ -1815,6 +1674,7 @@ document.addEventListener("keydown", e => {
 (async () => {
   await resolveTauriApiBase(); // must resolve before any api() call below
   applyPrefs();
+  fcInit();
   go(location.hash.slice(1) || "overview");
   loadAll();
 })();

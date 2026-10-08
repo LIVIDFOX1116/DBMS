@@ -1,0 +1,54 @@
+/* FrameCheck audit UI (Overview metrics, Flags view, Graph overlay legend) */
+.fc-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin: 6px 2px 8px; }
+.fc-secondary .stat-num { font-size: 20px; }
+.fc-secondary .stat-cell { padding: 14px 18px; }
+
+.fc-legend { float: right; font-weight: 500; font-size: 11px; color: var(--text-2); }
+.fc-sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: baseline; }
+.fc-sw.frameable, .fc-seg.frameable { background: var(--high); }
+.fc-sw.robust, .fc-seg.robust { background: var(--low); }
+.fc-sw.unaudited, .fc-seg.unaudited { background: var(--unknown); opacity: .55; }
+
+.fc-bar-row { display: grid; grid-template-columns: 150px 1fr 44px; align-items: center; gap: 10px; padding: 7px 0; font-size: 12.5px; }
+.fc-bar-track { display: flex; height: 10px; border-radius: 5px; background: rgba(255,255,255,.05); overflow: hidden; }
+.fc-seg { display: block; height: 100%; }
+
+.fc-split { display: grid; grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .fc-split { grid-template-columns: 1fr; } }
+.fc-list tbody tr { cursor: pointer; }
+.fc-list tbody tr.sel { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent-glow); }
+.fc-list tbody tr:focus-visible { outline: 1px solid var(--accent-glow); outline-offset: -1px; }
+.fc-detail { padding: 18px 20px; position: sticky; top: 16px; max-height: calc(100vh - 100px); overflow-y: auto; }
+
+.fc-d-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.fc-d-title { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.fc-d-det { font-size: 12px; font-weight: 600; color: var(--accent-glow); margin-left: 8px; }
+.fc-d-wallet { font-size: 12px; color: var(--text-2); margin-top: 4px; word-break: break-all; }
+
+.fc-step { display: grid; grid-template-columns: 26px 1fr; gap: 12px; padding: 14px 0; border-top: 1px solid var(--border); }
+.fc-step-n { width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); border: 1px solid var(--accent-border); color: var(--accent-glow); font-size: 11.5px; font-weight: 700; display: grid; place-items: center; }
+.fc-step-b h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-2); margin-bottom: 8px; }
+.fc-step-b p { font-size: 12.5px; line-height: 1.5; color: var(--text-2); margin-top: 8px; }
+.fc-step-sub { margin: 0 0 8px !important; }
+.fc-evidence { max-height: 260px; }
+.fc-w { color: var(--accent-glow); }
+.fc-arrow { color: var(--text-3); }
+.fc-muted { color: var(--text-3) !important; }
+
+.fc-b-signed { color: #4C9AFF; background: rgba(76,154,255,.16); }
+.fc-b-unsolicited { color: var(--high); background: rgba(229,103,90,.16); }
+.fc-b-method { color: var(--text); background: rgba(255,255,255,.08); }
+
+.fc-cost { font-size: 28px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.fc-cost-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+
+.fc-error { text-align: center; padding: 22px 14px; border: 1px dashed rgba(229,103,90,.45); border-radius: var(--radius); background: rgba(229,103,90,.06); }
+.fc-error-title { font-weight: 700; color: var(--high); margin-bottom: 6px; }
+.fc-error-msg { font-size: 12px; color: var(--text-2); margin-bottom: 12px; word-break: break-word; }
+
+.fc-graph-legend { display: flex; align-items: center; gap: 14px; font-size: 11.5px; color: var(--text-2); }
+.fc-graph-legend[hidden] { display: none; }
+.fc-line { display: inline-block; width: 18px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.fc-line.signed { background: #4C9AFF; }
+.fc-line.unsolicited { background: #E5675A; }
+.fc-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #F2F5F4; margin-right: 6px; vertical-align: middle; }
