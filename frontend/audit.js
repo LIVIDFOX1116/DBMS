@@ -155,6 +155,7 @@ async function fcStartSignIn() {
   try {
     const cfg = await (await fetch(apiBase() + "/auth/login")).json();
     if (!cfg.client_id) throw new Error(cfg.detail || "Google sign-in is not configured on this server");
+    if (isRunningInTauriApp()) return fcDesktopSignIn(cfg);
     try { localStorage.setItem(FC_PKCE_KEY, cfg.code_verifier); } catch { /* private mode */ }
     const url = new URL(cfg.authorization_endpoint);
     url.searchParams.set("client_id", cfg.client_id);
@@ -166,6 +167,35 @@ async function fcStartSignIn() {
     location.assign(url.toString());
   } catch (err) {
     fcSignInMessage(err.message || String(err));
+  }
+}
+
+async function fcDesktopSignIn(cfg) {
+  // Google refuses its consent screen inside an embedded webview, so the
+  // desktop shell opens the real browser and catches the redirect on a
+  // loopback port (src-tauri/src/oauth.rs). Rust hands back the ID token;
+  // the session is still minted by /auth/callback, same as the browser.
+  fcSignInMessage("Continue in your browser…");
+  try {
+    const idToken = await window.__TAURI__.core.invoke("google_signin", {
+      clientId: cfg.client_id,
+      scope: cfg.scope,
+      codeChallenge: cfg.code_challenge,
+      codeVerifier: cfg.code_verifier,
+      authorizationEndpoint: cfg.authorization_endpoint,
+    });
+    const res = await fetch(apiBase() + "/auth/callback", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id_token: idToken }),
+    });
+    if (!res.ok) throw new Error("The server rejected this sign-in.");
+    const body = await res.json();
+    try { localStorage.setItem(FC_SESSION_KEY, body.session_token); } catch { /* private mode */ }
+    fcHideSignIn();
+    loadAll();
+  } catch (err) {
+    fcSignInMessage(typeof err === "string" ? err : (err.message || String(err)));
   }
 }
 

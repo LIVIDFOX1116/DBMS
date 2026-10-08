@@ -446,3 +446,84 @@ pub fn benchmark_layout(snapshot_id: i64, max_edges: usize, state: tauri::State<
 
     Ok(BenchmarkResult { node_count: index_to_id.len(), edge_count: edges.len(), rows })
 }
+
+/// Google sign-in for the desktop shell.
+///
+/// The webview cannot host Google's consent screen (Google blocks embedded
+/// user agents), so this opens the user's real browser and catches the
+/// redirect on a loopback port -- see src/oauth.rs. PKCE values come from
+/// the backend's `GET /auth/login`, so there is exactly one implementation
+/// of that; this never handles a client secret, because a shipped desktop
+/// binary cannot keep one.
+///
+/// Returns the Google ID token. The webview posts it to `/auth/callback`,
+/// which is the single place a session is minted for either client.
+#[tauri::command]
+pub fn google_signin(
+    client_id: String,
+    scope: String,
+    code_challenge: String,
+    code_verifier: String,
+    authorization_endpoint: String,
+) -> Result<String, String> {
+    let (listener, redirect_uri) = crate::oauth::bind_loopback()
+        .map_err(|e| format!("could not open a loopback port for sign-in: {e}"))?;
+    let url = crate::oauth::authorize_url(
+        &authorization_endpoint, &client_id, &redirect_uri, &scope, &code_challenge,
+    );
+
+    open_in_browser(&url)?;
+
+    let code = match crate::oauth::wait_for_redirect(&listener, std::time::Duration::from_secs(300))? {
+        crate::oauth::RedirectResult::Code(code) => code,
+        crate::oauth::RedirectResult::Error(err) => return Err(format!("Google returned \"{err}\"")),
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", client_id.as_str()),
+            ("code", code.as_str()),
+            ("code_verifier", code_verifier.as_str()),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", redirect_uri.as_str()),
+        ])
+        .send()
+        .map_err(|e| format!("could not reach Google to complete sign-in: {e}"))?;
+
+    let body: serde_json::Value = resp.json().map_err(|e| format!("unreadable reply from Google: {e}"))?;
+    match body.get("id_token").and_then(|v| v.as_str()) {
+        Some(token) => Ok(token.to_string()),
+        // error_description can quote the request back; keep it in the log
+        // rather than the UI.
+        None => {
+            log::warn!("Google token exchange returned no id_token: {}", body.get("error").unwrap_or(&serde_json::Value::Null));
+            Err("Google did not return an ID token.".into())
+        }
+    }
+}
+
+#[cfg(windows)]
+fn open_in_browser(url: &str) -> Result<(), String> {
+    // `cmd /c start` treats the first quoted argument as a window title, so
+    // the empty "" is required or a URL with spaces opens a console instead.
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the browser: {e}"))
+}
+
+#[cfg(not(windows))]
+fn open_in_browser(url: &str) -> Result<(), String> {
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    std::process::Command::new(opener)
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the browser: {e}"))
+}
