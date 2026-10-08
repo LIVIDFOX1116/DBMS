@@ -406,3 +406,17 @@ Planning Time: 1.218 ms
 Execution Time: 103.892 ms
 ```
 
+
+## Equality check: old query vs new query (wallet 26)
+
+Run back to back against the same snapshot, comparing the full result sets rather than
+just the timings:
+
+| Query | Rows | Wall clock |
+| --- | --- | --- |
+| old (pre-rewrite) | 2,222 | 606.10 s |
+| new | 2,222 | 0.11 s |
+
+Identical `tx_hash` sets (0 rows only in old, 0 only in new) and an identical
+(min hop, role) pair for every `tx_hash`, so the rewrite is a pure performance
+change: no evidence is gained or lost.
