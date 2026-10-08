@@ -15,6 +15,8 @@ Run it:
     curl localhost:8000/wallets
     curl localhost:8000/docs      # interactive OpenAPI docs, free from FastAPI
 """
+import csv
+import io
 import json
 import logging
 import os
@@ -33,7 +35,7 @@ from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import auth
+from api import auth, jobs
 from ingestion import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -779,6 +781,109 @@ def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = Non
             for row in rows:
                 row["frameable_share"] = row["frameable_count"] / row["total_audited"] if row["total_audited"] else 0.0
             return rows
+
+
+class JobRequest(BaseModel):
+    job_type: str
+    snapshot_id: int
+    seed_wallet_id: int
+    detector: Optional[str] = None
+    limit: Optional[int] = None
+
+
+@app.post("/jobs")
+def start_job(body: JobRequest):
+    """Runs detectors or an audit pass without a terminal. Mutating, so it
+    is behind the auth gate like everything else; it only ever inserts."""
+    if using_mock():
+        raise HTTPException(status_code=409, detail="analysis jobs need live mode (FRAMECHECK_API_MODE=live)")
+    try:
+        job = jobs.start(body.job_type, body.snapshot_id, body.seed_wallet_id,
+                         detector=body.detector, limit=body.limit)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except RuntimeError as e:
+        # Already running: a conflict, not a server error -- the UI shows
+        # the running job rather than starting a second one.
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return job.as_dict()
+
+
+@app.get("/jobs")
+def list_jobs():
+    return jobs.list_jobs()
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no such job (jobs are forgotten when the backend restarts)")
+    return job.as_dict()
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    if not jobs.cancel(job_id):
+        raise HTTPException(status_code=409, detail=f"job is already {job.status}")
+    return jobs.get_job(job_id).as_dict()
+
+
+@app.get("/flags/{flag_id}/audit.csv")
+def flag_audit_csv(flag_id: int):
+    """One flag's audit report as CSV. Rendered server-side so the file
+    holds exactly what the database says, not what the UI happened to have
+    loaded and formatted."""
+    if using_mock():
+        raise HTTPException(status_code=409, detail="audit export needs live mode")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT f.flag_id, f.detector, f.wallet_id, w.address, f.score, f.threshold,
+                       f.token_contract, ar.snapshot_id,
+                       fa.verdict, fa.framing_cost_wei, fa.method, fa.backend, fa.runtime_ms, fa.created_at
+                FROM flag f
+                JOIN analysis_run ar ON ar.run_id = f.run_id
+                LEFT JOIN wallet w ON w.wallet_id = f.wallet_id
+                LEFT JOIN LATERAL (
+                    SELECT * FROM flag_audit WHERE flag_id = f.flag_id
+                    ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
+                ) fa ON TRUE
+                WHERE f.flag_id = %s
+                """,
+                (flag_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="no such flag")
+            columns = [d[0] for d in cur.description]
+            cur.execute(
+                """
+                SELECT tx_hash, hop, block_number, role
+                FROM flag_evidence WHERE flag_id = %s ORDER BY block_number, hop
+                """,
+                (flag_id,),
+            )
+            evidence = cur.fetchall()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(["section", *columns])
+    writer.writerow(["audit", *["" if v is None else v for v in row]])
+    if evidence:
+        writer.writerow([])
+        writer.writerow(["section", "tx_hash", "hop", "block_number", "role"])
+        for ev in evidence:
+            writer.writerow(["evidence", *ev])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="framecheck-flag-{flag_id}.csv"'},
+    )
 
 
 class GoogleCallback(BaseModel):
