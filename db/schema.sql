@@ -1,4 +1,4 @@
--- GPU-Accelerated Ethereum Transaction-Graph Analyzer
+-- FrameCheck: GPU-Accelerated Ethereum Transaction-Graph Analyzer + Framing Audit
 -- PostgreSQL schema (v2 - corrected). See docs/ER_Diagram_TransactionGraphAnalyzer.svg
 -- and docs/schema_v2.dbml for the full entity-relationship design and rationale.
 --
