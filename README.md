@@ -124,8 +124,10 @@ Runs the CPU (pandas + NetworkX) path always; adds the GPU (cudf + cugraph)
 path automatically whenever RAPIDS is importable (i.e. on the RTX 4070 /
 GTX 1650 laptops, not the Zenbook). Read-only against Postgres -- it doesn't
 write to `analysis_run` / `vertex_metric`; that's `graph/run_analysis.py`'s
-job. See `docs/benchmark_results.md` for the current CPU-only baseline
-(needs a run on a RAPIDS-capable machine to fill in the GPU column).
+job. `docs/benchmark_results.md` now holds real CPU-vs-GPU numbers measured on
+the GTX 1650 (Louvain 11×/34×/45× as the graph grows; BFS on the smallest
+snapshot is 25× *slower* on GPU) plus a known disagreement between the two
+backends' PageRank. `docs/GPU_SETUP.md` covers the WSL2 RAPIDS install.
 
 ## Running the API (what the frontend talks to)
 
@@ -169,6 +171,21 @@ FRAMECHECK_SESSION_SECRET=   # python -c "import secrets; print(secrets.token_ur
 `FRAMECHECK_SESSION_SECRET` signs this backend's own session tokens — changing
 it signs everyone out, which is the intended way to do that. No client secret
 is used anywhere in the flow: both clients are public and rely on PKCE.
+
+### Running analyses from the app
+
+The dashboard's **Run analysis** view runs the detectors and the framing audit
+without a terminal: pick a snapshot and seed wallet, optionally one detector,
+and watch progress. Set an **audit limit** on a large snapshot — auditing every
+flag can take hours, and a limit takes a reproducible sample (lowest flag ids
+first), the same one `python -m graph.audit --limit` would take.
+
+Jobs run one at a time inside the API process and are forgotten when the
+backend restarts; what they wrote to Postgres is not. They only ever insert.
+
+A flag's audit report exports as **CSV** (rendered server-side, straight from
+the database) or as **PDF** via the browser's print dialog against a print
+stylesheet.
 
 ## Running the frontend
 

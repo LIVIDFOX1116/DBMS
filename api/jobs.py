@@ -136,7 +136,10 @@ def _run(job: Job) -> None:
         finally:
             conn.close()
         job.status = "cancelled" if job._cancel.is_set() else "done"
-        job.message = "cancelled" if job._cancel.is_set() else "finished"
+        if job._cancel.is_set():
+            job.message = "cancelled"
+        elif job.total:
+            job.message = "finished"
     except Exception as e:
         # The UI gets the type and message, never a traceback; the full
         # detail goes to the backend log the desktop app can surface.
@@ -194,6 +197,14 @@ def _run_audit(job: Job, conn) -> None:
         flag_ids = [row[0] for row in cur.fetchall()]
 
     job.total = len(flag_ids)
+    if not flag_ids:
+        # "done, 0 flags" with no explanation reads as a failure. Say which
+        # combination came up empty instead.
+        job.message = (f"no {job.detector} flags on snapshot {job.snapshot_id}"
+                       if job.detector and job.detector != "all"
+                       else f"no flags on snapshot {job.snapshot_id} — run the detectors first")
+        job.result = {"verdicts": {}, "audited": 0}
+        return
     verdicts = {"frameable": 0, "robust": 0}
     for i, flag_id in enumerate(flag_ids, start=1):
         if job._cancel.is_set():
