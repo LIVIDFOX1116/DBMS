@@ -69,7 +69,7 @@ actually fabricate.
 | Detector | Method | Why |
 |---|---|---|
 | `bfs_proximity` | `exact` | Removing `W`'s own outgoing (signed) edges can never change `W`'s own BFS distance from the seed — that distance only depends on edges pointing *at* `W`'s neighborhood. Frameable/robust is a real BFS re-run, not an assumption; framing cost is the single cheapest real unsolicited sender whose own BFS distance already qualifies `W` outright — no combination of transfers is ever needed. |
-| `impurity` / `engaged_proximity` | `exact` for ≤ `EXACT_SUBSET_CUTOFF` (15) real unsolicited senders (tries every subset — 2¹⁵ = 32,768, fast), `greedy_upper_bound` above that | Both reuse the proportional-haircut taint replay; a per-flag exhaustive search is cheap enough below the cutoff to find the true minimum, and switches to cheapest-first-then-prune above it. Labelled per-flag, never claimed exact when it wasn't. |
+| `impurity` / `engaged_proximity` | `exact` for ≤ `EXACT_SUBSET_CUTOFF` (15) real unsolicited senders and while the subset sizes it must try fit the probe budget, `greedy_upper_bound` otherwise | Both reuse the proportional-haircut taint replay; a per-flag exhaustive search is cheap enough below the cutoff to find the true minimum, and switches to cheapest-first-then-prune above it. Labelled per-flag, never claimed exact when it wasn't. |
 | `pagerank_threshold` | `greedy_upper_bound` | PageRank is global — there's no cheap closed form for "the one transfer that re-qualifies `W`". Candidates are grouped by sender (PageRank only sees the aggregated edge per sender pair, not individual transactions) and added back cheapest-first, with a real masked-PageRank re-run (`GraphBackend.pagerank_excluding_signed_edges`, GPU-accelerated when RAPIDS is available) after each addition, then pruned. |
 | `sybil_cluster` | `yes_no` | Re-runs Louvain (fixed `seed=42`, same as the original detector) with `W`'s signed edges removed and checks whether `W`'s cluster is still classified `SYBIL`. No framing cost is computed — Louvain cluster membership isn't a per-transfer-additive threshold the way the other four are, so "cheapest transfer to re-trigger it" isn't well-posed here. |
 
@@ -255,10 +255,26 @@ See `docs/benchmark_results.md`'s "Audit benchmark" section for real numbers on 
   contract-initiated transfers (funds moved by a smart contract's internal logic, not a directly
   signed external transaction) are invisible to this pipeline and therefore to every FrameCheck
   audit built on top of it.
-- **Greedy framing cost is an upper bound, not the minimum**, for `pagerank_threshold` and any
+- **Greedy framing cost is an upper bound, not the minimum**, for `pagerank_threshold`, for any
   `impurity`/`engaged_proximity` flag with more than `EXACT_SUBSET_CUTOFF` (15) real unsolicited
-  candidate senders — always reported with `method: "greedy_upper_bound"`, never as if it were
-  exact.
+  candidate senders, and for any flag whose exact search runs out of probe budget — always
+  reported with `method: "greedy_upper_bound"`, never as if it were exact.
+- **The exact search is work-budgeted, so snapshot size can lower the method.** One probe is a
+  full taint replay of the snapshot's transfer history (or, for `pagerank_threshold`, a full
+  PageRank run), and the expensive case is a threshold that no subset reaches — that one
+  enumerates all 2ⁿ subsets. `EXACT_REPLAY_ROW_BUDGET` / `EXACT_PAGERANK_EDGE_BUDGET` cap the
+  total probe work: the search spends the budget on the smallest subset sizes first (so a flag an
+  attacker could produce with a single transfer is still `exact`) and falls back to greedy when
+  the next size is unaffordable. Without this, one snapshot-2 impurity flag ran for over an hour
+  and had to be killed — see `docs/STABILITY.md`.
+- **For very high-degree wallets, even the greedy bound is found by a prefix search.** A flagged
+  wallet can have thousands of real unsolicited senders (919 on one snapshot-2 impurity flag), and
+  re-scoring after every single addition is one probe per candidate. Above the probe budget the
+  search doubles-then-bisects over the cheapest-first prefix (~2·log₂n probes) and prunes the most
+  expensive members first. That assumes adding more cheap inbound transfers moves the score toward
+  the threshold monotonically; where it doesn't, the subset reported may be larger than a
+  candidate-by-candidate scan would have found — still an upper bound, which is all this method
+  ever claims. The scan is still used whenever it fits the budget.
 - **`sybil_cluster` has no framing cost**: cluster membership isn't a per-transfer-additive
   threshold, so "cheapest transfer to re-trigger it" isn't a well-posed question for this one
   detector; its audit is `yes_no` only.
