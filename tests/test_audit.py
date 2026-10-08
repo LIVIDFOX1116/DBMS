@@ -304,11 +304,13 @@ class TestExactSearchBudget(unittest.TestCase):
         with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
              mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
              mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
-             mock.patch.object(audit_module, "EXACT_PAGERANK_EDGE_BUDGET", 6), \
+             mock.patch.object(audit_module, "EXACT_PAGERANK_EDGE_BUDGET", 600), \
+             mock.patch.object(audit_module, "PAGERANK_PASSES_PER_PROBE", 100), \
              mock.patch.object(GraphBackend, "pagerank_excluding_signed_edges",
                                return_value=pd.DataFrame({"wallet_id": [w], "score": [1.0]})):
             audit_module.audit_pagerank_threshold(conn, 1, 1, w, 1, threshold_value=0.5)
-        self.assertEqual(captured["max_probes"], 2)  # 6 edges of budget / 3 edges per run
+        # 600 edge visits of budget / (3 edges * 100 iterations) per probe
+        self.assertEqual(captured["max_probes"], 2)
 
 
 class TestAuditCliFlagSelection(unittest.TestCase):
