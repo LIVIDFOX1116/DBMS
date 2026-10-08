@@ -1,0 +1,10 @@
+target-version = "py312"
+line-length = 120
+extend-exclude = ["src-tauri", "frontend", ".venv-win", "snapshots"]
+
+[lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501", "B008", "B905"]
+
+[lint.per-file-ignores]
+"scripts/*.py" = ["E402"]

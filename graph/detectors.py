@@ -31,8 +31,8 @@ from collections import defaultdict
 import psycopg2
 from psycopg2.extras import execute_values
 
+from graph.run_analysis import finish_run, start_run
 from ingestion import config
-from graph.run_analysis import start_run, finish_run
 
 # Mirrors graph/score_wallets.py's BFS-distance-to-score formula exactly --
 # duplicated rather than imported, since that module computes OVERALL

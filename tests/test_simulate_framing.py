@@ -11,16 +11,16 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
+from graph.detectors import DEFAULT_ENGAGED_OUTFLOW_THRESHOLD, compute_engaged_outflow_ratios
 from scripts.simulate_framing import (
+    DEFAULT_LAUNDER_FORWARD_FRACTION,
+    LAUNDER_FORWARD_BLOCK_OFFSET,
+    SYNTHETIC_BLOCK_BASE,
     synthetic_block_number,
     synthetic_tx_hash,
     synthetic_wallet_address,
     validate_wallet_ids,
-    SYNTHETIC_BLOCK_BASE,
-    DEFAULT_LAUNDER_FORWARD_FRACTION,
-    LAUNDER_FORWARD_BLOCK_OFFSET,
 )
-from graph.detectors import compute_engaged_outflow_ratios, DEFAULT_ENGAGED_OUTFLOW_THRESHOLD
 
 
 class TestSyntheticBlockNumber(unittest.TestCase):

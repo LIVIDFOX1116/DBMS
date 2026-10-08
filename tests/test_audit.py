@@ -16,12 +16,12 @@ import pandas as pd
 
 import graph.audit as audit_module
 from graph.audit import (
-    verdict_from_score,
     cheapest_qualifying_bfs_transfer,
     cheapest_subset_reaching_threshold,
+    verdict_from_score,
 )
-from graph.detectors import compute_engaged_outflow_ratios, bfs_proximity_score
 from graph.backend import GraphBackend
+from graph.detectors import bfs_proximity_score, compute_engaged_outflow_ratios
 
 SEED = 1
 

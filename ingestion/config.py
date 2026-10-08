@@ -6,6 +6,7 @@ case-study address is a joint decision, keep it in config, not hardcoded deep
 in the crawl logic).
 """
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()

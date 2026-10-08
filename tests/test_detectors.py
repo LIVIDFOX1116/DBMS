@@ -15,14 +15,14 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from graph.detectors import (
     bfs_proximity_score,
-    select_bfs_proximity_flags,
-    select_sybil_cluster_flags,
-    select_pagerank_threshold_flags,
-    compute_impurity_ratios,
-    select_impurity_flags,
     compute_engaged_outflow_ratios,
-    select_engaged_proximity_flags,
+    compute_impurity_ratios,
     persist_flags,
+    select_bfs_proximity_flags,
+    select_engaged_proximity_flags,
+    select_impurity_flags,
+    select_pagerank_threshold_flags,
+    select_sybil_cluster_flags,
 )
 
 SEED = 1

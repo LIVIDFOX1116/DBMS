@@ -18,6 +18,7 @@ canned sample response used to unit-test the parsing/DB logic offline.
 """
 import logging
 import time
+
 import requests
 
 from . import config

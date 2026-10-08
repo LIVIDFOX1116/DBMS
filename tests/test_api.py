@@ -559,7 +559,7 @@ class TestConnectionPoolDiscardsBrokenConnections:
         monkeypatch.setattr(api_main, "_get_pool", lambda: fake_pool)
 
         with pytest.raises(psycopg2.OperationalError):
-            with api_main.get_conn() as c:
+            with api_main.get_conn():
                 raise psycopg2.OperationalError("server closed the connection unexpectedly")
 
         assert fake_pool.putconn_calls == [(conn, True)]

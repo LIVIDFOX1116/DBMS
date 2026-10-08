@@ -13,12 +13,12 @@ can't happen inside a transaction) and the target database (to run schema.sql
 and db/migrations/*.sql).
 """
 import os
-import sys
 import pathlib
+import sys
 
 import psycopg2
-from psycopg2 import sql as pgsql
 from dotenv import load_dotenv
+from psycopg2 import sql as pgsql
 
 load_dotenv()
 
