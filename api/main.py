@@ -732,3 +732,22 @@ def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = Non
             for row in rows:
                 row["frameable_share"] = row["frameable_count"] / row["total_audited"] if row["total_audited"] else 0.0
             return rows
+
+
+BENCHMARKS_PATH = pathlib.Path(__file__).parent.parent / "docs" / "perf" / "benchmarks.json"
+
+
+@app.get("/benchmarks")
+def benchmarks():
+    """CPU-vs-GPU timings recorded by scripts/benchmark.py --json. A file,
+    not a table: these are measurements of this machine, not pipeline
+    output, and they have to be readable with no Postgres at all. Returns
+    an empty list when nothing has been benchmarked yet -- the dashboard
+    shows that as an empty state, which is a real answer, not an error."""
+    try:
+        return json.loads(BENCHMARKS_PATH.read_text(encoding="utf-8")).get("runs", [])
+    except FileNotFoundError:
+        return []
+    except (json.JSONDecodeError, OSError):
+        log.warning("Benchmark results at %s are unreadable", BENCHMARKS_PATH)
+        return []

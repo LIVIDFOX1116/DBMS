@@ -15,6 +15,7 @@ import os
 
 os.environ["FRAMECHECK_API_MODE"] = "mock"
 
+import json  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 
@@ -511,6 +512,46 @@ class TestLiveModeQueryShapes:
         assert "cluster_member" in query
         assert "wallet_id" in query
         assert "cluster_id" in query
+
+
+class TestBenchmarks:
+    """GET /benchmarks reads a file, not Postgres: the numbers describe the
+    machine, and the tab has to work with no database at all."""
+
+    def test_missing_results_file_is_an_empty_list_not_an_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(api_main, "BENCHMARKS_PATH", tmp_path / "nope.json")
+        resp = client.get("/benchmarks")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_unreadable_results_file_is_an_empty_list_not_a_500(self, tmp_path, monkeypatch):
+        bad = tmp_path / "benchmarks.json"
+        bad.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(api_main, "BENCHMARKS_PATH", bad)
+        resp = client.get("/benchmarks")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_recorded_runs_are_served_in_order(self, tmp_path, monkeypatch):
+        path = tmp_path / "benchmarks.json"
+        path.write_text(json.dumps({"runs": [
+            {"snapshot_id": 1, "snapshot_name": "small", "edge_count": 10,
+             "tasks": [{"task": "pagerank", "cpu_seconds": 2.0, "gpu_seconds": 0.5, "speedup": 4.0}]},
+        ]}), encoding="utf-8")
+        monkeypatch.setattr(api_main, "BENCHMARKS_PATH", path)
+        rows = client.get("/benchmarks").json()
+        assert [r["snapshot_id"] for r in rows] == [1]
+        assert rows[0]["tasks"][0]["speedup"] == 4.0
+
+    def test_benchmarks_needs_no_database(self, monkeypatch):
+        # Live mode, Postgres dead: the tab must still render.
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+
+        def _down():
+            raise api_main.OperationalError("down")
+
+        monkeypatch.setattr(api_main, "get_conn", _down)
+        assert client.get("/benchmarks").status_code == 200
 
 
 class TestUnhandledErrors:

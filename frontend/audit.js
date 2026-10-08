@@ -110,6 +110,62 @@ function fcShowApiDown(err) {
   }
 }
 
+/* ── Benchmarks view ── */
+function fcSeconds(s) {
+  if (s == null) return "–";
+  return s >= 1 ? `${s.toFixed(2)} s` : `${(s * 1000).toFixed(0)} ms`;
+}
+
+function fcSpeedupCell(row) {
+  // No GPU column means RAPIDS wasn't importable on the machine that ran
+  // the benchmark -- not a failure, and not a 1x speedup either.
+  if (row.gpu_seconds == null) return `<td class="fc-muted">CPU only</td>`;
+  if (row.speedup == null) return `<td>–</td>`;
+  const faster = row.speedup >= 1;
+  return `<td class="${faster ? "fc-good" : "fc-warn"}">${row.speedup.toFixed(2)}× ${faster ? "faster" : "slower"}</td>`;
+}
+
+async function fcLoadBenchmarks() {
+  const host = document.getElementById("benchmarkPanels");
+  if (FC.benchmarks) { host.innerHTML = FC.benchmarks; return; }
+  host.innerHTML = `<div class="panel"><div class="fc-empty">Loading…</div></div>`;
+  try {
+    const runs = await api("/benchmarks");
+    if (!runs.length) {
+      FC.benchmarks = `<div class="panel"><div class="fc-empty">
+        No benchmark has been recorded yet. Run:
+        <code>python scripts/benchmark.py --snapshot-id &lt;id&gt; --repeats 3 --json docs/perf/benchmarks.json</code>
+        </div></div>`;
+      host.innerHTML = FC.benchmarks;
+      return;
+    }
+    FC.benchmarks = runs.map(run => `<div class="panel">
+      <div class="panel-head">
+        <h2>${fcEsc(run.snapshot_name || `snapshot ${run.snapshot_id}`)}</h2>
+        <span class="fc-muted">${Number(run.vertex_count).toLocaleString()} vertices ·
+          ${Number(run.edge_count).toLocaleString()} edges ·
+          median of ${run.repeats} run${run.repeats === 1 ? "" : "s"}</span>
+      </div>
+      <div class="table-wrap"><table class="dtable">
+        <thead><tr><th>Task</th><th>CPU</th><th>GPU</th><th>Speedup</th></tr></thead>
+        <tbody>${run.tasks.map(t => `<tr>
+          <td>${fcEsc(t.task)}</td>
+          <td>${fcSeconds(t.cpu_seconds)}</td>
+          <td>${fcSeconds(t.gpu_seconds)}</td>
+          ${fcSpeedupCell(t)}
+        </tr>`).join("")}</tbody>
+      </table></div>
+      <div class="fc-muted fc-panel-foot">
+        ${fcEsc(run.backends?.cpu || "CPU")}${run.backends?.gpu ? ` vs ${fcEsc(run.backends.gpu)}` : ""}
+        · recorded ${fcEsc(run.recorded_at || "unknown")}
+      </div>
+    </div>`).join("");
+    host.innerHTML = FC.benchmarks;
+  } catch (err) {
+    host.innerHTML = `<div class="panel">${fcErrorBlock(err.message, "benchmarks")}</div>`;
+  }
+}
+
 /* ── Flags view ── */
 async function fcLoadFlags(filter) {
   if (FC.flags[filter]) return FC.flags[filter];
@@ -409,6 +465,7 @@ function fcInit() {
       else if (what === "overview") fcLoadOverview();
       else if (what === "flags") { FC.flags = {}; fcOpenFlagsView(); }
       else if (what === "graph") renderGraph();
+      else if (what === "benchmarks") { FC.benchmarks = undefined; fcLoadBenchmarks(); }
       else if (what.startsWith("detail:")) fcSelectFlag(Number(what.slice(7)));
       return;
     }
