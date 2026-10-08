@@ -102,8 +102,8 @@
       "snapshot_name": "polynetwork_2hop_v1",
       "start_block": 0,
       "end_block": 999999999,
-      "vertex_count": 6,
-      "edge_count": 7,
+      "vertex_count": 30322,
+      "edge_count": 47884,
       "is_directed": true
     }
   ],
