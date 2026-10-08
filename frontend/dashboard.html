@@ -416,6 +416,7 @@ table.dtable a { color: var(--accent-glow); }
   <button class="sidenav-item" data-page="clusters">Clusters</button>
   <button class="sidenav-item" data-page="alerts">Alerts</button>
   <button class="sidenav-item" data-page="graph">Graph</button>
+  <button class="sidenav-item" data-page="benchmarks">Benchmarks</button>
 </nav>
 
 <div class="shell">
@@ -426,6 +427,7 @@ table.dtable a { color: var(--accent-glow); }
     <button class="sidenav-item" data-page="clusters"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="3.2"/><circle cx="17" cy="6" r="2.3"/><circle cx="17.5" cy="15" r="3"/><circle cx="7" cy="16" r="2.3"/></svg>Clusters</button>
     <button class="sidenav-item" data-page="alerts"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Alerts</button>
     <button class="sidenav-item" data-page="graph"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="12" cy="18" r="2.6"/><path d="M6.9 7.4 10.3 16M17.1 7.4 13.7 16M7.3 6h9.4"/></svg>Graph</button>
+    <button class="sidenav-item" data-page="benchmarks"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><rect x="4" y="12" width="4" height="7" rx="1"/><rect x="10" y="7" width="4" height="12" rx="1"/><rect x="16" y="14" width="4" height="5" rx="1"/></svg>Benchmarks</button>
   </aside>
 
   <main class="main">
@@ -550,6 +552,11 @@ table.dtable a { color: var(--accent-glow); }
     </section>
 
     <!-- GRAPH -->
+    <section class="view" id="view-benchmarks">
+      <div class="view-header"><div><h1>Benchmarks</h1><p>CPU (pandas + NetworkX) vs GPU (cudf + cuGraph) on this machine</p></div></div>
+      <div id="benchmarkPanels"></div>
+    </section>
+
     <section class="view" id="view-graph">
       <div class="view-header"><div><h1>Wallet graph</h1><p>Force-directed view of the transaction graph</p></div></div>
 
@@ -785,6 +792,7 @@ const PAGE_META = {
   alerts:   { title: "Alerts",   sub: "Pattern-detection alerts across all runs" },
   graph:    { title: "Wallet graph", sub: "Force-directed view of the transaction graph" },
   flags:    { title: "Flags", sub: "Could an outsider have produced each flag without the wallet doing anything?" },
+  benchmarks: { title: "Benchmarks", sub: "CPU (pandas + NetworkX) vs GPU (cudf + cuGraph) on this machine" },
 };
 let currentPage = "overview";
 
@@ -799,6 +807,7 @@ function go(name) {
   if (name === "graph" && WALLETS.length) renderGraph();
   if (name === "flags") fcOpenFlagsView();
   if (name === "graph") fcPopulateGraphFlagSelect();
+  if (name === "benchmarks") fcLoadBenchmarks();
 }
 window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
 document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));

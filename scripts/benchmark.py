@@ -24,9 +24,11 @@ transaction that gets rolled back, never committed, so this script still
 never leaves a real row behind.
 """
 import argparse
+import json
 import statistics
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -235,6 +237,51 @@ def format_report(snapshot_name, vertex_count, edge_count, seed_wallet_id, repea
     return "\n".join(lines)
 
 
+def build_json_run(snapshot_id, snapshot_name, vertex_count, edge_count, repeats, results) -> dict:
+    """The same numbers as the markdown report, in the shape GET /benchmarks
+    serves to the dashboard's Benchmarks tab. Medians, because that's what
+    the report quotes and what survives one noisy sample."""
+    by_backend = {}
+    for suite in results:
+        kind = "gpu" if "cugraph" in suite["backend_name"].lower() else "cpu"
+        by_backend[kind] = suite
+    tasks = []
+    for algo in ALGORITHMS:
+        row = {"task": algo}
+        for kind, suite in by_backend.items():
+            row[f"{kind}_seconds"] = round(statistics.median(suite["timings"][algo]), 4)
+        if "cpu_seconds" in row and "gpu_seconds" in row and row["gpu_seconds"] > 0:
+            row["speedup"] = round(row["cpu_seconds"] / row["gpu_seconds"], 2)
+        tasks.append(row)
+    return {
+        "snapshot_id": snapshot_id,
+        "snapshot_name": snapshot_name,
+        "vertex_count": vertex_count,
+        "edge_count": edge_count,
+        "repeats": repeats,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "backends": {kind: suite["backend_name"] for kind, suite in by_backend.items()},
+        "tasks": tasks,
+    }
+
+
+def merge_json_run(path: Path, run: dict) -> list:
+    """Replaces any previous run for the same snapshot, so re-benchmarking a
+    snapshot updates it in place instead of growing a pile of stale rows."""
+    runs = []
+    if path.exists():
+        try:
+            runs = json.loads(path.read_text(encoding="utf-8")).get("runs", [])
+        except (json.JSONDecodeError, OSError):
+            runs = []
+    runs = [r for r in runs if r.get("snapshot_id") != run["snapshot_id"]]
+    runs.append(run)
+    runs.sort(key=lambda r: r.get("edge_count") or 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"runs": runs}, indent=2) + "\n", encoding="utf-8")
+    return runs
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--snapshot-id", type=int, default=None, help="defaults to the most recently created snapshot")
@@ -242,6 +289,8 @@ def main():
     parser.add_argument("--repeats", type=int, default=3, help="timed repetitions per stage (default: 3)")
     parser.add_argument("--force-cpu-only", action="store_true", help="skip the GPU pass even if RAPIDS is installed")
     parser.add_argument("--output", type=str, default=None, help="also write the report to this file")
+    parser.add_argument("--json", type=str, default=None,
+                        help="also merge machine-readable results into this JSON file (what GET /benchmarks serves)")
     args = parser.parse_args()
 
     conn = psycopg2.connect(**config.PG_DSN)
@@ -280,6 +329,11 @@ def main():
     if args.output:
         Path(args.output).write_text(report, encoding="utf-8")
         print(f"\nSaved to {args.output}")
+
+    if args.json:
+        merge_json_run(Path(args.json), build_json_run(
+            snapshot_id, snapshot_name, vertex_count, edge_count, args.repeats, results))
+        print(f"Merged machine-readable results into {args.json}")
 
 
 if __name__ == "__main__":
