@@ -202,6 +202,115 @@ class TestAuditFlagCollectsEvidenceForSybilCluster(unittest.TestCase):
         mock_persist.assert_called_once()
 
 
+
+class TestExactSearchBudget(unittest.TestCase):
+    """The exact framing-cost search stops at the first subset size that
+    reaches the threshold, so a one-transfer framing stays cheap. A
+    threshold NO subset reaches is the expensive case: it enumerates all
+    2**n subsets, and one probe is a full history replay (or a full
+    PageRank run). On a 254k-transfer snapshot that was hours per flag,
+    so the probe count is now budgeted."""
+
+    def test_probe_budget_is_the_affordable_number_of_score_calls(self):
+        f = audit_module.max_probes_for_budget
+        self.assertEqual(f(1_000, 50_000_000), 50_000)
+        self.assertEqual(f(254_000, 50_000_000), 196)
+        # One probe costing more than the whole budget still buys one probe.
+        self.assertEqual(f(60_000_000, 50_000_000), 1)
+        # Unknown/empty cost must not silently meter the search.
+        self.assertIsNone(f(0, 50_000_000))
+
+    def test_cheap_solution_stays_exact_even_on_a_tight_budget(self):
+        # A single transfer reaches the threshold, so the search never needs
+        # the sizes it couldn't afford: the verdict is still exact.
+        candidates = [(f"h{i}", float(i + 1)) for i in range(15)]
+        probes = []
+
+        def score_fn(tx_hashes):
+            probes.append(tuple(tx_hashes))
+            return 1.0 if "h7" in tx_hashes else 0.0
+
+        tx_hashes, cost, method = audit_module.cheapest_subset_reaching_threshold(
+            candidates, score_fn, threshold=1.0, max_probes=20)
+        self.assertEqual(method, "exact")
+        self.assertEqual(tx_hashes, ["h7"])
+        self.assertEqual(cost, 8.0)
+        self.assertEqual(len(probes), len(candidates))  # one size-1 level only
+
+    def test_unreachable_threshold_bails_out_to_greedy_instead_of_enumerating(self):
+        candidates = [(f"h{i}", float(i + 1)) for i in range(15)]
+        probes = []
+
+        def score_fn(tx_hashes):
+            probes.append(tuple(tx_hashes))
+            return 0.0  # nothing ever reaches the threshold
+
+        tx_hashes, cost, method = audit_module.cheapest_subset_reaching_threshold(
+            candidates, score_fn, threshold=1.0, max_probes=20)
+        self.assertIsNone(tx_hashes)
+        self.assertEqual(method, "greedy_upper_bound")
+        # Size 1 (15 probes) is affordable, size 2 (105 more) is not, then
+        # greedy adds one candidate at a time. Unbudgeted this was 32,767.
+        self.assertEqual(len(probes), 2 * len(candidates))
+
+    def test_unreachable_threshold_within_budget_still_reports_exact(self):
+        # Small enough to enumerate fully: "no subset works" is then a real
+        # exact answer, not a budget bail-out.
+        candidates = [("h1", 1.0), ("h2", 2.0)]
+        tx_hashes, cost, method = audit_module.cheapest_subset_reaching_threshold(
+            candidates, lambda _h: 0.0, threshold=1.0, max_probes=100)
+        self.assertIsNone(tx_hashes)
+        self.assertEqual(method, "exact")
+
+    def test_haircut_audit_meters_the_search_by_history_size(self):
+        seed, w, x, y = 1, 10, 20, 30
+        all_transfers = [
+            (seed, x, 100, None, 1, "h1"),
+            (x, w, 100, None, 3, "h3"),
+            (y, w, 100, None, 4, "h4"),
+        ]
+        candidates = [("h3", x, 100, 21000, 1, 3), ("h4", y, 100, 21000, 1, 4)]
+        captured = {}
+
+        def fake_search(cands, score_fn, threshold, exact_cutoff=None, max_probes=None):
+            captured["max_probes"] = max_probes
+            return None, None, "greedy_upper_bound"
+
+        conn = mock.MagicMock()
+        with mock.patch.object(audit_module, "_fetch_native_and_token_transfers_for_audit",
+                               return_value=all_transfers), \
+             mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
+             mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
+             mock.patch.object(audit_module, "EXACT_REPLAY_ROW_BUDGET", 9):
+            audit_module.audit_impurity(conn, 1, 1, w, seed, threshold=0.5)
+        self.assertEqual(captured["max_probes"], 3)  # 9 rows of budget / 3 rows per replay
+
+    def test_pagerank_audit_meters_the_search_by_edge_count(self):
+        w, s1, s2 = 10, 2, 3
+        edges = pd.DataFrame({
+            "src_wallet_id": [s1, s2, w],
+            "dst_wallet_id": [w, w, 4],
+            "edge_weight": [1.0, 1.0, 1.0],
+        })
+        candidates = [("tx1", s1, 5, 21000, 1, 1), ("tx2", s2, 5, 21000, 1, 2)]
+        captured = {}
+
+        def fake_search(cands, score_fn, threshold, exact_cutoff=None, max_probes=None):
+            captured["max_probes"] = max_probes
+            return None, None, "greedy_upper_bound"
+
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("ignored.parquet",)
+        with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
+             mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
+             mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
+             mock.patch.object(audit_module, "EXACT_PAGERANK_EDGE_BUDGET", 6), \
+             mock.patch.object(GraphBackend, "pagerank_excluding_signed_edges",
+                               return_value=pd.DataFrame({"wallet_id": [w], "score": [1.0]})):
+            audit_module.audit_pagerank_threshold(conn, 1, 1, w, 1, threshold_value=0.5)
+        self.assertEqual(captured["max_probes"], 2)  # 6 edges of budget / 3 edges per run
+
+
 class TestPhase3SpecFixes(unittest.TestCase):
     """Fixes from the Phase 3 review of the audit engine against
     docs/FRAMECHECK.md. Each test pins one discrepancy."""
