@@ -212,6 +212,21 @@ class TestCors:
         resp = client.get("/health", headers={"Origin": "https://evil.example"})
         assert "access-control-allow-origin" not in resp.headers
 
+    def test_a_database_error_still_carries_cors_headers(self, monkeypatch):
+        # Without this the browser reports "no Access-Control-Allow-Origin"
+        # for a dead database, which sends you hunting for a CORS bug.
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+
+        def _down():
+            raise api_main.OperationalError("down")
+
+        monkeypatch.setattr(api_main, "get_conn", _down)
+        client = TestClient(api_main.app, raise_server_exceptions=False)
+        resp = client.get("/wallets", headers={"Origin": "http://localhost:5500"})
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "database unavailable"}
+        assert resp.headers["access-control-allow-origin"] == "http://localhost:5500"
+
     def test_post_is_allowed_so_sign_in_can_work_cross_origin(self):
         client = TestClient(api_main.app)
         resp = client.options("/auth/callback", headers={
