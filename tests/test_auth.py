@@ -188,6 +188,39 @@ class TestSessionEndpoint:
         assert body["auth_mode"] == "disabled"
 
 
+class TestCors:
+    """A session cookie is credentialed, and the CORS spec refuses
+    `Access-Control-Allow-Origin: *` together with credentials -- the
+    browser silently drops the response. Getting this wrong broke every
+    cross-origin call from the dashboard, not just sign-in."""
+
+    def test_local_origin_is_echoed_with_credentials_allowed(self):
+        client = TestClient(api_main.app)
+        resp = client.get("/health", headers={"Origin": "http://localhost:5500"})
+        assert resp.headers["access-control-allow-origin"] == "http://localhost:5500"
+        assert resp.headers["access-control-allow-credentials"] == "true"
+        assert resp.headers["access-control-allow-origin"] != "*"
+
+    def test_the_tauri_webview_origin_is_allowed(self):
+        client = TestClient(api_main.app)
+        for origin in ("http://tauri.localhost", "tauri://localhost"):
+            resp = client.get("/health", headers={"Origin": origin})
+            assert resp.headers.get("access-control-allow-origin") == origin, origin
+
+    def test_a_foreign_origin_is_not_allowed(self):
+        client = TestClient(api_main.app)
+        resp = client.get("/health", headers={"Origin": "https://evil.example"})
+        assert "access-control-allow-origin" not in resp.headers
+
+    def test_post_is_allowed_so_sign_in_can_work_cross_origin(self):
+        client = TestClient(api_main.app)
+        resp = client.options("/auth/callback", headers={
+            "Origin": "http://localhost:5500",
+            "Access-Control-Request-Method": "POST",
+        })
+        assert "POST" in resp.headers.get("access-control-allow-methods", "")
+
+
 class TestUserIdentity:
     def test_user_is_keyed_on_google_sub_not_email(self):
         # A user who changes their Google email must stay the same row.
