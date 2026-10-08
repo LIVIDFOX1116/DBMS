@@ -35,21 +35,13 @@ Per-detector method:
   other four are, so "cheapest transfer to re-trigger it" isn't a
   well-posed question here.
 
-KNOWN GAP (token-triggered flags' framing cost): impurity/engaged_proximity
-now track taint per currency (native ETH + every ERC-20 token), but
-fetch_unsolicited_candidates' evidence still only ever comes from
-flag_evidence, which is collected by db/queries/evidence.sql's recursive
-CTE -- that CTE's hop=0 base case matches on transaction.to_wallet_id = W
-(the NATIVE recipient), which is the token CONTRACT's wallet for a token
-transfer, never W itself (W only appears as token_transfer.to_wallet_id).
-A flag that only crossed the threshold in some ERC-20 token therefore
-still gets a correct frameable/robust verdict (that's scored directly off
-the replay, not off evidence), but its framing-cost search currently has
-no real candidates to add back and comes back with method=
-greedy_upper_bound, framing_cost_wei=None -- a real gap, not a crash,
-found live auditing snapshot 5's one token-triggered impurity flag.
-Fixing it needs evidence.sql's hop=0 case extended with a token_transfer-
-based branch; out of scope for the session that found it.
+Token-triggered flags (formerly a known gap): db/queries/evidence.sql's hop=0
+term now also matches ERC-20 transfers INTO W (token_transfer.to_wallet_id
+= W; transaction.to_wallet_id is the token contract there), so a flag that
+only crossed the threshold in a token gets real framing-cost candidates.
+The signer is still transaction.from_wallet_id. A token candidate's cost
+is gas only (transaction.value_wei is 0 for it); the token amount is not
+priced, since the attacker mints or already holds the dust token.
 
     python -m graph.audit --snapshot-id 4 --seed-wallet-id 1476 --limit 50
 """
