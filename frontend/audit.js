@@ -113,7 +113,10 @@ function fcShowApiDown(err) {
 /* ── Benchmarks view ── */
 function fcSeconds(s) {
   if (s == null) return "–";
-  return s >= 1 ? `${s.toFixed(2)} s` : `${(s * 1000).toFixed(0)} ms`;
+  if (s >= 1) return `${s.toFixed(2)} s`;
+  // Sub-millisecond timings are real (CPU BFS on the small snapshot is
+  // ~0.4 ms); rounding them to "0 ms" reads as "free", which is wrong.
+  return s >= 0.001 ? `${(s * 1000).toFixed(0)} ms` : `${(s * 1000).toFixed(2)} ms`;
 }
 
 function fcSpeedupCell(row) {
