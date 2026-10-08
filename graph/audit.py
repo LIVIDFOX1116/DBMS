@@ -78,6 +78,11 @@ EXACT_SUBSET_CUTOFF = 15  # 2**15 = 32768 subsets -- fast; above this, fall back
 # the next size is unaffordable (and says so in `method`).
 EXACT_REPLAY_ROW_BUDGET = 50_000_000      # replayed transfer rows
 EXACT_PAGERANK_EDGE_BUDGET = 20_000_000   # edges visited across PageRank runs
+# A PageRank probe is not one pass over the edge list: it iterates to
+# convergence (max_iter=100 in both NetworkX and cuGraph), so one probe
+# costs ~100 edge visits per edge. Counting a probe as a single pass is
+# what made a snapshot-scale exact search look affordable when it isn't.
+PAGERANK_PASSES_PER_PROBE = 100
 
 
 def max_probes_for_budget(cost_per_call: int, budget: int) -> int | None:
@@ -450,7 +455,8 @@ def audit_pagerank_threshold(conn, flag_id: int, snapshot_id: int, wallet_id: in
 
         senders, cost, method = cheapest_subset_reaching_threshold(
             candidates, score_fn, threshold_value,
-            max_probes=max_probes_for_budget(len(edges_df), EXACT_PAGERANK_EDGE_BUDGET))
+            max_probes=max_probes_for_budget(len(edges_df) * PAGERANK_PASSES_PER_PROBE,
+                                             EXACT_PAGERANK_EDGE_BUDGET))
         if senders:
             minimal_tx_set = [h for s in senders for h in tx_hashes_by_sender[s]]
             framing_cost_wei = cost
