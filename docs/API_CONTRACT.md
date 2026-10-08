@@ -239,6 +239,59 @@ that have been audited so far (not every flag that exists — see
 frameable flags to compute a cost range from — see the `sybil_cluster`
 row in the example above, which has `0` frameable flags out of 2 audited).
 
+### Authentication (Phase 5)
+Every route requires a session **except** `/health`, `/benchmarks` and the
+`/auth/*` routes themselves. `FRAMECHECK_AUTH_MODE=disabled` turns the gate
+off for local development; anything other than exactly `disabled` (including
+a typo or an unset variable) leaves it **on**, so the failure direction is
+closed. Unauthenticated calls get:
+```json
+{"detail": "sign-in required"}
+```
+with status `401`. The body never says whether a token was missing, expired,
+tampered with, or signed with a different secret — that distinction goes to
+the server log only.
+
+The session travels as an HttpOnly cookie (`framecheck_session`) for the
+browser, or `Authorization: Bearer <token>` for the desktop app, which has
+no cookie jar shared with its sidecar.
+
+CORS is no longer a wildcard: a credentialed request may not be answered with
+`Access-Control-Allow-Origin: *`, so the origin is echoed back for localhost
+and the Tauri webview only.
+
+### GET /auth/login
+PKCE parameters for a client about to start the flow. `503` when the server
+has no `GOOGLE_CLIENT_ID` configured.
+```json
+{"client_id": "…apps.googleusercontent.com", "code_verifier": "…", "code_challenge": "…",
+ "code_challenge_method": "S256",
+ "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+ "scope": "openid email profile"}
+```
+Never returns the client secret — none is used anywhere on this path.
+
+### POST /auth/callback
+Body: `{"id_token": "<Google ID token>"}`. Verifies the token against
+Google's keys, upserts the user (keyed on the `sub` claim, never email), and
+issues the session.
+```json
+{"user": {"user_id": 1, "email": "a@example.com", "display_name": "A", "picture_url": null},
+ "session_token": "…"}
+```
+Errors: `401 {"detail": "sign-in failed"}` for any verification failure — the
+reason (bad audience, unverified email, expired) is logged, not returned.
+
+### GET /auth/session
+Public, so the UI can ask before it has a session and get an answer rather
+than a `401` it has to special-case.
+```json
+{"authenticated": false, "auth_mode": "required", "user": null}
+```
+
+### POST /auth/logout
+Clears the session cookie. `{"status": "signed out"}`.
+
 ### GET /benchmarks
 CPU-vs-GPU timings recorded by `scripts/benchmark.py --json`, newest value
 per snapshot, ordered by graph size.

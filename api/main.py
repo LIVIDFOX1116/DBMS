@@ -81,9 +81,9 @@ async def require_session(request: Request, call_next):
     makes a public route ask for a session, which is the safe direction
     to fail in."""
     if auth.auth_mode() == "disabled" or request.method == "OPTIONS":
-        return await call_next(request)
+        return await _call(request, call_next)
     if request.url.path in auth.PUBLIC_PATHS:
-        return await call_next(request)
+        return await _call(request, call_next)
 
     token = request.cookies.get(auth.SESSION_COOKIE)
     header = request.headers.get("authorization", "")
@@ -98,7 +98,20 @@ async def require_session(request: Request, call_next):
         # the log, not to the caller.
         log.info("Rejected session on %s: %s", request.url.path, e)
         return JSONResponse(status_code=401, content={"detail": "sign-in required"})
-    return await call_next(request)
+    return await _call(request, call_next)
+
+
+async def _call(request: Request, call_next):
+    """Runs the route, turning a dead database into a 503 *here* rather than
+    in the app-level exception handler. The handler runs outside the CORS
+    middleware, so its response carries no Access-Control-Allow-Origin and
+    the browser reports a CORS failure instead of the real error -- which
+    sent me looking for a CORS bug when Postgres had simply gone away."""
+    try:
+        return await call_next(request)
+    except (OperationalError, InterfaceError):
+        log.exception("Database unavailable handling %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=503, content={"detail": "database unavailable"})
 
 
 @app.exception_handler(Exception)

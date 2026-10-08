@@ -141,6 +141,35 @@ beyond this section.** See `docs/API_CONTRACT.md` for every endpoint shape.
 Switch to `FRAMECHECK_API_MODE=live` once Postgres actually has real analysis
 results in it (Phase 3.5 in the bible).
 
+### Sign-in (Google)
+
+**The API requires a Google sign-in by default.** `/health` and `/benchmarks`
+stay public; everything else answers `401 {"detail": "sign-in required"}`
+without a session. For local work without an OAuth client:
+
+```bash
+FRAMECHECK_AUTH_MODE=disabled uvicorn api.main:app --port 8000
+```
+
+Only the exact word `disabled` opens the gate — a typo or an unset variable
+leaves auth **on**, so the failure direction is closed. Never set it on a
+machine others can reach.
+
+To use real sign-in, create an OAuth 2.0 client at
+[console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials):
+a **Web application** client (redirect URI `http://localhost:8000/auth/callback`)
+for the browser dashboard, and/or a **Desktop app** client for the Tauri shell,
+which uses a loopback redirect. Then fill in `.env` (never commit it):
+
+```
+GOOGLE_CLIENT_ID=…apps.googleusercontent.com
+FRAMECHECK_SESSION_SECRET=   # python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+`FRAMECHECK_SESSION_SECRET` signs this backend's own session tokens — changing
+it signs everyone out, which is the intended way to do that. No client secret
+is used anywhere in the flow: both clients are public and rely on PKCE.
+
 ## Running the frontend
 
 Two static pages live in `frontend/` -- no build step, no npm install:

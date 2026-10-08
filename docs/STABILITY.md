@@ -163,3 +163,53 @@ before anyone repeats the setup on this machine.
   window since the UI was rebuilt**. This should stop being deferred.
 - `pagerank_threshold` and `sybil_cluster` on snapshot 2 remain sampled, not exhaustive (Phase 3).
 
+## Phase 5: Google sign-in (2026-10-08)
+
+Method: `pg_dump` (265 MB) before migration 006, then the API run both ways --
+`FRAMECHECK_AUTH_MODE=required` and `disabled` -- with every route curled, and the dashboard
+driven over the DevTools protocol in headless Chrome against each. Nothing in this pass reaches
+Google: the ID-token verifier is substituted in tests, and no OAuth client exists yet.
+
+| Check | Result |
+|---|---|
+| Migration 006 applied | `app_user` created with the unique `google_sub` constraint and the email index |
+| Protected route, no session | 401 `{"detail": "sign-in required"}` |
+| `/health`, `/benchmarks` | 200 without a session, as intended |
+| Valid session cookie / bearer token | 200 on protected routes (both client shapes) |
+| Tampered, foreign-secret, and expired sessions | 401, and the body never says which |
+| `FRAMECHECK_AUTH_MODE` typos (`disable`, `false`, `0`, empty) | still required -- only the exact word `disabled` opens the gate |
+| `/auth/login` with no `GOOGLE_CLIENT_ID` | 503, and the UI shows "Google sign-in is not configured on this server" rather than failing silently |
+| Dashboard with auth required | sign-in card over the app, no data behind it, no uncaught exceptions |
+| Dashboard with auth disabled | full click-through clean -- 100 flags, graph overlay (273 nodes, no NaN), Benchmarks tab (3 panels, 12 rows), no console errors |
+| Python suite / Rust suite | 201 passed, 5 skipped; 37 Rust tests (8 new in `oauth.rs`); ruff clean |
+
+### Findings and fixes
+
+1. **CORS could not stay a wildcard.** A session cookie makes requests credentialed, and the CORS
+   spec forbids `Access-Control-Allow-Origin: *` with credentials -- the browser drops the
+   response entirely. This broke *every* cross-origin call from the dashboard, not just sign-in.
+   The origin is now echoed for localhost and the Tauri webview only, and POST was added because
+   signing in and out are mutating (the old config allowed GET alone, so `/auth/callback` would
+   have been blocked too).
+2. **A dead database looked like a CORS bug.** The generic exception handler runs *outside* the
+   CORS middleware, so its 503 carried no `Access-Control-Allow-Origin` and the browser reported a
+   CORS failure. I spent real time hunting a CORS problem that was Postgres having gone away.
+   Database errors are now mapped to 503 inside the middleware stack, so the response carries the
+   headers and says what actually happened. Covered by a test.
+3. **The session TTL was frozen at import** as a default argument, so changing it did nothing.
+   Read at call time now -- found because the expiry test could not make a session expire.
+
+### Not covered
+
+- **No real Google sign-in has ever been performed.** Creating the OAuth client needs the
+  account owner's Google Cloud Console; until `GOOGLE_CLIENT_ID` exists, the verified behaviour is
+  everything up to the redirect and everything after the ID token, with the token verification
+  itself stubbed. The first real sign-in may still surface a redirect-URI or consent-screen
+  mismatch that no amount of offline testing can predict.
+- **The desktop loopback flow is unit-tested, not exercised.** `src-tauri/src/oauth.rs` has tests
+  for redirect parsing, URL escaping and port binding, but no one has run `google_signin` from a
+  real window -- which is the same desktop gap now outstanding since Phase 2.
+- Postgres reachability from Windows to WSL dropped repeatedly during this pass; the API was moved
+  inside WSL (local socket) to finish it. The flakiness is environmental, not application
+  behaviour, but it is why the API ran on port 8003 for the later checks.
+
