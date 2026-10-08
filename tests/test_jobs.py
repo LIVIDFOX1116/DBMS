@@ -112,6 +112,16 @@ class TestAuditJob:
             assert wait_for(lambda: job.status == "done"), job.status
 
 
+    def test_no_matching_flags_says_so_rather_than_just_finishing(self):
+        # "done, 0 audited" with no explanation reads as a silent failure.
+        conn = self._conn_returning([])
+        with mock.patch.object(jobs.psycopg2, "connect", return_value=conn):
+            job = jobs.start("audit", 99999, 2, detector="impurity")
+            assert wait_for(lambda: job.status == "done"), job.status
+        assert "no impurity flags on snapshot 99999" in job.message
+        assert job.result["audited"] == 0
+
+
 class TestConcurrencyAndCancel:
     def test_a_second_job_is_refused_while_one_runs(self):
         conn = mock.MagicMock()

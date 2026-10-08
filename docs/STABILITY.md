@@ -213,3 +213,57 @@ Google: the ID-token verifier is substituted in tests, and no OAuth client exist
   inside WSL (local socket) to finish it. The flakiness is environmental, not application
   behaviour, but it is why the API ran on port 8003 for the later checks.
 
+## Phase 6: Make it usable (2026-10-08)
+
+Method: API run inside WSL (local Postgres socket) on port 8003, the dashboard driven over the
+DevTools protocol in headless Chrome, and a **real audit job started from the UI** rather than a
+mocked one -- 2 impurity flags on snapshot 2, 92 s, 2 frameable.
+
+| Check | Result |
+|---|---|
+| Start a job from the UI, watch progress, see the result | queued -> running -> done, progress bar advanced, "2 frameable, 0 robust" |
+| Job on a snapshot with no matching flags | done with "no impurity flags on snapshot 99999" instead of a silent "finished" |
+| Second job while one runs | 409 "a audit job is already running" -- the UI shows the running job rather than starting a second |
+| Cancel | stops at the next flag, reports what it actually completed; committed rows stay |
+| Bad bodies: unknown `job_type`, missing fields, non-integer ids | 422 with the offending field named |
+| Unknown `job_id` / cancel unknown job | 404, and the detail says jobs are forgotten on restart |
+| Jobs in mock mode | 409 "analysis jobs need live mode" |
+| CSV export, live | 200 `text/csv`, `Content-Disposition: attachment`, audit row plus evidence rows, values straight from Postgres |
+| CSV for unknown / non-numeric flag | 404 / 422 |
+| Flag search and verdict filter | 100 flags -> 23 with verdict `robust`; search narrows and the count label tracks it |
+| Search with no matches | says "No matches among the 100 flags loaded. Only the first 100 are fetched…" rather than implying the flag does not exist |
+| Filters after reload | detector tab, search text and verdict all restored |
+| Full suite | 216 passed, 5 skipped; ruff clean |
+
+### Findings and fixes
+
+1. **The Cancel button stayed on screen after a job finished.** `[hidden]` is only a
+   UA-stylesheet `display:none`, so `.btn { display:inline-flex }` silently beat it. Fixed with an
+   explicit `[hidden] { display:none !important }`. Worth remembering: every `hidden` toggle in
+   this UI was relying on that.
+2. **A job on an empty snapshot just said "finished".** Now it names the combination that came up
+   empty, because "done, 0 audited" with no explanation reads as a failure.
+3. **Search could mislead.** It filters the flags already loaded, and the list is capped at 100 of
+   a snapshot's 63,000. The empty state now says so.
+
+### Two test-harness mistakes (not application bugs)
+
+Both looked like app failures at first and are recorded so the next person does not chase them:
+
+- Repeated `const s = …` across separate CDP `Runtime.evaluate` calls throws a redeclaration
+  error, because they share one top-level scope. Two "failures" -- a job running against the wrong
+  snapshot, and export buttons appearing to be missing -- were just statements that never ran.
+- An earlier browser job appeared to return nothing; it had correctly run against snapshot 3,
+  which genuinely has no impurity flags.
+
+### Not covered
+
+- **The desktop (Tauri) window still has not been launched** -- now five phases. Everything added
+  here (Run analysis, search, CSV, the print view) is browser-verified only. The print-to-PDF path
+  in particular depends on WebView2's print support, which is exactly the kind of thing that
+  differs between a browser and an embedded webview.
+- PDF export is the browser's print dialog against a print stylesheet, not a server-rendered
+  file. That avoids adding a PDF renderer to the packaged sidecar; if a true downloadable PDF is
+  wanted, that is a deliberate dependency to add.
+- Jobs are in-memory and single-slot by design; see `api/jobs.py` for why, and what it costs.
+

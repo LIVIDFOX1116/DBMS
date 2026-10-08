@@ -239,6 +239,34 @@ that have been audited so far (not every flag that exists — see
 frameable flags to compute a cost range from — see the `sybil_cluster`
 row in the example above, which has `0` frameable flags out of 2 audited).
 
+### POST /jobs  ·  GET /jobs  ·  GET /jobs/{job_id}  ·  POST /jobs/{job_id}/cancel
+Runs detectors or an audit pass from the UI. Body:
+`{"job_type": "detectors" | "audit", "snapshot_id": 2, "seed_wallet_id": 2,
+"detector": "impurity" | null, "limit": 25 | null}`
+```json
+{"job_id": "fd51ea4593a2", "job_type": "audit", "snapshot_id": 2, "seed_wallet_id": 2,
+ "detector": "impurity", "limit": 2, "status": "running", "total": 2, "completed": 1,
+ "message": "auditing flag 65206 (2/2)", "error": null,
+ "result": {"verdicts": {"frameable": 1, "robust": 0}}, "elapsed_seconds": 31.4}
+```
+`status` is `queued | running | done | failed | cancelled`. Errors: `409` in
+mock mode and when a job is already running (one at a time, by design);
+`422` for an unknown `job_type`; `404` for an unknown `job_id`.
+
+Jobs live **in memory** — a backend restart forgets them, which the `404`
+detail says. What a job wrote to Postgres survives, because detectors and
+audits commit as they go. Jobs only ever INSERT. `limit` samples in
+`flag_id` order, the same sample `graph/audit.py --limit` takes.
+
+Cancelling stops at the next flag; it never undoes committed work, and the
+job then reports what it actually completed.
+
+### GET /flags/{flag_id}/audit.csv
+One flag's audit report plus its evidence rows as CSV, rendered server-side
+so the file holds what the database says rather than what the UI had loaded.
+`Content-Disposition: attachment`. `404` for an unknown flag, `409` in mock
+mode.
+
 ### Authentication (Phase 5)
 Every route requires a session **except** `/health`, `/benchmarks` and the
 `/auth/*` routes themselves. `FRAMECHECK_AUTH_MODE=disabled` turns the gate
