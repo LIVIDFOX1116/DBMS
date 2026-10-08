@@ -48,42 +48,74 @@
 -- NOT grouped by hop.
 
 WITH RECURSIVE evidence(from_wallet_id, tx_hash, block_number, tx_index, role, hop, visited) AS (
+    -- hop 0, native: transactions whose snapshot edge touches W. Driven from
+    -- snapshot_edge (idx_se_src / idx_se_dst) into snapshot_edge_tx's
+    -- (snapshot_edge_id, tx_hash) primary key; there is no tx_hash index.
     SELECT
         t.from_wallet_id,
         t.tx_hash, t.block_number, t.tx_index,
         CASE WHEN t.from_wallet_id = %(wallet_id)s THEN 'signed' ELSE 'unsolicited' END AS role,
         0 AS hop,
         ARRAY[%(wallet_id)s::bigint] AS visited
-    FROM snapshot_edge_tx st
-    JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
+    FROM snapshot_edge se
+    JOIN snapshot_edge_tx st ON st.snapshot_edge_id = se.edge_id
     JOIN transaction t ON t.tx_hash = st.tx_hash
     WHERE se.snapshot_id = %(snapshot_id)s
-      AND (t.from_wallet_id = %(wallet_id)s OR t.to_wallet_id = %(wallet_id)s)
+      AND (se.src_wallet_id = %(wallet_id)s OR se.dst_wallet_id = %(wallet_id)s)
 
     UNION ALL
 
+    -- hop 0, token: W received an ERC-20 transfer. transaction.to_wallet_id
+    -- is the token CONTRACT there, so W is only visible via
+    -- token_transfer.to_wallet_id. The role/signer still comes from
+    -- transaction.from_wallet_id; a token transfer W signed is already
+    -- covered above as 'signed'.
+    SELECT
+        t.from_wallet_id,
+        t.tx_hash, t.block_number, t.tx_index,
+        'unsolicited' AS role,
+        0 AS hop,
+        ARRAY[%(wallet_id)s::bigint] AS visited
+    FROM token_transfer tt
+    JOIN transaction t ON t.tx_hash = tt.tx_hash
+    JOIN snapshot_edge se ON se.snapshot_id = %(snapshot_id)s
+                         AND se.src_wallet_id = t.from_wallet_id
+                         AND se.dst_wallet_id = t.to_wallet_id
+    JOIN snapshot_edge_tx st ON st.snapshot_edge_id = se.edge_id AND st.tx_hash = t.tx_hash
+    WHERE tt.to_wallet_id = %(wallet_id)s
+      AND t.from_wallet_id <> %(wallet_id)s
+
+    UNION ALL
+
+    -- Each worktable generation is deduplicated by from_wallet_id: a wallet's
+    -- earliest inbound transaction does not depend on which of its many
+    -- transfers led here, so walking it once per distinct wallet is enough.
     SELECT
         t2.from_wallet_id,
         t2.tx_hash, t2.block_number, t2.tx_index,
         'unsolicited' AS role,
         e.hop + 1 AS hop,
         e.visited || e.from_wallet_id
-    FROM evidence e
+    FROM (
+        SELECT DISTINCT ON (ev.from_wallet_id) ev.from_wallet_id, ev.hop, ev.visited
+        FROM evidence ev
+        WHERE ev.role = 'unsolicited'
+          AND ev.from_wallet_id IS NOT NULL
+          AND ev.from_wallet_id != %(seed_wallet_id)s
+          AND ev.hop < %(max_hops)s
+          AND NOT (ev.from_wallet_id = ANY(ev.visited))
+        ORDER BY ev.from_wallet_id
+    ) e
     JOIN LATERAL (
         SELECT t.from_wallet_id, t.tx_hash, t.block_number, t.tx_index
-        FROM snapshot_edge_tx st
-        JOIN snapshot_edge se ON se.edge_id = st.snapshot_edge_id
+        FROM snapshot_edge se
+        JOIN snapshot_edge_tx st ON st.snapshot_edge_id = se.edge_id
         JOIN transaction t ON t.tx_hash = st.tx_hash
         WHERE se.snapshot_id = %(snapshot_id)s
-          AND t.to_wallet_id = e.from_wallet_id
+          AND se.dst_wallet_id = e.from_wallet_id
         ORDER BY t.block_number, t.tx_index
         LIMIT 1
     ) t2 ON TRUE
-    WHERE e.role = 'unsolicited'
-      AND e.from_wallet_id IS NOT NULL
-      AND e.from_wallet_id != %(seed_wallet_id)s
-      AND e.hop < %(max_hops)s
-      AND NOT (e.from_wallet_id = ANY(e.visited))
 )
 SELECT DISTINCT tx_hash, hop, block_number, role
 FROM evidence
