@@ -382,6 +382,17 @@ class TestAuditDedup:
         assert "run_id = ANY" in query
         assert [29, 30, 31, 32, 33] in params
 
+    def test_audit_summary_counts_only_the_latest_audit_per_flag(self, monkeypatch):
+        sink = []
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
+
+        resp = client.get("/audit/summary")
+        assert resp.status_code == 200
+        query, _params = sink[-1]
+        assert "DISTINCT ON (flag_id)" in query
+        assert "ORDER BY flag_id, created_at DESC, flag_audit_id DESC" in query
+
     def test_audit_summary_explicit_run_id_skips_snapshot_dedup(self, monkeypatch):
         sink = []
         called = []
