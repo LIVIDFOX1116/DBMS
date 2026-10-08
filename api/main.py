@@ -563,6 +563,29 @@ def flag_evidence_endpoint(flag_id: int):
             return rows_as_dicts(cur)
 
 
+@app.get("/flags/{flag_id}/evidence-edges")
+def flag_evidence_edges_endpoint(flag_id: int):
+    """flag_evidence rows joined to their transaction so a client can draw
+    them: from_wallet_id is the SIGNER (transaction.from_wallet_id, never
+    token_transfer.from_wallet_id). Empty list if no evidence exists."""
+    if using_mock():
+        return load_mock().get("flag_evidence_edges", {}).get(str(flag_id), [])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT fe.tx_hash, fe.hop, fe.block_number, fe.role,
+                          t.from_wallet_id, t.to_wallet_id, t.value_wei::text AS value_wei,
+                          wf.address AS from_address, wt.address AS to_address
+                   FROM flag_evidence fe
+                   JOIN transaction t ON t.tx_hash = fe.tx_hash
+                   JOIN wallet wf ON wf.wallet_id = t.from_wallet_id
+                   LEFT JOIN wallet wt ON wt.wallet_id = t.to_wallet_id
+                   WHERE fe.flag_id = %s ORDER BY fe.block_number, fe.hop""",
+                (flag_id,),
+            )
+            return rows_as_dicts(cur)
+
+
 @app.get("/flags/{flag_id}/audit")
 def flag_audit_endpoint(flag_id: int):
     """The most recent flag_audit row for this flag -- 404 if it hasn't
@@ -586,6 +609,57 @@ def flag_audit_endpoint(flag_id: int):
                 raise HTTPException(404, "flag not audited yet")
             cols = [d[0] for d in cur.description]
             return dict(zip(cols, row))
+
+
+@app.get("/audit/overview")
+def audit_overview(snapshot_id: Optional[int] = None):
+    """Headline FrameCheck metrics for the dashboard: flags per detector
+    (audited or not), overall share frameable and the true median framing
+    cost across every frameable flag (not a median of per-detector medians).
+    Uses each flag's latest audit row and, with snapshot_id, only the latest
+    run per detector on that snapshot."""
+    if using_mock():
+        return load_mock().get("audit_overview", {})
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            where, params = "", []
+            if snapshot_id is not None:
+                where = "WHERE f.run_id = ANY(%s)"
+                params.append(resolve_latest_run_ids(cur, snapshot_id))
+            cur.execute(
+                f"""SELECT f.detector, COUNT(*) AS flag_count,
+                           COUNT(la.flag_id) AS audited_count,
+                           COUNT(*) FILTER (WHERE la.verdict = 'frameable') AS frameable_count
+                    FROM flag f
+                    LEFT JOIN (SELECT DISTINCT ON (flag_id) flag_id, verdict
+                               FROM flag_audit ORDER BY flag_id, created_at DESC, flag_audit_id DESC) la
+                           ON la.flag_id = f.flag_id
+                    {where} GROUP BY f.detector ORDER BY f.detector""",
+                params,
+            )
+            per_detector = rows_as_dicts(cur)
+            cur.execute(
+                f"""SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY la.framing_cost_wei)
+                    FROM flag f
+                    JOIN (SELECT DISTINCT ON (flag_id) flag_id, verdict, framing_cost_wei
+                          FROM flag_audit ORDER BY flag_id, created_at DESC, flag_audit_id DESC) la
+                      ON la.flag_id = f.flag_id
+                    {where + (' AND' if where else 'WHERE')} la.verdict = 'frameable'
+                          AND la.framing_cost_wei IS NOT NULL""",
+                params,
+            )
+            median = cur.fetchone()[0]
+    flags = sum(r["flag_count"] for r in per_detector)
+    audited = sum(r["audited_count"] for r in per_detector)
+    frameable = sum(r["frameable_count"] for r in per_detector)
+    return {
+        "total_flags": flags,
+        "total_audited": audited,
+        "frameable_count": frameable,
+        "frameable_share": frameable / audited if audited else 0.0,
+        "framing_cost_median_wei": float(median) if median is not None else None,
+        "per_detector": per_detector,
+    }
 
 
 @app.get("/audit/summary")

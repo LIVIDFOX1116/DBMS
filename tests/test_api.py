@@ -204,7 +204,7 @@ class TestFlags:
         resp = client.get("/flags")
         assert resp.status_code == 200
         flags = resp.json()
-        assert len(flags) == 2
+        assert len(flags) == 4
         assert {"flag_id", "run_id", "wallet_id", "detector", "score", "threshold"} <= flags[0].keys()
 
     def test_list_flags_filters_by_detector(self):
@@ -223,13 +223,37 @@ class TestFlags:
         resp = client.get("/flags/1/evidence")
         assert resp.status_code == 200
         evidence = resp.json()
-        assert len(evidence) == 1
+        assert len(evidence) == 2
         assert {"tx_hash", "hop", "block_number", "role"} <= evidence[0].keys()
 
     def test_evidence_empty_list_for_unknown_flag_not_error(self):
         resp = client.get("/flags/9999/evidence")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    def test_evidence_edges_carry_signer_and_wallet_pair(self):
+        resp = client.get("/flags/2/evidence-edges")
+        assert resp.status_code == 200
+        edges = resp.json()
+        assert {e["role"] for e in edges} == {"signed", "unsolicited"}
+        signed = next(e for e in edges if e["role"] == "signed")
+        # The signer is the flagged wallet itself (wallet 3 for flag 2).
+        assert signed["from_wallet_id"] == 3
+        assert {"to_wallet_id", "value_wei", "from_address", "to_address", "tx_hash"} <= signed.keys()
+
+    def test_evidence_edges_empty_list_for_unknown_flag(self):
+        resp = client.get("/flags/9999/evidence-edges")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_audit_overview_headline_metrics(self):
+        resp = client.get("/audit/overview")
+        assert resp.status_code == 200
+        o = resp.json()
+        assert o["total_audited"] == sum(r["audited_count"] for r in o["per_detector"])
+        assert 0 <= o["frameable_share"] <= 1
+        assert o["framing_cost_median_wei"] > 0
+        assert {r["detector"] for r in o["per_detector"]} >= {"bfs_proximity", "sybil_cluster"}
 
     def test_audit_returns_the_audit_result(self):
         resp = client.get("/flags/1/audit")

@@ -234,10 +234,34 @@
       "score": 72.5,
       "threshold": null,
       "created_at": "2026-09-01T12:00:05"
+    },
+    {
+      "flag_id": 3,
+      "run_id": 1,
+      "wallet_id": 4,
+      "detector": "pagerank_threshold",
+      "score": 0.31,
+      "threshold": 0.25,
+      "created_at": "2026-09-01T12:00:10"
+    },
+    {
+      "flag_id": 4,
+      "run_id": 1,
+      "wallet_id": 6,
+      "detector": "impurity",
+      "score": 0.42,
+      "threshold": 0.2,
+      "created_at": "2026-09-01T12:00:15"
     }
   ],
   "flag_evidence": {
     "1": [
+      {
+        "tx_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "hop": 1,
+        "block_number": 10650100,
+        "role": "unsolicited"
+      },
       {
         "tx_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "hop": 0,
@@ -250,6 +274,28 @@
         "tx_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "hop": 0,
         "block_number": 10651196,
+        "role": "unsolicited"
+      },
+      {
+        "tx_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "hop": 0,
+        "block_number": 10651300,
+        "role": "signed"
+      }
+    ],
+    "3": [
+      {
+        "tx_hash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "hop": 0,
+        "block_number": 10652000,
+        "role": "unsolicited"
+      }
+    ],
+    "4": [
+      {
+        "tx_hash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "hop": 0,
+        "block_number": 10652500,
         "role": "unsolicited"
       }
     ]
@@ -280,6 +326,34 @@
       "backend": "pandas+networkx (CPU)",
       "runtime_ms": 1867,
       "created_at": "2026-09-01T12:05:10"
+    },
+    "3": {
+      "flag_audit_id": 3,
+      "flag_id": 3,
+      "verdict": "frameable",
+      "framing_cost_wei": 48841439999934000,
+      "framing_gas": 0,
+      "minimal_tx_set": [
+        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      ],
+      "method": "greedy_upper_bound",
+      "backend": "pandas+networkx (CPU)",
+      "runtime_ms": 950,
+      "created_at": "2026-09-01T12:05:20"
+    },
+    "4": {
+      "flag_audit_id": 4,
+      "flag_id": 4,
+      "verdict": "frameable",
+      "framing_cost_wei": 13370793246008787000,
+      "framing_gas": 0,
+      "minimal_tx_set": [
+        "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      ],
+      "method": "greedy_upper_bound",
+      "backend": "pandas+networkx (CPU)",
+      "runtime_ms": 870,
+      "created_at": "2026-09-01T12:05:30"
     }
   },
   "audit_summary": [
@@ -319,5 +393,114 @@
       "framing_cost_max_wei": null,
       "frameable_share": 0.09615384615384616
     }
-  ]
+  ],
+  "flag_evidence_edges": {
+    "1": [
+      {
+        "tx_hash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "hop": 1,
+        "block_number": 10650100,
+        "role": "unsolicited",
+        "from_wallet_id": 1,
+        "to_wallet_id": 5,
+        "value_wei": "2100000000000000",
+        "from_address": "0xc8a65fadf0e0ddaf421f28feab69bf6e2e589963",
+        "to_address": "0x9999999999999999999999999999999999a999"
+      },
+      {
+        "tx_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "hop": 0,
+        "block_number": 10650165,
+        "role": "unsolicited",
+        "from_wallet_id": 5,
+        "to_wallet_id": 2,
+        "value_wei": "4365121796310332",
+        "from_address": "0x9999999999999999999999999999999999a999",
+        "to_address": "0x1111111111111111111111111111111111a001"
+      }
+    ],
+    "2": [
+      {
+        "tx_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "hop": 0,
+        "block_number": 10651196,
+        "role": "unsolicited",
+        "from_wallet_id": 6,
+        "to_wallet_id": 3,
+        "value_wei": "5000000000000000",
+        "from_address": "0x4444444444444444444444444444444444a004",
+        "to_address": "0x2222222222222222222222222222222222a002"
+      },
+      {
+        "tx_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "hop": 0,
+        "block_number": 10651300,
+        "role": "signed",
+        "from_wallet_id": 3,
+        "to_wallet_id": 4,
+        "value_wei": "3000000000000000",
+        "from_address": "0x2222222222222222222222222222222222a002",
+        "to_address": "0x3333333333333333333333333333333333a003"
+      }
+    ],
+    "3": [
+      {
+        "tx_hash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "hop": 0,
+        "block_number": 10652000,
+        "role": "unsolicited",
+        "from_wallet_id": 5,
+        "to_wallet_id": 4,
+        "value_wei": "48841439999934000",
+        "from_address": "0x9999999999999999999999999999999999a999",
+        "to_address": "0x3333333333333333333333333333333333a003"
+      }
+    ],
+    "4": [
+      {
+        "tx_hash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "hop": 0,
+        "block_number": 10652500,
+        "role": "unsolicited",
+        "from_wallet_id": 1,
+        "to_wallet_id": 6,
+        "value_wei": "13370793246008787000",
+        "from_address": "0xc8a65fadf0e0ddaf421f28feab69bf6e2e589963",
+        "to_address": "0x4444444444444444444444444444444444a004"
+      }
+    ]
+  },
+  "audit_overview": {
+    "total_flags": 144,
+    "total_audited": 144,
+    "frameable_count": 97,
+    "frameable_share": 0.6736111111111112,
+    "framing_cost_median_wei": 1.012704e+16,
+    "per_detector": [
+      {
+        "detector": "bfs_proximity",
+        "flag_count": 61,
+        "audited_count": 61,
+        "frameable_count": 61
+      },
+      {
+        "detector": "impurity",
+        "flag_count": 2,
+        "audited_count": 2,
+        "frameable_count": 2
+      },
+      {
+        "detector": "pagerank_threshold",
+        "flag_count": 29,
+        "audited_count": 29,
+        "frameable_count": 29
+      },
+      {
+        "detector": "sybil_cluster",
+        "flag_count": 52,
+        "audited_count": 52,
+        "frameable_count": 5
+      }
+    ]
+  }
 }
