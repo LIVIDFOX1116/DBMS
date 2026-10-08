@@ -4,41 +4,80 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
-  pull-requests: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# No job needs Postgres, a GPU or secrets: tests are offline, the API runs in
+# mock mode, and graph code uses the CPU (pandas/NetworkX) path.
+env:
+  FRAMECHECK_API_MODE: mock
+  FRAMECHECK_FORCE_CPU: "1"
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: "pip"
+      - run: pip install ruff
+      - run: ruff check .
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
       - name: Run test suite
         id: pytest
         run: python -m pytest tests/ -v
 
       - name: Comment result on PR
-        if: always() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         uses: actions/github-script@v9
         with:
           script: |
-            const outcome = "${{ steps.pytest.outcome }}" === "success" ? "✅ passed" : "❌ failed";
+            const outcome = "${{ steps.pytest.outcome }}" === "success" ? "passed" : "failed";
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: `CI bot: test suite ${outcome} for commit ${context.sha.substring(0, 7)}.`,
             });
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # Tauri's build script only checks that the sidecar file exists; the
+      # unit tests never execute it, so an empty placeholder is enough here.
+      - name: Placeholder sidecar for cargo test
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p src-tauri/binaries
+          : > "src-tauri/binaries/framecheck-backend-${triple}.exe"
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  installer:
+    needs: [lint, test, rust]
+    uses: ./.github/workflows/build-installer.yml
