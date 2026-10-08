@@ -350,5 +350,32 @@ python scripts/promote_to_main.py
 This runs the full test suite and pushes `dev` to `origin/main` (as a
 fast-forward) only if every test passes; main is left untouched on any
 failure. CI (`.github/workflows/ci.yml`) also runs on every push to `dev`
-and `main`, and on PRs into `main`, so failures surface long before you'd
+and `main`, and on PRs into either, so failures surface long before you'd
 even try to promote.
+
+## CI/CD
+
+None of this needs Postgres, a GPU or any secret -- tests are offline, the
+API runs in mock mode, graph code takes the CPU path.
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push / PR to `dev` and `main` | `lint` (ruff), `test` (offline pytest), `rust` (`cargo test`, Windows), then `installer` |
+| `build-installer.yml` | called by CI and release | builds the PyInstaller sidecar, then `cargo tauri build --bundles nsis`; uploads the installer as the `framecheck-installer` artifact |
+| `release.yml` | push of a `v*` tag (e.g. `v0.2.0`) | builds the installer and attaches it to a GitHub Release |
+
+Run the lint locally with `pip install ruff && ruff check .`. The installer is
+unsigned, so Windows SmartScreen will warn on first run. Phase tags such as
+`fc-p1` do not trigger releases; only `v*` tags do.
+
+### Branch protection (set in GitHub: Settings > Branches)
+
+Repository admins must configure this; the repo can't do it by itself.
+
+- **`main`**: require a pull request before merging; require status checks
+  `lint`, `test`, `rust` (and `installer` if you want the bundle gated) to pass
+  and be up to date; block force pushes and deletion. `scripts/promote_to_main.py`
+  pushes straight to `main`, so either let admins bypass for that or promote
+  through a `dev` -> `main` pull request instead.
+- **`dev`**: require the same status checks; block force pushes and deletion;
+  direct pushes are fine for small commits.
