@@ -239,6 +239,22 @@ that have been audited so far (not every flag that exists — see
 frameable flags to compute a cost range from — see the `sybil_cluster`
 row in the example above, which has `0` frameable flags out of 2 audited).
 
+### GET /benchmarks
+CPU-vs-GPU timings recorded by `scripts/benchmark.py --json`, newest value
+per snapshot, ordered by graph size.
+```json
+[{"snapshot_id": 1, "snapshot_name": "pipeline_20260910T165758",
+  "vertex_count": 19133, "edge_count": 35776, "repeats": 3,
+  "recorded_at": "2026-10-08T05:57:56+00:00",
+  "backends": {"cpu": "pandas+networkx (CPU)", "gpu": "cudf+cugraph (GPU)"},
+  "tasks": [{"task": "pagerank", "cpu_seconds": 0.0498, "gpu_seconds": 0.0121, "speedup": 4.12}]}]
+```
+Reads `docs/perf/benchmarks.json`, **not** Postgres: these measure the
+machine, not pipeline output, so this route answers with no database at
+all. `[]` when nothing has been benchmarked yet — an empty state, not an
+error. `gpu_seconds` and `speedup` are absent on a run from a machine
+without RAPIDS; the UI shows "CPU only" rather than implying a 1× speedup.
+
 ### POST /internal/api-key (internal — not part of the UI contract)
 Body: `{"api_key": "string"}`. Header: `X-Internal-Token: <token>`.
 ```json
