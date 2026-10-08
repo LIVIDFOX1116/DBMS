@@ -100,11 +100,16 @@ def main():
             cur.execute("SELECT COALESCE(MAX(flag_audit_id), 0) FROM flag_audit")
             max_id_before = cur.fetchone()[0]
 
+        # Label by the backend actually in effect, not a hardcoded "CPU":
+        # this script runs one pass, so a CPU-vs-GPU comparison means running
+        # it twice (with and without FRAMECHECK_USE_GPU_GRAPH=1), and the two
+        # reports have to be distinguishable afterwards.
+        backend_label = "GPU" if gpu_available() else "CPU"
         results = []
         for detector in detectors:
-            print(f"benchmarking {detector} (CPU, n<={args.limit})...")
+            print(f"benchmarking {detector} ({backend_label}, n<={args.limit})...")
             times = benchmark_detector(conn, args.snapshot_id, args.seed_wallet_id, detector, args.limit)
-            results.append((detector, "CPU", times))
+            results.append((detector, backend_label, times))
 
         deleted = cleanup_benchmark_audits(conn, max_id_before)
         print(f"\n[cleanup] removed {deleted} flag_audit row(s) this benchmark created")
