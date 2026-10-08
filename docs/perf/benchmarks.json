@@ -1,0 +1,118 @@
+{
+  "runs": [
+    {
+      "snapshot_id": 1,
+      "snapshot_name": "pipeline_20260910T165758",
+      "vertex_count": 19133,
+      "edge_count": 35776,
+      "repeats": 3,
+      "recorded_at": "2026-10-08T07:05:13+00:00",
+      "backends": {
+        "cpu": "pandas+networkx (CPU)",
+        "gpu": "cudf+cugraph (GPU)"
+      },
+      "tasks": [
+        {
+          "task": "load_edgelist",
+          "cpu_seconds": 0.0832,
+          "gpu_seconds": 0.0129,
+          "speedup": 6.45
+        },
+        {
+          "task": "pagerank",
+          "cpu_seconds": 0.0377,
+          "gpu_seconds": 0.0109,
+          "speedup": 3.46
+        },
+        {
+          "task": "louvain",
+          "cpu_seconds": 1.4398,
+          "gpu_seconds": 0.1258,
+          "speedup": 11.45
+        },
+        {
+          "task": "bfs",
+          "cpu_seconds": 0.0004,
+          "gpu_seconds": 0.0101,
+          "speedup": 0.04
+        }
+      ]
+    },
+    {
+      "snapshot_id": 2,
+      "snapshot_name": "live_full_20260924T214007",
+      "vertex_count": 253863,
+      "edge_count": 355989,
+      "repeats": 3,
+      "recorded_at": "2026-10-08T07:07:52+00:00",
+      "backends": {
+        "cpu": "pandas+networkx (CPU)",
+        "gpu": "cudf+cugraph (GPU)"
+      },
+      "tasks": [
+        {
+          "task": "load_edgelist",
+          "cpu_seconds": 1.1697,
+          "gpu_seconds": 0.0406,
+          "speedup": 28.81
+        },
+        {
+          "task": "pagerank",
+          "cpu_seconds": 0.5131,
+          "gpu_seconds": 0.0434,
+          "speedup": 11.82
+        },
+        {
+          "task": "louvain",
+          "cpu_seconds": 24.6376,
+          "gpu_seconds": 0.7316,
+          "speedup": 33.68
+        },
+        {
+          "task": "bfs",
+          "cpu_seconds": 0.0618,
+          "gpu_seconds": 0.0321,
+          "speedup": 1.93
+        }
+      ]
+    },
+    {
+      "snapshot_id": 3,
+      "snapshot_name": "live_full_20260925T095654",
+      "vertex_count": 455073,
+      "edge_count": 698273,
+      "repeats": 3,
+      "recorded_at": "2026-10-08T07:12:53+00:00",
+      "backends": {
+        "cpu": "pandas+networkx (CPU)",
+        "gpu": "cudf+cugraph (GPU)"
+      },
+      "tasks": [
+        {
+          "task": "load_edgelist",
+          "cpu_seconds": 2.4987,
+          "gpu_seconds": 0.0629,
+          "speedup": 39.72
+        },
+        {
+          "task": "pagerank",
+          "cpu_seconds": 1.0157,
+          "gpu_seconds": 0.1015,
+          "speedup": 10.01
+        },
+        {
+          "task": "louvain",
+          "cpu_seconds": 50.0444,
+          "gpu_seconds": 1.1183,
+          "speedup": 44.75
+        },
+        {
+          "task": "bfs",
+          "cpu_seconds": 0.1083,
+          "gpu_seconds": 0.0517,
+          "speedup": 2.09
+        }
+      ]
+    }
+  ]
+}
