@@ -41,7 +41,11 @@ function fcErrorBlock(message, retryAction) {
 async function fcSnapshotId() {
   if (FC.snapshotId !== undefined) return FC.snapshotId;
   const snapshots = await api("/snapshots");
-  FC.snapshotId = snapshots.length ? snapshots[0].snapshot_id : null;
+  FC.snapshotId = null; // newest snapshot that actually has flags; none -> unfiltered
+  for (const s of snapshots) {
+    const probe = await api("/flags", { snapshot_id: s.snapshot_id, limit: 1 });
+    if (probe.length) { FC.snapshotId = s.snapshot_id; break; }
+  }
   const label = document.getElementById("auditSnapshotLabel");
   if (label) label.textContent = FC.snapshotId != null ? `(snapshot ${FC.snapshotId})` : "";
   return FC.snapshotId;
@@ -114,8 +118,9 @@ async function fcLoadFlags(filter) {
   if (snap != null) params.snapshot_id = snap;
   if (filter !== "all") params.detector = filter;
   const flags = await api("/flags", params);
-  const audits = await Promise.all(flags.map(f => fcFetchAudit(f.flag_id)));
-  const merged = flags.map((f, i) => ({ ...f, audit: audits[i] }));
+  const verdicts = await api("/audit/verdicts", snap != null ? { snapshot_id: snap } : {});
+  const byFlag = new Map(verdicts.map(v => [v.flag_id, v]));
+  const merged = flags.map(f => ({ ...f, audit: byFlag.get(f.flag_id) || null }));
   FC.flags[filter] = merged;
   return merged;
 }
@@ -334,7 +339,14 @@ async function fcDrawFlagOverlay(myGeneration) {
     src: e.from_wallet_id, dst: e.to_wallet_id, alpha: 0.95,
     color: e.role === "signed" ? FC_SIGNED_COLOR : FC_UNSOLICITED_COLOR,
   }));
-  layoutGraph(nodes, usable.map(e => [e.from_wallet_id, e.to_wallet_id]));
+  // Parallel transfers between one pair would multiply the spring force and blow the layout up.
+  const pairKeys = new Set();
+  const layoutPairs = [];
+  usable.forEach(e => {
+    const k = Math.min(e.from_wallet_id, e.to_wallet_id) + ":" + Math.max(e.from_wallet_id, e.to_wallet_id);
+    if (!pairKeys.has(k)) { pairKeys.add(k); layoutPairs.push([e.from_wallet_id, e.to_wallet_id]); }
+  });
+  layoutGraph(nodes, layoutPairs);
 
   container.innerHTML = "";
   try {

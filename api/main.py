@@ -611,6 +611,34 @@ def flag_audit_endpoint(flag_id: int):
             return dict(zip(cols, row))
 
 
+@app.get("/audit/verdicts")
+def audit_verdicts(snapshot_id: Optional[int] = None):
+    """Latest audit per flag in one call (flags never audited are absent), so
+    the dashboard doesn't probe /flags/{id}/audit once per row."""
+    if using_mock():
+        return [
+            {k: a.get(k) for k in ("flag_id", "verdict", "framing_cost_wei", "method", "minimal_tx_set")}
+            for a in load_mock().get("flag_audit", {}).values()
+        ]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            where, params = "", []
+            if snapshot_id is not None:
+                where = "WHERE f.run_id = ANY(%s)"
+                params.append(resolve_latest_run_ids(cur, snapshot_id))
+            cur.execute(
+                f"""SELECT la.flag_id, la.verdict, la.framing_cost_wei::text AS framing_cost_wei,
+                           la.method, la.minimal_tx_set
+                    FROM flag f
+                    JOIN (SELECT DISTINCT ON (flag_id) flag_id, verdict, framing_cost_wei, method, minimal_tx_set
+                          FROM flag_audit ORDER BY flag_id, created_at DESC, flag_audit_id DESC) la
+                      ON la.flag_id = f.flag_id
+                    {where} ORDER BY la.flag_id""",
+                params,
+            )
+            return rows_as_dicts(cur)
+
+
 @app.get("/audit/overview")
 def audit_overview(snapshot_id: Optional[int] = None):
     """Headline FrameCheck metrics for the dashboard: flags per detector
