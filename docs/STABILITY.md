@@ -346,3 +346,49 @@ The WSL distro auto-shuts-down when idle, taking Postgres' reachability from Win
 intermittent 503s seen throughout this pass, and is why a WSL session has to be held open while
 testing against the live database.
 
+## Phase 8: CI/CD verified on GitHub, not just locally (2026-10-09)
+
+Phase 1 wrote the pipeline and checked it from a clean checkout; this pass confirms the jobs
+actually go green **on GitHub's runners** for the work of Phases 2-7, and that the release path
+really produces a downloadable installer.
+
+| Check | Result |
+|---|---|
+| Phase 7 commit, all four jobs | pass -- [run 37900746949](https://github.com/LIVIDFOX1116/DBMS/actions/runs/37900746949): lint 10s, test 34s, rust 2m41s, installer 5m32s |
+| Python suite on the Linux runner | **224 passed, 5 skipped** -- the same count as locally, so no test is silently skipped in CI |
+| Rust suite on the Windows runner | **37 passed**, including the 8 new `oauth.rs` tests |
+| Anything failing only in CI | **none.** The suspected candidates (new `google-auth`/`itsdangerous` deps, `oauth.rs`, and the `config.REPO_ROOT` path tests, which resolve differently on Linux) all passed unchanged |
+| After pinning the runner | pass -- [run 37949207474](https://github.com/LIVIDFOX1116/DBMS/actions/runs/37949207474) |
+| Release path, tag `v0.0.0-ci-test` | pass -- [run 37950731800](https://github.com/LIVIDFOX1116/DBMS/actions/runs/37950731800): installer 39m36s, release 16s |
+| Release artifact | `FrameCheck_0.1.0_x64-setup.exe`, 110,634,930 bytes, attached to a real (non-draft) Release |
+| Cleanup | release and tag deleted from the remote and locally; only `fc-p1`..`fc-p7` remain |
+
+### Changes
+
+1. **Pinned `ubuntu-latest` to `ubuntu-24.04`.** GitHub's own annotation says that label begins
+   migrating to Ubuntu 26 on **2026-10-19** -- ten days after this pass. An unpinned runner image
+   can break a build with no commit from us, and the first symptom would be a red build on
+   unrelated work. Pinned so the image moves when we decide it does.
+2. **CI and Release badges** in the README, pointing at the real workflows.
+
+### A claim of mine that was wrong
+
+The same commit bumped `actions/upload-artifact` and `download-artifact` from v4 to v5 and its
+message says this "clears the Node 20 deprecation". **It does not.** The annotation fires
+identically on v5:
+
+> Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on
+> Node.js 24: actions/upload-artifact@v5
+
+`softprops/action-gh-release@v2` triggers it too. The bump is harmless and v5 is the newer line, so
+it stays, but the warning is **not** fixed and the commit message overstates it. Recorded here
+rather than by rewriting pushed history. The warning is cosmetic: the actions run on Node 24
+regardless.
+
+### Worth knowing
+
+The Release workflow's installer job took **39m36s** against CI's 5m32s for the same build. The
+difference is cache: `Swatinem/rust-cache` is keyed per workflow, so a tag build starts cold and
+recompiles `tauri-cli` and the whole Tauri tree from scratch. Not a fault -- but a release is not a
+five-minute operation, which matters when cutting one under time pressure.
+
