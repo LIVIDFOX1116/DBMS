@@ -458,8 +458,28 @@ pub fn benchmark_layout(snapshot_id: i64, max_edges: usize, state: tauri::State<
 ///
 /// Returns the Google ID token. The webview posts it to `/auth/callback`,
 /// which is the single place a session is minted for either client.
+/// Async, and the blocking half runs on a blocking thread: a plain
+/// `#[tauri::command] fn` executes on the MAIN thread, so this one froze
+/// the whole window for up to its 300s timeout the moment the user pressed
+/// "Sign in with Google" (Process.Responding went False -- found by
+/// clicking it in the real app). The work below waits on a socket and makes
+/// a blocking HTTP call, so it must stay off the UI thread.
 #[tauri::command]
-pub fn google_signin(
+pub async fn google_signin(
+    client_id: String,
+    scope: String,
+    code_challenge: String,
+    code_verifier: String,
+    authorization_endpoint: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        google_signin_blocking(client_id, scope, code_challenge, code_verifier, authorization_endpoint)
+    })
+    .await
+    .map_err(|e| format!("sign-in task did not complete: {e}"))?
+}
+
+fn google_signin_blocking(
     client_id: String,
     scope: String,
     code_challenge: String,

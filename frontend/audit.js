@@ -33,7 +33,7 @@ function fcEth(wei) {
 }
 
 function fcErrorBlock(message, retryAction) {
-  if (/failed to fetch|networkerror/i.test(message)) message = `The API is not reachable at ${apiBase()}. Is it running?`;
+  if (/failed to fetch|networkerror/i.test(message)) message = fcBackendDownMessage();
   return `<div class="fc-error"><div class="fc-error-title">Could not load this</div>
     <div class="fc-error-msg">${fcEsc(message)}</div>
     <button class="btn" data-fc-retry="${fcEsc(retryAction)}">Retry</button></div>`;
@@ -102,10 +102,19 @@ async function fcLoadOverview() {
   }
 }
 
+function fcBackendDownMessage() {
+  // The desktop app spawns its own backend on a random port, so telling the
+  // user to "start it with uvicorn --port 8000" is advice they cannot act
+  // on and a port that does not exist. Found by killing the sidecar under
+  // a running window.
+  return isRunningInTauriApp()
+    ? "The FrameCheck backend has stopped. Close and reopen the app; if it keeps happening, check the backend log from Settings."
+    : `The API is not reachable at ${apiBase()}. Start it with: uvicorn api.main:app --port 8000`;
+}
+
 function fcShowApiDown(err) {
   fcSetMetrics("–", "–", "–", "–", "Audited", "Frameable");
-  document.getElementById("fcDetectorBars").innerHTML = fcErrorBlock(
-    `The API at ${apiBase()} is not reachable (${err.message}). Start it with: uvicorn api.main:app --port 8000`, "reload");
+  document.getElementById("fcDetectorBars").innerHTML = fcErrorBlock(fcBackendDownMessage(), "reload");
   if (currentPage === "flags") {
     document.getElementById("auditFlagRows").innerHTML =
       `<tr><td colspan="4">${fcErrorBlock("The API is not reachable.", "flags")}</td></tr>`;
