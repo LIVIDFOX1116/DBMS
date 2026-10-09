@@ -78,7 +78,7 @@ def load_snapshot(conn, snapshot_id):
         if row is None:
             raise SystemExit(f"No graph_snapshot with id {snapshot_id}")
     snapshot_name, file_path, vertex_count, edge_count = row
-    return snapshot_name, pd.read_parquet(file_path), vertex_count, edge_count
+    return snapshot_name, pd.read_parquet(config.require_data_path(file_path)), vertex_count, edge_count
 
 
 def time_it(fn, repeats):

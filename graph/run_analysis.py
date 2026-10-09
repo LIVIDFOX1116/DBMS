@@ -256,7 +256,7 @@ def main():
                 raise SystemExit(f"No graph_snapshot with id {args.snapshot_id}")
             snapshot_path = row[0]
 
-        edges_df = pd.read_parquet(snapshot_path)
+        edges_df = pd.read_parquet(config.require_data_path(snapshot_path))
         backend = GraphBackend(force_cpu=args.force_cpu)
         G = backend.load_edgelist(edges_df)
 

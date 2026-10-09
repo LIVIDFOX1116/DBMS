@@ -31,6 +31,20 @@ SIDECAR_NAME = "framecheck-backend"
 # .parent still finds it at PyInstaller's extraction dir -- see
 # backend_entrypoint.py's module docstring.
 MOCK_DATA = REPO_ROOT / "api" / "mock_data.json"
+# api/main.py serves GET /benchmarks straight off this file, resolved as
+# Path(__file__).parent.parent / "docs" / "perf" -- which inside the frozen
+# archive is the extraction dir, so without bundling it the packaged app's
+# Benchmarks tab is permanently empty. Found by running the built sidecar
+# standalone before trusting it. The shipped copy is whatever was measured
+# at build time; re-benchmarking on a user's machine writes to the repo, not
+# into the bundle.
+BENCHMARKS_DATA = REPO_ROOT / "docs" / "perf" / "benchmarks.json"
+# graph/evidence.py reads this at runtime (QUERY_PATH), resolved relative to
+# its own module location -- which in the frozen archive is the extraction
+# dir. Without it every audit started from the packaged app dies with
+# FileNotFoundError on evidence.sql. Same class of bug as mock_data.json
+# above: anything read off disk at runtime has to be bundled.
+EVIDENCE_SQL = REPO_ROOT / "db" / "queries" / "evidence.sql"
 
 
 def host_target_triple() -> str:
@@ -44,6 +58,8 @@ def host_target_triple() -> str:
 def main() -> None:
     if not MOCK_DATA.exists():
         sys.exit(f"missing {MOCK_DATA} -- run this from a checked-out repo, not a stripped copy")
+    if not EVIDENCE_SQL.exists():
+        sys.exit(f"missing {EVIDENCE_SQL} -- the audit needs it at runtime")
 
     triple = host_target_triple()
     exe_name = f"{SIDECAR_NAME}-{triple}"
@@ -61,6 +77,9 @@ def main() -> None:
         "--specpath", str(build_dir),
         "--paths", str(REPO_ROOT),
         "--add-data", f"{MOCK_DATA}{';' if sys.platform == 'win32' else ':'}api",
+        *(("--add-data", f"{BENCHMARKS_DATA}{';' if sys.platform == 'win32' else ':'}docs/perf")
+          if BENCHMARKS_DATA.exists() else ()),
+        "--add-data", f"{EVIDENCE_SQL}{';' if sys.platform == 'win32' else ':'}db/queries",
         # uvicorn/starlette pick their event-loop and protocol implementations
         # dynamically at import time (uvicorn.loops.auto, .protocols.http.auto,
         # ...) -- PyInstaller's static import scan misses those, so the frozen

@@ -6,6 +6,7 @@ case-study address is a joint decision, keep it in config, not hardcoded deep
 in the crawl logic).
 """
 import os
+import pathlib
 
 from dotenv import load_dotenv
 
@@ -47,3 +48,37 @@ PG_DSN = {
     "user": os.getenv("PGUSER", "postgres"),
     "password": os.getenv("PGPASSWORD", ""),
 }
+
+
+# --- Snapshot data files ---
+# graph_snapshot.file_path is stored RELATIVE and forward-slashed so a
+# snapshot row stays portable between machines. Relative to what, though,
+# was implicitly "whatever the process's working directory happens to be":
+# the repo root for a terminal run, but the install directory for the
+# packaged desktop app, where every audit died with a bare
+# FileNotFoundError. Resolve explicitly instead.
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def resolve_data_path(stored_path) -> pathlib.Path:
+    """Absolute location of a stored snapshot path. Absolute paths pass
+    through; relative ones resolve against FRAMECHECK_DATA_DIR when set,
+    else the repo this module lives in. The packaged app has no repo, so
+    it needs FRAMECHECK_DATA_DIR -- which is what the error below says."""
+    path = pathlib.Path(str(stored_path))
+    if path.is_absolute():
+        return path
+    root = os.getenv("FRAMECHECK_DATA_DIR")
+    return (pathlib.Path(root) if root else REPO_ROOT) / path
+
+
+def require_data_path(stored_path) -> pathlib.Path:
+    """resolve_data_path, but fails with something a user can act on."""
+    resolved = resolve_data_path(stored_path)
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"snapshot file not found: {resolved} (stored as {stored_path!r}). "
+            "Set FRAMECHECK_DATA_DIR to the directory holding snapshots/ -- the "
+            "packaged app does not run from the repo, so it cannot guess."
+        )
+    return resolved

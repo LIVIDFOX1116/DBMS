@@ -112,7 +112,8 @@ def start(job_type: str, snapshot_id: int, seed_wallet_id: int,
         raise ValueError(f"unknown job type {job_type!r}")
     existing = active_job()
     if existing is not None:
-        raise RuntimeError(f"a {existing.job_type} job is already running")
+        article = "an" if existing.job_type[0] in "aeiou" else "a"
+        raise RuntimeError(f"{article} {existing.job_type} job is already running")
 
     job = Job(job_id=uuid.uuid4().hex[:12], job_type=job_type, snapshot_id=snapshot_id,
               seed_wallet_id=seed_wallet_id, detector=detector, limit=limit)

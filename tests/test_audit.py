@@ -335,7 +335,8 @@ class TestExactSearchBudget(unittest.TestCase):
 
         conn = mock.MagicMock()
         conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("ignored.parquet",)
-        with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
+        with mock.patch.object(audit_module.config, "require_data_path", side_effect=lambda p: p), \
+             mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
              mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
              mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
              mock.patch.object(audit_module, "EXACT_PAGERANK_EDGE_BUDGET", 9_000), \
@@ -405,7 +406,8 @@ class TestPhase3SpecFixes(unittest.TestCase):
         ]
         conn = mock.MagicMock()
         conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("ignored.parquet",)
-        with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
+        with mock.patch.object(audit_module.config, "require_data_path", side_effect=lambda p: p), \
+             mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
              mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates):
             result = audit_module.audit_bfs_proximity(conn, 1, 1, w, seed, threshold=10.0, bfs_run_id=None)
         self.assertEqual(result["verdict"], "frameable")
@@ -453,7 +455,8 @@ class TestPhase3SpecFixes(unittest.TestCase):
 
         conn = mock.MagicMock()
         conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("ignored.parquet",)
-        with mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
+        with mock.patch.object(audit_module.config, "require_data_path", side_effect=lambda p: p), \
+             mock.patch.object(audit_module.pd, "read_parquet", return_value=edges), \
              mock.patch.object(audit_module, "fetch_unsolicited_candidates", return_value=candidates), \
              mock.patch.object(audit_module, "cheapest_subset_reaching_threshold", side_effect=fake_search), \
              mock.patch.object(GraphBackend, "pagerank_excluding_signed_edges",
