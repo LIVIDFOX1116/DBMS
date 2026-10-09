@@ -143,6 +143,18 @@ beyond this section.** See `docs/API_CONTRACT.md` for every endpoint shape.
 Switch to `FRAMECHECK_API_MODE=live` once Postgres actually has real analysis
 results in it (Phase 3.5 in the bible).
 
+### Running the packaged desktop app against real data
+
+The sidecar runs from the install directory, not the repo, so snapshot files
+stored as relative paths cannot be found by guessing. Point it at the data:
+
+```
+FRAMECHECK_DATA_DIR=E:\DBMS      # the directory containing snapshots/
+```
+
+Without it, audits started from the app fail with a message naming the file
+and this variable. Detectors are unaffected (they read from Postgres).
+
 ### Sign-in (Google)
 
 **The API requires a Google sign-in by default.** `/health` and `/benchmarks`

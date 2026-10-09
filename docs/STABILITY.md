@@ -267,3 +267,82 @@ Both looked like app failures at first and are recorded so the next person does 
   wanted, that is a deliberate dependency to add.
 - Jobs are in-memory and single-slot by design; see `api/jobs.py` for why, and what it costs.
 
+## Phase 7: Desktop app verification (2026-10-09)
+
+The desktop window had not been launched since the Phase 2 rebrand -- five phases of browser-only
+verification. This pass rebuilt the PyInstaller sidecar, the Tauri shell and the NSIS installer,
+then drove the **real** WebView2 window over the DevTools protocol
+(`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`), with native screenshots for
+anything outside the webview (print dialog, error message boxes).
+
+**Six bugs, every one of them invisible in the browser.**
+
+| Check | Result |
+|---|---|
+| Build: sidecar, shell, NSIS installer | `FrameCheck_0.1.0_x64-setup.exe` produced |
+| All eight views in the real window | all render; 100 flags; search narrows to 26 of 100; flag detail opens; no console errors, no uncaught exceptions |
+| CSV export in WebView2 | download completes (110,905 bytes, correct header row) |
+| Print to PDF in WebView2 | dialog opens with "Microsoft Print to PDF"; after the fix below, the preview shows the real report |
+| Run analysis: start, progress, cancel | queued -> running -> cancelled ("cancelled - 1/8"), progress bar advances, Cancel hides when finished |
+| Second job while one runs | 409 "an audit job is already running" |
+| Sidecar killed under a running window | friendly error card, health pill "API unreachable", no blank screen, no uncaught exceptions, window alive |
+| Sidecar missing at startup | native "FrameCheck failed to start" dialog plus `%TEMP%\framecheck-desktop-startup-error.log` naming the fix -- not a silent no-window failure |
+| Postgres unreachable | 503s surface as error cards; the app keeps working |
+
+### Findings and fixes
+
+1. **Every audit failed in the packaged app.** `graph_snapshot.file_path` is stored relative, and
+   "relative to what" was the process working directory -- the repo root from a terminal, the
+   install directory for the sidecar. `FileNotFoundError` on a path that looked right. Resolved
+   explicitly now against `FRAMECHECK_DATA_DIR` or the repo, with an error that says what to set.
+2. **`docs/perf/benchmarks.json` was never bundled**, so the packaged Benchmarks tab was
+   permanently empty.
+3. **`db/queries/evidence.sql` was never bundled**, so every audit failed again once (1) was fixed.
+   Same class as (2) and as `mock_data.json` before them: anything read off disk at runtime has to
+   be declared to PyInstaller. A test now pins all three.
+4. **Print produced a genuinely blank sheet** from any view except Flags: the print stylesheet
+   showed `#view-flags`, which is `display:none` unless it is the active view. The PDF button now
+   tags the body and the print rules key off that tag, so the report is the flag you have open
+   wherever you are.
+   - The first "fix verified" was wrong: I checked computed `display` on `#fcDetail`, which still
+     reports `block` inside a `display:none` ancestor, and `innerText`, which falls back to
+     `textContent` when hidden. Re-verified by geometry (`getBoundingClientRect`,
+     `getClientRects()`): 0 px² before, 501,077 px² after -- and then in the real print preview.
+5. **"Sign in with Google" froze the entire window.** A plain `#[tauri::command] fn` runs on the
+   main thread, and this one waits on a loopback socket for up to 300 s, so the window went
+   `Responding: False` for minutes. Now `async` with the blocking half on a blocking thread;
+   verified responsive and navigable while the browser tab is open.
+6. **The dead-backend message told desktop users to run `uvicorn --port 8000`.** The app spawns
+   its own backend on an OS-assigned port, so that is advice they cannot act on about a port that
+   does not exist. It now says to reopen the app and where the log is.
+
+### What the loopback sign-in actually did
+
+Pressing sign-in opened the user's real browser and bound a loopback listener (observed on port
+49383), which is the flow working as designed. The exchange itself was never completed:
+
+- **No real Google sign-in has been performed.** It needs an OAuth client that only the account
+  owner can create. Verified: the gate renders in the shell, `/auth/login` returns 503 with
+  "Google sign-in is not configured on this server" shown in the card, the Rust command is
+  registered and reachable from the webview, the browser opens, and the listener binds. Not
+  verified: consent, redirect, code exchange, session issue.
+- A user who abandons the consent screen leaves the command waiting until its 300 s timeout, with
+  no cancel button. The window stays usable, so this is untidy rather than broken.
+
+### Not covered
+
+- **"No network" was not tested by disabling the machine's network**, which would have disrupted
+  the user's own session. The app's own function is entirely local; the outbound paths (Etherscan
+  key test, Google token exchange) have explicit timeout/connect handling, and the Google path was
+  exercised against an unreachable endpoint.
+- **API port busy** is largely designed out: the shell asks the OS for a free port rather than
+  using a fixed one, so there is no fixed port to collide with. The small race the code comments
+  acknowledge was not forced.
+
+### Environment note
+
+The WSL distro auto-shuts-down when idle, taking Postgres' reachability from Windows with it
+(the Postgres pid changes across the gap). That -- not application code -- is behind the
+intermittent 503s seen throughout this pass, and is why a WSL session has to be held open while
+testing against the live database.
+
