@@ -98,15 +98,27 @@
 .fc-select { min-width: 130px; }
 .fc-d-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
-/* ── Print: the flag detail becomes the report (PDF via the browser) ── */
+/* ── Print: the flag detail becomes the report (PDF via the browser) ──
+   Keyed on body.fc-printing, set by the PDF button, NOT on which view is
+   .active: showing only #view-flags meant printing from any other view
+   produced a genuinely blank sheet. WebView2's print preview confirmed it
+   (one empty page, Microsoft Print to PDF selected). Plain Ctrl+P still
+   gets the chrome stripped, which is the sane fallback. */
 @media print {
   body { background: #fff !important; color: #111 !important; }
-  .sidenav, .mobile-nav, .topbar, .toolbar, .fc-list, .fc-d-actions, #toastStack, .fc-signin-backdrop { display: none !important; }
-  .view:not(#view-flags) { display: none !important; }
+  .sidenav, .mobile-nav, .topbar, .toolbar, .fc-list, .fc-d-actions,
+  #toastStack, .fc-signin-backdrop { display: none !important; }
   .fc-split { display: block !important; }
   .panel, .fc-detail { border: none !important; box-shadow: none !important; background: #fff !important; }
   .fc-detail, .fc-detail * { color: #111 !important; }
   .fc-step { break-inside: avoid; }
+
+  /* The report is the open flag detail, wherever the app happens to be. */
+  body.fc-printing .view { display: none !important; }
+  body.fc-printing #view-flags,
+  body.fc-printing #view-flags .fc-split,
+  body.fc-printing #fcDetail { display: block !important; }
+  body.fc-printing #view-flags .view-header { display: block !important; }
 }
 
 /* `[hidden]` is only a UA-stylesheet `display:none`, so any author rule that

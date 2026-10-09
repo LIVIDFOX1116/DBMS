@@ -396,6 +396,20 @@ async function fcStartJob(jobType) {
   }
 }
 
+function fcPrintReport() {
+  // Tag the body rather than relying on which view happens to be .active:
+  // the print stylesheet used to show #view-flags only, so printing from
+  // any other view produced a blank sheet -- confirmed in WebView2's print
+  // preview, which offers Microsoft Print to PDF and rendered one empty
+  // page. The class is removed on afterprint, and defensively on a timer
+  // for engines that never fire it.
+  document.body.classList.add("fc-printing");
+  const clear = () => document.body.classList.remove("fc-printing");
+  window.addEventListener("afterprint", clear, { once: true });
+  setTimeout(clear, 60000);
+  window.print();
+}
+
 async function fcDownloadCsv(flagId) {
   // Fetched rather than linked: the session is an HttpOnly cookie in the
   // browser but a bearer token in the desktop shell, and a plain <a href>
@@ -880,7 +894,7 @@ function fcInit() {
     const csv = e.target.closest("[data-fc-csv]");
     if (csv) { fcDownloadCsv(Number(csv.dataset.fcCsv)); return; }
     const printBtn = e.target.closest("[data-fc-print]");
-    if (printBtn) { window.print(); return; }
+    if (printBtn) { fcPrintReport(); return; }
     const g = e.target.closest("[data-fc-graph]");
     if (g) {
       const flagId = g.dataset.fcGraph;
