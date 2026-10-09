@@ -1,5 +1,8 @@
 # FrameCheck — GPU-Accelerated Ethereum Framing Audit
 
+[![CI](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/ci.yml)
+[![Release](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/release.yml/badge.svg)](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/release.yml)
+
 Full context, rationale, and the 8-week beat sheet live in
 [`docs/Project_Bible_TransactionGraphAnalyzer.docx`](docs/Project_Bible_TransactionGraphAnalyzer.docx).
 This README is just "how do I run the thing."
