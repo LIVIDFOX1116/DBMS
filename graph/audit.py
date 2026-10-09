@@ -291,7 +291,7 @@ def audit_bfs_proximity(conn, flag_id: int, snapshot_id: int, wallet_id: int, se
     with conn.cursor() as cur:
         cur.execute("SELECT file_path FROM graph_snapshot WHERE snapshot_id = %s", (snapshot_id,))
         file_path = cur.fetchone()[0]
-    edges_df = pd.read_parquet(file_path)
+    edges_df = pd.read_parquet(config.require_data_path(file_path))
 
     backend = GraphBackend()
     masked_edges = edges_df[edges_df["src_wallet_id"] != wallet_id]
@@ -459,7 +459,7 @@ def audit_pagerank_threshold(conn, flag_id: int, snapshot_id: int, wallet_id: in
     with conn.cursor() as cur:
         cur.execute("SELECT file_path FROM graph_snapshot WHERE snapshot_id = %s", (snapshot_id,))
         file_path = cur.fetchone()[0]
-    edges_df = pd.read_parquet(file_path)
+    edges_df = pd.read_parquet(config.require_data_path(file_path))
     backend = GraphBackend()
 
     masked = backend.pagerank_excluding_signed_edges(edges_df, exclude_wallet_id=wallet_id)
@@ -521,7 +521,7 @@ def audit_sybil_cluster(conn, snapshot_id: int, wallet_id: int, louvain_run_id: 
     with conn.cursor() as cur:
         cur.execute("SELECT file_path FROM graph_snapshot WHERE snapshot_id = %s", (snapshot_id,))
         file_path = cur.fetchone()[0]
-    edges_df = pd.read_parquet(file_path)
+    edges_df = pd.read_parquet(config.require_data_path(file_path))
     masked_edges = edges_df[edges_df["src_wallet_id"] != wallet_id]
 
     backend = GraphBackend()
