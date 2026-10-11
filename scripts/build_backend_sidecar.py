@@ -45,6 +45,14 @@ BENCHMARKS_DATA = REPO_ROOT / "docs" / "perf" / "benchmarks.json"
 # FileNotFoundError on evidence.sql. Same class of bug as mock_data.json
 # above: anything read off disk at runtime has to be bundled.
 EVIDENCE_SQL = REPO_ROOT / "db" / "queries" / "evidence.sql"
+# Feature 1: the Database view applies the schema to a user's own Postgres and
+# can import the demo dataset, so an installed app has to carry the SQL files
+# and the dataset -- anything read off disk at runtime must be bundled
+# explicitly (the lesson from mock_data.json, benchmarks.json and
+# evidence.sql, each of which shipped broken once).
+SCHEMA_SQL = REPO_ROOT / "db" / "schema.sql"
+MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
+DEMO_DATASET = REPO_ROOT / "datasets" / "snapshot1_polynetwork.sql.gz"
 
 
 def host_target_triple() -> str:
@@ -80,6 +88,13 @@ def main() -> None:
         *(("--add-data", f"{BENCHMARKS_DATA}{';' if sys.platform == 'win32' else ':'}docs/perf")
           if BENCHMARKS_DATA.exists() else ()),
         "--add-data", f"{EVIDENCE_SQL}{';' if sys.platform == 'win32' else ':'}db/queries",
+        # The schema and migrations: the Database view applies them to a
+        # user's own Postgres, so the installed app has to carry the SQL.
+        "--add-data", f"{SCHEMA_SQL}{';' if sys.platform == 'win32' else ':'}db",
+        "--add-data", f"{MIGRATIONS_DIR}{';' if sys.platform == 'win32' else ':'}db/migrations",
+        # The demo dataset, so a fresh install has real data to look at.
+        *(("--add-data", f"{DEMO_DATASET}{';' if sys.platform == 'win32' else ':'}datasets")
+          if DEMO_DATASET.exists() else ()),
         # uvicorn/starlette pick their event-loop and protocol implementations
         # dynamically at import time (uvicorn.loops.auto, .protocols.http.auto,
         # ...) -- PyInstaller's static import scan misses those, so the frozen

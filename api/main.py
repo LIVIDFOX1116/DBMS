@@ -1492,6 +1492,68 @@ def db_table_sample(table: str, limit: int = 50):
         conn.close()
 
 
+class DatasetImport(BaseModel):
+    # "demo" imports the bundled dataset; "file" imports `path`. The page
+    # never needs to know where the bundled one lives.
+    source: str = "demo"
+    path: Optional[str] = None
+
+
+@app.get("/db/datasets")
+def db_datasets():
+    """What can be imported: the bundled demo dataset, if this build carries
+    one. A source checkout that has never run scripts/export_dataset.py has
+    no datasets/ directory, and the UI says so rather than offering a button
+    that cannot work."""
+    path = dbsetup.demo_dataset()
+    if path is None:
+        return {"demo": None}
+    try:
+        return {"demo": dbsetup.describe_dataset(path)}
+    except (ValueError, OSError) as e:
+        log.warning("bundled demo dataset at %s is unreadable: %s", path, e)
+        return {"demo": None}
+
+
+@app.post("/db/import")
+def db_import(body: DatasetImport):
+    """Loads a dataset into the configured database, in one transaction.
+
+    Blocking rather than a background job: the bundled dataset is 444k rows
+    and measured 8.5 s to import, which is worth waiting for in a request.
+    A much larger dataset would deserve a job, and does not exist yet.
+    """
+    if body.source == "demo":
+        path = dbsetup.demo_dataset()
+        if path is None:
+            raise HTTPException(status_code=404, detail="this build does not include a demo dataset")
+    elif body.source == "file":
+        if not body.path:
+            raise HTTPException(status_code=422, detail="path is required when source is 'file'")
+        path = pathlib.Path(body.path)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail=f"no such file: {body.path}")
+    else:
+        raise HTTPException(status_code=422, detail="source must be 'demo' or 'file'")
+
+    try:
+        conn = dbsetup.connect(dbsetup.current_dsn())
+    except OperationalError as e:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {str(e).strip()}") from None
+    try:
+        return dbsetup.import_dataset(conn, path)
+    except ValueError as e:
+        # Not one of our dataset files -- refused before anything was written.
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except RuntimeError as e:
+        # Target not empty, or the file wants a table it may not write.
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=400, detail=str(e).strip()) from None
+    finally:
+        conn.close()
+
+
 class ModeUpdate(BaseModel):
     mode: str
 

@@ -59,6 +59,7 @@ async function fcDbPost(path, body) {
 
 async function fcOpenDatabaseView() {
   await fcRefreshDbStatus();
+  await fcRefreshDatasets();
   await fcRefreshPlan();
   fcResumeIngestJobIfRunning();
 }
@@ -391,4 +392,70 @@ async function fcResumeIngestJobIfRunning() {
     const live = list.find(j => j.job_type === "ingest" && ["queued", "running"].includes(j.status));
     if (live) fcTrackIngestJob(live.job_id);
   } catch { /* the view still works without it */ }
+}
+
+/* ── importing a dataset ── */
+
+async function fcRefreshDatasets() {
+  const box = document.getElementById("fcDbDatasets");
+  if (!box) return;
+  let out;
+  try {
+    out = await api("/db/datasets");
+  } catch (err) {
+    box.innerHTML = `<div class="fc-err">${err.message}</div>`;
+    return;
+  }
+  if (!out.demo) {
+    box.innerHTML = `<div class="muted">This build does not include a demo dataset.
+                     Export one from an existing database with
+                     <code>python scripts/export_dataset.py --snapshot-id 1 --output datasets/&lt;name&gt;.sql.gz</code>.</div>`;
+    return;
+  }
+  const m = out.demo.manifest;
+  box.innerHTML = `
+    <div class="fc-db-grid">
+      <div class="fc-db-row"><span>Demo dataset</span><b>${m.snapshot_name}</b></div>
+      <div class="fc-db-row"><span>Contents</span><b>${m.total_rows.toLocaleString()} rows ·
+        ${m.vertex_count.toLocaleString()} wallets · ${m.edge_count.toLocaleString()} edges</b></div>
+      <div class="fc-db-row"><span>File</span><b>${fcBytes(out.demo.bytes)}</b></div>
+    </div>
+    <div class="fc-db-actions"><button class="btn primary" id="fcImportDemo">Import the demo dataset</button></div>`;
+  document.getElementById("fcImportDemo").addEventListener("click", () => fcImportDataset("demo"));
+}
+
+async function fcImportDataset(source) {
+  const status = document.getElementById("fcImportStatus");
+  const body = { source };
+  if (source === "file") {
+    const path = document.getElementById("fcImportPath").value.trim();
+    if (!path) { toast("Enter the path to a dataset file first", "error"); return; }
+    body.path = path;
+  }
+  // No progress events: the import is one transaction on the server, and a
+  // half-reported import would be worse than an honest wait. The measured
+  // time for the bundled dataset is ~9 s.
+  status.innerHTML = `<div class="muted">Importing… this takes about 10 seconds for the demo dataset,
+                      and the whole thing is one transaction — nothing is left half-loaded if it fails.</div>`;
+  ["fcImportDemo", "fcImportFile"].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = true; });
+  try {
+    const out = await fcDbPost("/db/import", body);
+    const skipped = Object.keys(out.skipped_seed_tables || {});
+    const remapped = Object.values(out.remapped_ids || {}).reduce((a, b) => a + b, 0);
+    status.innerHTML = `
+      <div class="fc-db-grid">
+        <div class="fc-db-row"><span>Imported</span><b class="ok">${out.total_rows.toLocaleString()} rows
+          across ${Object.keys(out.loaded).length} tables</b></div>
+        ${skipped.length ? `<div class="fc-db-row"><span>Kept as they were</span><b>${skipped.join(", ")}</b></div>` : ""}
+        ${remapped ? `<div class="fc-db-row"><span>Ids translated</span><b>${remapped}</b>
+          <span class="muted">(this database numbers its algorithms differently)</span></div>` : ""}
+      </div>`;
+    toast(`Imported ${out.total_rows.toLocaleString()} rows`, "success");
+    await fcRefreshDbStatus();
+    if (typeof loadAll === "function") loadAll();
+  } catch (err) {
+    status.innerHTML = `<div class="fc-err">${err.message}</div>`;
+  } finally {
+    ["fcImportDemo", "fcImportFile"].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = false; });
+  }
 }

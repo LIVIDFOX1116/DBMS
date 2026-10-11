@@ -643,6 +643,21 @@ table.dtable a { color: var(--accent-glow); }
       </div>
 
       <div class="card">
+        <h3>Import data</h3>
+        <div id="fcDbDatasets"><div class="muted">checking…</div></div>
+        <div class="fc-db-form" style="margin-top:10px;">
+          <label style="flex:2 1 320px;">Or a dataset file on this machine
+            <input id="fcImportPath" placeholder="C:\path\to\dataset.sql.gz" autocomplete="off"></label>
+          <button class="btn" id="fcImportFile">Import file</button>
+        </div>
+        <p class="muted" style="margin-top:8px;">A dataset is one snapshot's slice of a FrameCheck database —
+          its edges, the wallets and transactions behind them, and every analysis run over it. Produce one with
+          <code>scripts/export_dataset.py</code>. Importing needs an empty database: FrameCheck will not delete
+          existing rows to make room.</p>
+        <div id="fcImportStatus" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="card">
         <h3>Tables</h3>
         <div id="fcDbTables"><div class="muted">No database connected yet.</div></div>
       </div>
@@ -948,6 +963,7 @@ window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overvi
 document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));
 document.getElementById("fcDbSave").addEventListener("click", fcSaveDbSettings);
 document.getElementById("fcIngestStart").addEventListener("click", fcStartIngest);
+document.getElementById("fcImportFile").addEventListener("click", () => fcImportDataset("file"));
 
 /* ════════════════════════════════════════
    STATE + LOAD
