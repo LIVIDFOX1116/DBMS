@@ -462,3 +462,75 @@ stale.
 - A panel showing 150 of 26,594 wallets is **0.6% of the cluster**. The footer states the ratio on
   every panel rather than leaving the impression that the picture is the whole cluster.
 
+## Phase 10: Database improvement (2026-10-11)
+
+A database phase, so the pass is mostly "did anything FrameCheck concludes change?" --
+answered by `scripts/audit_regression.py` -- plus the usual click-through to confirm the
+restructured queries still feed the UI correctly. Full numbers in `docs/perf/db_baseline.md`
+and `docs/perf/db_after.md`.
+
+| Check | Result |
+|---|---|
+| `pg_dump` before migrations 007 and 008 | 265 MB each, taken |
+| Migration 007 (3 indexes, 4 CHECKs) | applied, `ANALYZE` after |
+| Migration 008 (`mv_cluster_flag_stats`) | applied, 395,206 rows |
+| Regression guard, snapshot 1 | 1,775 flags, 13 audits -- both sha256 **MATCH** |
+| Regression guard, snapshot 2 | 126,862 flags, 126 audits -- both sha256 **MATCH** |
+| `scripts/check_data_quality.py` | **0 failures**, 3 warnings (all real data, see below) |
+| Matview vs live query, all clusters | full outer join difference query returned **0 rows** |
+| `/clusters/{id}/subgraph` output | same 150 nodes, 249 edges, 1 component, 0 isolated, same verdict counts |
+| `/clusters/top-flagged` output | same 8 clusters, identical counts and keys |
+| Bad inputs: `limit` 0 / 9 / 5000, unknown cluster, non-numeric id, unknown run | 422 / 404 with specific messages |
+| Browser: Multiview, 8 panels | edge counts per panel byte-identical to Phase 9 |
+| Browser: dashboard click-through | 100 flags, no console errors |
+| **Desktop app** (rebuilt sidecar + shell) | 8 panels, settled, expand to 600, collapse, no errors |
+| Python suite | 242 passed, 5 skipped; ruff clean |
+
+### A bug the verification caught before it shipped
+
+The first draft of `mv_cluster_flag_stats` stored `count(DISTINCT wallet_id)` per flag run and
+summed those at query time. It reported **26,761** flagged wallets for cluster 351299 where the
+correct answer is **26,594** -- summing per-run distinct counts double-counts any wallet flagged
+by two detectors. The view is now keyed at wallet grain so distinct counting happens across the
+selected runs together, and it was checked against the live query for *every* cluster, not just
+the top 8.
+
+This is exactly what the "accuracy first" rule is for: the wrong version was 219x faster than the
+live query and looked perfect on the eight rows anyone would have eyeballed.
+
+### Two things deliberately NOT changed
+
+1. **1,557 self-loop edges.** A CHECK constraint forbidding `src_wallet_id = dst_wallet_id` was
+   drafted, then dropped after checking the data: these are real transactions where `from == to`
+   with value 0 (contract self-calls). The constraint would have rejected correct on-chain data,
+   and `ALTER TABLE` would have failed on 1,557 existing rows. Reported as a warning instead.
+2. **`snapshot_edge.edge_weight` is a double holding wei**, which rounds beyond ~15 significant
+   digits. Measured rather than assumed: 8.6% of value-carrying edges differ from the exact
+   `NUMERIC` sum, but the **largest absolute error is 30,000,000 wei -- 0.00000003 ETH**
+   (relative 5e-15). Widening the column rewrites a 174 MB table and perturbs the PageRank inputs
+   that produce flags, risking the regression guard, to recover an error far below anything that
+   changes a ranking. Framing costs never read it.
+
+### Findings during the pass
+
+1. **One 503 immediately after restarting Postgres.** Enabling `pg_stat_statements` needs a
+   restart, which leaves the API's pooled connections dead; the first request using one failed.
+   The pool discarded it and every subsequent request succeeded -- the broken-connection handling
+   in `get_conn()` working as designed, confirmed rather than assumed.
+2. **A self-inflicted bug worth recording.** Restructuring `/clusters/top-flagged` left the old
+   `rows = rows_as_dicts(cur)` line in place after the new verdict query, so `rows` was
+   reassigned from an already-exhausted cursor and the endpoint returned `[]` while still
+   answering 200. The timing harness showed a *faster* endpoint; only checking the body caught
+   it. Timings alone would have reported this as a win.
+3. **The packaged app needed its sidecar rebuilt** before the desktop check, for the same reason
+   as Phase 9: `cargo tauri build` does not rebuild the frozen Python backend, so the desktop app
+   would have kept serving the pre-Phase-10 API.
+
+### Not done
+
+- **`postgresql.conf` tuning is proposed, not applied** (see `docs/perf/db_after.md`). The server
+  is on defaults that assume a spinning disk; `random_page_cost = 4` is the one most likely to
+  change plan choices and should be changed alone, with the regression guard re-run after.
+- **Partitioning** was assessed and rejected: `transaction` never appeared in the slow query list,
+  so partitioning 1.3 M rows would add planning overhead and migration risk for no measured gain.
+
