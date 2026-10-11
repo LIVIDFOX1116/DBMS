@@ -522,10 +522,15 @@ table.dtable a { color: var(--accent-glow); }
     <!-- CLUSTERS -->
     <section class="view" id="view-clusters">
       <div class="view-header"><div><h1>Clusters</h1><p>Louvain community-detection output</p></div></div>
+      <div class="toolbar">
+        <button class="btn primary" id="mvOpenSelected" disabled>Multiview</button>
+        <button class="btn" id="mvOpenTop">Top 8 flagged</button>
+        <span class="fc-muted" id="mvSelectionNote">Tick up to 8 clusters to compare them side by side.</span>
+      </div>
       <div class="panel">
         <div class="table-wrap">
           <table class="dtable">
-            <thead><tr><th>ID</th><th>Type</th><th>Risk</th><th>Members</th><th>Modularity</th></tr></thead>
+            <thead><tr><th class="mv-pick-col"></th><th>ID</th><th>Type</th><th>Risk</th><th>Members</th><th>Modularity</th></tr></thead>
             <tbody id="clusterRows"></tbody>
           </table>
         </div>
@@ -1065,9 +1070,13 @@ function openWalletModal(id) {
 ════════════════════════════════════════ */
 function renderClusters() {
   const tbody = document.getElementById("clusterRows");
-  if (!CLUSTERS.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">No clusters yet. Run Louvain community detection to populate this.</div></td></tr>`; return; }
+  if (!CLUSTERS.length) { tbody.innerHTML = `<tr><td colspan="6"><div class="empty-hint">No clusters yet. Run Louvain community detection to populate this.</div></td></tr>`; return; }
   tbody.innerHTML = CLUSTERS.map(c => `
     <tr onclick="openClusterModal(${c.cluster_id})">
+      <td class="mv-pick-col" onclick="event.stopPropagation()">
+        <input type="checkbox" class="mv-pick" data-cluster="${c.cluster_id}"
+               aria-label="Select cluster ${c.cluster_id} for Multiview" />
+      </td>
       <td class="mono num">#${c.cluster_id}</td>
       <td><span class="badge ${typeBadgeClass(c.cluster_type)}">${c.cluster_type || "Untriaged"}</span></td>
       <td><span class="badge ${riskBadgeClass(c.risk_score)}">${c.risk_score ?? "–"}</span></td>
