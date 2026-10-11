@@ -624,6 +624,91 @@ fn multiview_payload(api_base: &str, clusters: Option<&str>, limit: Option<u32>)
     .to_string())
 }
 
+/// The Postgres connection settings the Database view edits. Mirrors
+/// api/dbsetup.py's five DSN fields; the password is the reason this goes
+/// through Rust at all rather than being POSTed from the page.
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+pub struct DbSettings {
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: String,
+    pub dbname: String,
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+}
+
+fn default_port() -> String {
+    "5432".to_string()
+}
+
+/// Validates what the page sent before anything is stored or pushed. The
+/// backend validates too (api/dbsetup.normalise_dsn) -- this is here so the
+/// user gets the message before a password is written to their keychain.
+pub fn validate_db_settings(s: &DbSettings) -> Result<(), String> {
+    let mut missing = vec![];
+    if s.host.trim().is_empty() { missing.push("host"); }
+    if s.dbname.trim().is_empty() { missing.push("database"); }
+    if s.user.trim().is_empty() { missing.push("user"); }
+    if !missing.is_empty() {
+        return Err(format!("missing required field(s): {}", missing.join(", ")));
+    }
+    let port = s.port.trim();
+    match port.parse::<u32>() {
+        Ok(p) if (1..=65535).contains(&p) => Ok(()),
+        _ => Err(format!("port must be a number between 1 and 65535, got {port:?}")),
+    }
+}
+
+fn push_db_settings(state: &tauri::State<AppState>, settings: &DbSettings) -> Result<(), String> {
+    let (port, token) = {
+        let handle = state.0.lock().unwrap();
+        (handle.port, handle.internal_token.clone())
+    };
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/internal/db-settings"))
+        .header("X-Internal-Token", token)
+        .json(settings)
+        .send()
+        .map_err(|e| format!("could not reach backend to apply the connection settings: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("backend rejected the connection settings: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Saves the connection settings to the OS keychain and pushes them to the
+/// running backend. An empty password means "keep the saved one": the page
+/// cannot read the stored password back, so a blank field has to mean no
+/// change rather than "set the password to nothing".
+#[tauri::command]
+pub fn set_db_settings(mut settings: DbSettings, state: tauri::State<AppState>) -> Result<(), String> {
+    validate_db_settings(&settings)?;
+    settings.host = settings.host.trim().to_string();
+    settings.port = settings.port.trim().to_string();
+    settings.dbname = settings.dbname.trim().to_string();
+    settings.user = settings.user.trim().to_string();
+    if settings.password.is_empty() {
+        if let Some(previous) = keychain::get_db_settings()
+            .and_then(|json| serde_json::from_str::<DbSettings>(&json).ok())
+        {
+            settings.password = previous.password;
+        }
+    }
+    let json = serde_json::to_string(&settings).map_err(|e| e.to_string())?;
+    keychain::set_db_settings(&json)?;
+    push_db_settings(&state, &settings)
+}
+
+/// Whether the user has saved connection settings at all. Like
+/// has_api_key, a bool -- the page never reads the password back.
+#[tauri::command]
+pub fn has_db_settings() -> bool {
+    keychain::get_db_settings().is_some()
+}
+
+
 #[cfg(test)]
 mod multiview_tests {
     use super::multiview_payload;
