@@ -814,3 +814,86 @@ added one commit earlier. Pinned by a test now.
 - Feature 1's "import a database" half -- restoring a dump, and a bundled
   demo dataset -- is not built yet; only "import schema" is.
 
+## Phase 12, Feature 1 continued: datasets (2026-10-11)
+
+The "or database" half of "import schema or database". `scripts/
+export_dataset.py` writes one snapshot's slice; the Database view imports it;
+the app ships with snapshot 1 so a fresh install has real data to look at.
+
+| Check | Result |
+|---|---|
+| Export snapshot 1 | 443,963 rows -> **18.9 MB gzipped**, 12.8 s |
+| Import into a clean database | 443,954 rows in **8.5 s**, 13 sequences realigned (the 9-row difference is the seed rows kept, see below) |
+| Every table's count, source slice vs imported | identical across all 15 tables that carry data |
+| Simulated transactions in the import | **0** |
+| `app_user` / `framing_scenario` rows | **0 / 0** -- never exported |
+| Orphan edge endpoints / orphan evidence | **0 / 0** |
+| A new INSERT after importing | gets a fresh id -- sequences were realigned, not left at 1 |
+| A second import into the same database | refused, with the reason |
+| `README.md` offered as a dataset | refused on the header, before anything is written |
+| The UI path in headless Chrome | manifest panel, import button, refusal rendering, and the dashboard then showing **1,775 imported flags**; 0 console errors |
+| The packaged sidecar | resolves its bundled dataset and all 7 migrations out of the PyInstaller extraction dir (104.6 -> 123.4 MB) |
+| Python suite | 330 passed, 5 skipped; ruff clean |
+
+### Three bugs the foreign keys caught
+
+Each of these was a wrong assumption that a FK turned into a clear error, so
+they are worth recording as the FKs doing their job rather than as mishaps.
+
+1. **"The wallets the edges touch" is not the right scope.**
+   `token_contract_wallet_id_fkey: Key (contract_wallet_id)=(51040) is not
+   present in table "wallet"` -- an ERC-20 contract has a wallet row of its
+   own and need not be an endpoint of any edge in the snapshot. The same goes
+   for transaction recipients, token-transfer counterparties, block
+   proposers, and the wallets named by metrics, clusters, flags and alerts.
+   The scope is now the closure of every wallet any carried row references:
+   19,133 wallets became **25,462**.
+2. **A database that has only had its schema applied is not empty.**
+   `db/schema.sql` seeds 1 analyst and 8 algorithm rows, so the
+   "import needs an empty database" check refused every freshly prepared
+   database. Seed tables are now excluded from that check and kept as the
+   target has them.
+3. **Ids are not portable between FrameCheck databases.** This project's
+   database numbers `pagerank_threshold` **12**; a database freshly created
+   from `schema.sql` numbers it **6** -- same name, different id, because ids
+   were handed out as detectors were added over time. Trusting the file's ids
+   produced `analysis_run_algorithm_id_fkey: Key (algorithm_id)=(10) is not
+   present`, and the obvious alternative -- merging the file's seed rows --
+   would have collided with the unique constraint on `algorithm_name`. The
+   importer now translates seed-referencing columns through a name-to-id map.
+   A name the target does not know maps to nothing and the row fails its key,
+   rolling the whole import back: a refused import is better than a quietly
+   incomplete one.
+
+### What a dataset deliberately does not carry
+
+- `app_user` -- real people's Google identities. A dataset is for sharing; an
+  account list is not, and an importing app mints its own.
+- Anything the framing simulator injected (`transaction.is_simulated`). Every
+  transaction-scoped table filters through one shared `TX_SCOPE`, so a
+  simulated row cannot arrive sideways via a token transfer or a piece of
+  flag evidence. A dataset is the one artefact that leaves the machine, which
+  is exactly where that promise matters most.
+- `framing_scenario` -- the simulator's own bookkeeping, which would be left
+  pointing at transactions that were excluded.
+
+A dataset file is treated as data, not instructions: its COPY headers are
+matched by pattern and checked against a list of importable tables, so an
+edited file cannot be used to write somewhere it should not.
+
+### One real UX bug, found only by looking at the result
+
+Straight after an import, every row count in the Tables panel read
+"unknown" -- `pg_class.reltuples` is -1 until a table is analysed, and
+autovacuum had not got round to it. That looks exactly like an import that
+did not work. The import now runs `ANALYZE` on the tables it loaded:
+**12 tables reporting unknown before, 0 after.**
+
+### Test databases left on the server
+
+Four, from this feature's passes: `framecheck_selftest`,
+`framecheck_demo_import`, `framecheck_demo`, `framecheck_uitest`. Removing
+them needs `DROP DATABASE`, which this project does not run without asking.
+`framecheck_demo` and `framecheck_uitest` each hold a full copy of the
+snapshot-1 dataset (~250 MB apiece).
+
