@@ -280,6 +280,66 @@ async function fcEnsureSignedIn() {
   }
 }
 
+/* ── Multiview ──
+   Opens a separate window showing only cluster graphs. Capped at 8: each
+   panel holds its own WebGL2 context and browsers kill the oldest once
+   they run out, so a 9th panel would silently blank an earlier one. */
+const FC_MULTIVIEW_MAX = 8;
+
+function fcSelectedClusters() {
+  return [...document.querySelectorAll(".mv-pick:checked")].map(cb => Number(cb.dataset.cluster));
+}
+
+function fcUpdateMultiviewSelection() {
+  const picked = fcSelectedClusters();
+  const note = document.getElementById("mvSelectionNote");
+  const open = document.getElementById("mvOpenSelected");
+  if (open) {
+    open.disabled = picked.length === 0;
+    open.textContent = picked.length ? `Multiview (${picked.length})` : "Multiview";
+  }
+  if (!note) return;
+  if (picked.length >= FC_MULTIVIEW_MAX) {
+    note.textContent = `${FC_MULTIVIEW_MAX} selected — the maximum. Untick one to choose a different cluster.`;
+    note.classList.add("fc-warn");
+  } else {
+    note.textContent = picked.length
+      ? `${picked.length} selected — up to ${FC_MULTIVIEW_MAX}.`
+      : `Tick up to ${FC_MULTIVIEW_MAX} clusters to compare them side by side.`;
+    note.classList.remove("fc-warn");
+  }
+  // Blocking the 9th at the checkbox is clearer than letting someone tick
+  // twelve and silently dropping four.
+  document.querySelectorAll(".mv-pick").forEach(cb => {
+    cb.disabled = !cb.checked && picked.length >= FC_MULTIVIEW_MAX;
+  });
+}
+
+function fcMultiviewUrl(params) {
+  const base = location.href.replace(/[^/]*(\?.*)?$/, "") + "multiview.html";
+  const query = new URLSearchParams(params);
+  // The separate window has its own localStorage origin in the desktop
+  // shell, and the sidecar's port changes every launch, so the API base
+  // travels in the URL rather than being rediscovered.
+  query.set("api", apiBase());
+  return `${base}?${query}`;
+}
+
+async function fcOpenMultiview(params) {
+  const url = fcMultiviewUrl(params);
+  if (isRunningInTauriApp()) {
+    try {
+      await window.__TAURI__.core.invoke("open_multiview", { url });
+      return;
+    } catch (err) {
+      toast(`Could not open the Multiview window: ${err}`, "error");
+      return;
+    }
+  }
+  const win = window.open(url, "framecheck-multiview", "width=1500,height=900");
+  if (!win) toast("The Multiview window was blocked — allow pop-ups for this page.", "error");
+}
+
 /* ── Run analysis ── */
 let fcJobPoll = null;
 
@@ -866,6 +926,16 @@ function fcInit() {
     });
   }
   fcRestoreFlagPrefs();
+  document.addEventListener("change", e => {
+    if (e.target.classList?.contains("mv-pick")) fcUpdateMultiviewSelection();
+  });
+  document.getElementById("mvOpenSelected")?.addEventListener("click", () => {
+    const picked = fcSelectedClusters();
+    if (picked.length) fcOpenMultiview({ clusters: picked.join(",") });
+  });
+  document.getElementById("mvOpenTop")?.addEventListener("click", () => {
+    fcOpenMultiview({ limit: FC_MULTIVIEW_MAX });
+  });
   document.getElementById("fcRunDetectors")?.addEventListener("click", () => fcStartJob("detectors"));
   document.getElementById("fcRunAudit")?.addEventListener("click", () => fcStartJob("audit"));
   document.getElementById("fcCancelJob")?.addEventListener("click", async () => {

@@ -149,6 +149,7 @@ pub fn run() {
             commands::run_layout,
             commands::benchmark_layout,
             commands::google_signin,
+            commands::open_multiview,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

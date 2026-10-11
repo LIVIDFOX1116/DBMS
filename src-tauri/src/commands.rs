@@ -547,3 +547,101 @@ fn open_in_browser(url: &str) -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| format!("could not open the browser: {e}"))
 }
+
+/// Opens Multiview in its own window.
+///
+/// A second WebviewWindow rather than a route in the main one: the point of
+/// Multiview is to sit beside the dashboard while you compare clusters, and
+/// a route would replace what you were looking at. Reusing one label means
+/// pressing the button twice focuses the existing window instead of
+/// stacking up windows (and their eight WebGL contexts each).
+#[tauri::command]
+pub fn open_multiview(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    let relative = multiview_relative_url(&url)?;
+
+    if let Some(existing) = app.get_webview_window("multiview") {
+        let _ = existing.set_focus();
+        // Re-navigate so a new selection replaces what the window shows,
+        // rather than focusing a window still displaying the old clusters.
+        // json! escapes the value, so the query string cannot break out of
+        // the string literal it is interpolated into.
+        let _ = existing.eval(format!(
+            "window.location.replace({})",
+            serde_json::json!(relative)
+        ));
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(&app, "multiview", WebviewUrl::App(relative.into()))
+        .title("FrameCheck Multiview")
+        .inner_size(1500.0, 900.0)
+        .resizable(true)
+        .build()
+        .map_err(|e| format!("could not open the Multiview window: {e}"))?;
+    Ok(())
+}
+
+/// Reduces a caller-supplied Multiview URL to the bundled page plus its
+/// query string, rejecting anything else.
+///
+/// `url` arrives from the webview, and this command opens whatever it is
+/// given in a window that has Tauri IPC attached -- so a command that
+/// accepted an arbitrary URL would hand a remote page the app's command
+/// surface. Only ever our own page ships.
+fn multiview_relative_url(url: &str) -> Result<String, String> {
+    // Split the query off FIRST. The api= parameter legitimately carries a
+    // whole URL ("...?api=http://127.0.0.1:8003"), so reducing the path by
+    // taking the last '/' segment of the *whole* string lands inside the
+    // query and reads "127.0.0.1:8003" as the page name.
+    let (path, query) = match url.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (url, None),
+    };
+    let page = path.split('/').next_back().unwrap_or_default();
+    if page != "multiview.html" {
+        return Err("refusing to open a window for anything but multiview.html".into());
+    }
+    Ok(match query {
+        Some(query) => format!("{page}?{query}"),
+        None => page.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod multiview_tests {
+    use super::multiview_relative_url;
+
+    #[test]
+    fn accepts_the_bundled_page_with_its_query() {
+        assert_eq!(
+            multiview_relative_url("http://tauri.localhost/multiview.html?clusters=1,2&api=http://127.0.0.1:5173").unwrap(),
+            "multiview.html?clusters=1,2&api=http://127.0.0.1:5173"
+        );
+        assert_eq!(multiview_relative_url("multiview.html").unwrap(), "multiview.html");
+    }
+
+    #[test]
+    fn rejects_any_other_page() {
+        // This command opens its argument in a window with IPC attached, so
+        // anything but our own page is a hole, not an inconvenience.
+        for bad in [
+            "http://evil.example/steal.html",
+            "http://tauri.localhost/dashboard.html",
+            "https://evil.example/multiview.html.attacker",
+            "file:///C:/Windows/System32/drivers/etc/hosts",
+            "",
+        ] {
+            assert!(multiview_relative_url(bad).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn a_lookalike_host_does_not_pass() {
+        // The guard keeps only the last path segment, so a host that merely
+        // *contains* the page name cannot smuggle a remote origin through.
+        assert!(multiview_relative_url("https://multiview.html/").is_err());
+        assert!(multiview_relative_url("https://multiview.html.evil.example/x.html").is_err());
+    }
+}

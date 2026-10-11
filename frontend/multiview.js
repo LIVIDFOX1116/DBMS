@@ -374,6 +374,9 @@ async function mvInit() {
       clusters = await Promise.all(wanted.map(async id => {
         try { return await mvApi(`/clusters/${id}`); } catch { return { cluster_id: id }; }
       }));
+      if (explicit.length <= MV_MAX_PANELS) {
+        status.textContent = `${clusters.length} selected cluster${clusters.length === 1 ? "" : "s"}.`;
+      }
     } else {
       const limit = Math.min(Number(params.get("limit")) || MV_MAX_PANELS, MV_MAX_PANELS);
       clusters = await mvApi(`/clusters/top-flagged?limit=${limit}`);

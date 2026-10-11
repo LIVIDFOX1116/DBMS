@@ -125,3 +125,9 @@
    sets display (.btn is inline-flex) silently beats it -- the Cancel button
    stayed on screen after a job finished. */
 [hidden] { display: none !important; }
+
+/* ── Multiview selection ── */
+.mv-pick-col { width: 34px; text-align: center; }
+.mv-pick { cursor: pointer; accent-color: var(--accent); width: 14px; height: 14px; }
+.mv-pick:disabled { cursor: not-allowed; opacity: .4; }
+#mvSelectionNote { font-size: 11.5px; }
