@@ -28,7 +28,14 @@ const MV_VERDICT_COLORS = {
 const mvEsc = v => String(v ?? "").replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+/* The desktop shell injects its selection here before the page runs:
+   WebviewUrl::App is a PathBuf, so "multiview.html?clusters=1,2" does not
+   survive it (the window came up about:blank). The browser build has no
+   such limit and uses query parameters, so both paths are supported. */
+const mvInjected = (typeof window !== "undefined" && window.__FC_MULTIVIEW__) || null;
+
 function mvApiBase() {
+  if (mvInjected?.api) return String(mvInjected.api).replace(/\/$/, "");
   const url = new URL(location.href);
   const fromQuery = url.searchParams.get("api");
   if (fromQuery) return fromQuery.replace(/\/$/, "");
@@ -82,6 +89,15 @@ class MvLayout {
   step() {
     if (this.settled) return 0;
     const REPULSION = 52000, SPRING_LEN = 170, SPRING_K = 0.022, DAMPING = 0.8;
+    // Two guards against divergence, both found by expanding a panel to 600
+    // nodes: coordinates reached 1e94 and the camera's fit scale collapsed
+    // to 0, leaving a blank panel. At 150 nodes the same code is stable, so
+    // this only appears once a panel is expanded.
+    //   MIN_DIST2: without a floor, two nodes landing almost on top of each
+    //   other give 52000/0.01 = 5.2e6 of repulsion in a single step.
+    //   MAX_STEP: caps how far a node can move per iteration, so even an
+    //   unlucky configuration cannot compound into an explosion.
+    const MIN_DIST2 = 100, MAX_STEP = 60;
     const nodes = this.nodes;
     const force = new Map(nodes.map(n => [n.id, { x: 0, y: 0 }]));
 
@@ -89,7 +105,7 @@ class MvLayout {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i], b = nodes[j];
         const dx = a.x - b.x, dy = a.y - b.y;
-        const dist2 = dx * dx + dy * dy || 0.01;
+        const dist2 = Math.max(dx * dx + dy * dy, MIN_DIST2);
         const dist = Math.sqrt(dist2);
         const f = REPULSION / dist2;
         const fx = (dx / dist) * f, fy = (dy / dist) * f;
@@ -116,6 +132,12 @@ class MvLayout {
       const v = this.vel.get(node.id), f = force.get(node.id);
       v.x = (v.x + f.x) * DAMPING;
       v.y = (v.y + f.y) * DAMPING;
+      const speed = Math.hypot(v.x, v.y);
+      if (speed > MAX_STEP) {
+        const k = MAX_STEP / speed;
+        v.x *= k;
+        v.y *= k;
+      }
       node.x += v.x;
       node.y += v.y;
       movement += Math.abs(v.x) + Math.abs(v.y);
@@ -357,8 +379,10 @@ async function mvInit() {
   const grid = document.getElementById("mvGrid");
   const status = document.getElementById("mvStatus");
   const params = new URLSearchParams(location.search);
-  const explicit = (params.get("clusters") || "")
-    .split(",").map(s => s.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
+  const explicit = mvInjected
+    ? (mvInjected.clusters || [])
+    : (params.get("clusters") || "")
+      .split(",").map(s => s.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
 
   mvDestroyPanels();
   grid.innerHTML = "";
@@ -378,7 +402,7 @@ async function mvInit() {
         status.textContent = `${clusters.length} selected cluster${clusters.length === 1 ? "" : "s"}.`;
       }
     } else {
-      const limit = Math.min(Number(params.get("limit")) || MV_MAX_PANELS, MV_MAX_PANELS);
+      const limit = Math.min(Number(mvInjected?.limit || params.get("limit")) || MV_MAX_PANELS, MV_MAX_PANELS);
       clusters = await mvApi(`/clusters/top-flagged?limit=${limit}`);
       if (!clusters.length) {
         status.innerHTML = `No flagged clusters found. Run the detectors, then reopen Multiview.`;
