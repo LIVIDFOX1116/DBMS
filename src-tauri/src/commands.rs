@@ -555,93 +555,112 @@ fn open_in_browser(url: &str) -> Result<(), String> {
 /// a route would replace what you were looking at. Reusing one label means
 /// pressing the button twice focuses the existing window instead of
 /// stacking up windows (and their eight WebGL contexts each).
+///
+/// Takes the selection as typed parameters rather than a URL. Two reasons:
+/// WebviewUrl::App is a PathBuf, so a "multiview.html?clusters=1,2" query
+/// string does not survive it (the window came up about:blank); and a
+/// command that opened a caller-supplied URL in a window with Tauri IPC
+/// attached would hand a remote page the app's whole command surface.
+/// async on purpose: a SYNC command runs on the main thread, and
+/// WebviewWindowBuilder::build() needs that thread's event loop to pump in
+/// order to finish creating the window -- so building from inside a sync
+/// command deadlocks. The symptom is not an error: the window appears and
+/// sits on about:blank while the invoke never resolves.
 #[tauri::command]
-pub fn open_multiview(app: tauri::AppHandle, url: String) -> Result<(), String> {
+pub async fn open_multiview(
+    app: tauri::AppHandle,
+    api_base: String,
+    clusters: Option<String>,
+    limit: Option<u32>,
+) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-    let relative = multiview_relative_url(&url)?;
+    let payload = multiview_payload(&api_base, clusters.as_deref(), limit)?;
+    // Read by multiview.js before it falls back to URL query parameters,
+    // which is the path the browser build uses.
+    let script = format!("window.__FC_MULTIVIEW__ = {payload};");
 
     if let Some(existing) = app.get_webview_window("multiview") {
         let _ = existing.set_focus();
-        // Re-navigate so a new selection replaces what the window shows,
-        // rather than focusing a window still displaying the old clusters.
-        // json! escapes the value, so the query string cannot break out of
-        // the string literal it is interpolated into.
-        let _ = existing.eval(format!(
-            "window.location.replace({})",
-            serde_json::json!(relative)
-        ));
+        // Re-apply and reload so a new selection replaces what the window is
+        // showing, rather than focusing a window still on the old clusters.
+        let _ = existing.eval(format!("{script} window.location.reload();"));
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(&app, "multiview", WebviewUrl::App(relative.into()))
+    WebviewWindowBuilder::new(&app, "multiview", WebviewUrl::App("multiview.html".into()))
         .title("FrameCheck Multiview")
         .inner_size(1500.0, 900.0)
         .resizable(true)
+        .initialization_script(&script)
         .build()
         .map_err(|e| format!("could not open the Multiview window: {e}"))?;
     Ok(())
 }
 
-/// Reduces a caller-supplied Multiview URL to the bundled page plus its
-/// query string, rejecting anything else.
-///
-/// `url` arrives from the webview, and this command opens whatever it is
-/// given in a window that has Tauri IPC attached -- so a command that
-/// accepted an arbitrary URL would hand a remote page the app's command
-/// surface. Only ever our own page ships.
-fn multiview_relative_url(url: &str) -> Result<String, String> {
-    // Split the query off FIRST. The api= parameter legitimately carries a
-    // whole URL ("...?api=http://127.0.0.1:8003"), so reducing the path by
-    // taking the last '/' segment of the *whole* string lands inside the
-    // query and reads "127.0.0.1:8003" as the page name.
-    let (path, query) = match url.split_once('?') {
-        Some((path, query)) => (path, Some(query)),
-        None => (url, None),
-    };
-    let page = path.split('/').next_back().unwrap_or_default();
-    if page != "multiview.html" {
-        return Err("refusing to open a window for anything but multiview.html".into());
+/// The JSON blob injected into the Multiview window. Separate and pure so
+/// the validation below is testable without standing up a window.
+fn multiview_payload(api_base: &str, clusters: Option<&str>, limit: Option<u32>) -> Result<String, String> {
+    if !(api_base.starts_with("http://127.0.0.1:") || api_base.starts_with("http://localhost:")) {
+        // The sidecar is always loopback. Anything else means the value was
+        // not the one get_api_base handed out.
+        return Err("the Multiview window only talks to the local backend".into());
     }
-    Ok(match query {
-        Some(query) => format!("{page}?{query}"),
-        None => page.to_string(),
+    let ids: Vec<i64> = match clusters {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .split(',')
+            .map(|part| part.trim().parse::<i64>().map_err(|_| "cluster ids must be numbers".to_string()))
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => Vec::new(),
+    };
+    if ids.len() > 8 {
+        return Err("Multiview shows at most 8 clusters".into());
+    }
+    Ok(serde_json::json!({
+        "api": api_base,
+        "clusters": ids,
+        "limit": limit.unwrap_or(8).min(8),
     })
+    .to_string())
 }
 
 #[cfg(test)]
 mod multiview_tests {
-    use super::multiview_relative_url;
+    use super::multiview_payload;
 
     #[test]
-    fn accepts_the_bundled_page_with_its_query() {
-        assert_eq!(
-            multiview_relative_url("http://tauri.localhost/multiview.html?clusters=1,2&api=http://127.0.0.1:5173").unwrap(),
-            "multiview.html?clusters=1,2&api=http://127.0.0.1:5173"
-        );
-        assert_eq!(multiview_relative_url("multiview.html").unwrap(), "multiview.html");
+    fn builds_a_payload_for_explicit_clusters() {
+        let out = multiview_payload("http://127.0.0.1:8003", Some("1,2,3"), None).unwrap();
+        assert!(out.contains("\"clusters\":[1,2,3]"), "{out}");
+        assert!(out.contains("\"api\":\"http://127.0.0.1:8003\""), "{out}");
     }
 
     #[test]
-    fn rejects_any_other_page() {
-        // This command opens its argument in a window with IPC attached, so
-        // anything but our own page is a hole, not an inconvenience.
-        for bad in [
-            "http://evil.example/steal.html",
-            "http://tauri.localhost/dashboard.html",
-            "https://evil.example/multiview.html.attacker",
-            "file:///C:/Windows/System32/drivers/etc/hosts",
-            "",
-        ] {
-            assert!(multiview_relative_url(bad).is_err(), "should reject {bad}");
-        }
+    fn rejects_a_non_loopback_backend() {
+        // The sidecar is always loopback; anything else means the value did
+        // not come from get_api_base.
+        assert!(multiview_payload("https://evil.example", None, None).is_err());
+        assert!(multiview_payload("http://10.0.0.5:8000", None, None).is_err());
     }
 
     #[test]
-    fn a_lookalike_host_does_not_pass() {
-        // The guard keeps only the last path segment, so a host that merely
-        // *contains* the page name cannot smuggle a remote origin through.
-        assert!(multiview_relative_url("https://multiview.html/").is_err());
-        assert!(multiview_relative_url("https://multiview.html.evil.example/x.html").is_err());
+    fn rejects_non_numeric_cluster_ids() {
+        // These are interpolated into the window as JSON, so they must be
+        // numbers and nothing else.
+        assert!(multiview_payload("http://127.0.0.1:8003", Some("1,</script><script>x"), None).is_err());
+        assert!(multiview_payload("http://127.0.0.1:8003", Some("abc"), None).is_err());
+    }
+
+    #[test]
+    fn caps_panels_at_eight() {
+        assert!(multiview_payload("http://127.0.0.1:8003", Some("1,2,3,4,5,6,7,8,9"), None).is_err());
+        let out = multiview_payload("http://127.0.0.1:8003", None, Some(99)).unwrap();
+        assert!(out.contains("\"limit\":8"), "{out}");
+    }
+
+    #[test]
+    fn an_empty_selection_means_top_flagged() {
+        let out = multiview_payload("http://localhost:8000", Some(""), None).unwrap();
+        assert!(out.contains("\"clusters\":[]"), "{out}");
     }
 }

@@ -326,17 +326,22 @@ function fcMultiviewUrl(params) {
 }
 
 async function fcOpenMultiview(params) {
-  const url = fcMultiviewUrl(params);
   if (isRunningInTauriApp()) {
+    // Typed parameters, not a URL: WebviewUrl::App is a PathBuf, so a query
+    // string does not survive into the new window (it came up about:blank).
     try {
-      await window.__TAURI__.core.invoke("open_multiview", { url });
+      await window.__TAURI__.core.invoke("open_multiview", {
+        apiBase: apiBase(),
+        clusters: params.clusters ?? null,
+        limit: params.limit ?? null,
+      });
       return;
     } catch (err) {
       toast(`Could not open the Multiview window: ${err}`, "error");
       return;
     }
   }
-  const win = window.open(url, "framecheck-multiview", "width=1500,height=900");
+  const win = window.open(fcMultiviewUrl(params), "framecheck-multiview", "width=1500,height=900");
   if (!win) toast("The Multiview window was blocked — allow pop-ups for this page.", "error");
 }
 
