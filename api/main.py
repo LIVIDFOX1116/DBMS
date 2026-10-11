@@ -451,38 +451,56 @@ def clusters_top_flagged(run_id: Optional[int] = None, snapshot_id: Optional[int
             detector_run_ids = resolve_latest_run_ids(cur, snapshot_id)
             if not detector_run_ids:
                 return []
+            # Rank from the precomputed view (migration 008), which has
+            # already done the cluster_member x flag join once. Verdicts are
+            # NOT in that view -- they change on every single audit -- so
+            # they are joined live below, but only for the handful of
+            # clusters that survive the ranking rather than all 128,637
+            # flags.
             cur.execute(
                 """
-                WITH flagged AS (
-                    SELECT f.flag_id, f.wallet_id, fa.verdict
-                    FROM flag f
-                    LEFT JOIN LATERAL (
-                        SELECT verdict FROM flag_audit
-                        WHERE flag_id = f.flag_id
-                        ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
-                    ) fa ON TRUE
-                    WHERE f.run_id = ANY(%s)
-                )
-                SELECT c.cluster_id, c.community_label, c.member_count,
-                       c.cluster_type, c.risk_score,
-                       COUNT(DISTINCT fl.wallet_id) AS flagged_wallets,
-                       COUNT(*) AS flag_count,
-                       COUNT(*) FILTER (WHERE fl.verdict = 'frameable') AS frameable_count,
-                       COUNT(*) FILTER (WHERE fl.verdict IS NOT NULL) AS audited_count
-                FROM cluster c
-                JOIN cluster_member cm ON cm.cluster_id = c.cluster_id
-                JOIN flagged fl ON fl.wallet_id = cm.wallet_id
-                WHERE c.run_id = %s
-                GROUP BY c.cluster_id, c.community_label, c.member_count,
-                         c.cluster_type, c.risk_score
-                ORDER BY flagged_wallets DESC, flag_count DESC, c.cluster_id
+                SELECT cluster_id, community_label, member_count,
+                       count(DISTINCT wallet_id)   AS flagged_wallets,
+                       sum(flags_for_wallet)::bigint AS flag_count
+                FROM mv_cluster_flag_stats
+                WHERE cluster_run_id = %s AND flag_run_id = ANY(%s)
+                GROUP BY cluster_id, community_label, member_count
+                ORDER BY flagged_wallets DESC, flag_count DESC, cluster_id
                 LIMIT %s
                 """,
-                (detector_run_ids, cluster_run_id, limit),
+                (cluster_run_id, detector_run_ids, limit),
             )
             rows = rows_as_dicts(cur)
+            if not rows:
+                return []
+
+            cur.execute(
+                """
+                SELECT cm.cluster_id,
+                       count(*) FILTER (WHERE fa.verdict = 'frameable') AS frameable_count,
+                       count(fa.verdict)                                AS audited_count
+                FROM cluster_member cm
+                JOIN flag f ON f.wallet_id = cm.wallet_id AND f.run_id = ANY(%s)
+                LEFT JOIN LATERAL (
+                    SELECT verdict FROM flag_audit
+                    WHERE flag_id = f.flag_id
+                    ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
+                ) fa ON TRUE
+                WHERE cm.cluster_id = ANY(%s)
+                GROUP BY cm.cluster_id
+                """,
+                (detector_run_ids, [r["cluster_id"] for r in rows]),
+            )
+            verdicts = {r["cluster_id"]: r for r in rows_as_dicts(cur)}
             for row in rows:
+                verdict = verdicts.get(row["cluster_id"], {})
                 row["snapshot_id"] = snapshot_id
+                row["cluster_type"] = None
+                row["risk_score"] = None
+                row["frameable_count"] = verdict.get("frameable_count", 0)
+                row["audited_count"] = verdict.get("audited_count", 0)
+                # null, not 0.0: "nothing in this cluster has been audited"
+                # and "none of it is frameable" are different facts.
                 row["frameable_share"] = (
                     row["frameable_count"] / row["audited_count"] if row["audited_count"] else None
                 )
@@ -550,46 +568,47 @@ def cluster_subgraph(cluster_id: int, limit: int = 300):
                 raise HTTPException(status_code=404, detail="no such cluster")
             _cid, _run_id, member_count, community_label, snapshot_id = meta
 
+            # Two passes on purpose. The ranking pass needs every member
+            # (connected expansion walks the whole cluster), but it only
+            # needs wallet_id and PageRank. Fetching addresses and per-wallet
+            # verdicts for all of them was 1,038 ms on the 26,594-member
+            # cluster -- 26,594 LATERAL verdict lookups to display 150 nodes,
+            # plus a Seq Scan over all 610,055 wallets to get addresses.
+            # The detail pass below runs only for the nodes actually kept.
+            #
             # PageRank lives in vertex_metric under its own run; absent (not
             # yet computed) it is NULL and ordering falls back to wallet_id,
             # which is stable rather than arbitrary.
+            # Resolve the PageRank run ONCE. Done per wallet inside a
+            # LATERAL, the planner walked all 13 analysis_run rows for each
+            # of 26,594 members -- 345,722 index probes for 26,594 answers,
+            # 489 ms of the endpoint's 545 ms. With the run fixed, the
+            # existing (run_id, wallet_id, metric_name) unique index answers
+            # each member in one probe.
             cur.execute(
                 """
-                SELECT cm.wallet_id, w.address, vm.metric_value AS pagerank,
-                       fv.verdict, fv.flag_count
+                SELECT ar.run_id FROM analysis_run ar
+                WHERE ar.snapshot_id = %s
+                  AND EXISTS (SELECT 1 FROM vertex_metric vm
+                              WHERE vm.run_id = ar.run_id AND vm.metric_name = 'pagerank')
+                ORDER BY ar.run_id DESC LIMIT 1
+                """,
+                (snapshot_id,),
+            )
+            pagerank_run = cur.fetchone()
+            pagerank_run_id = pagerank_run[0] if pagerank_run else None
+
+            cur.execute(
+                """
+                SELECT cm.wallet_id, vm.metric_value AS pagerank
                 FROM cluster_member cm
-                JOIN wallet w ON w.wallet_id = cm.wallet_id
-                LEFT JOIN LATERAL (
-                    SELECT vm.metric_value FROM vertex_metric vm
-                    JOIN analysis_run ar ON ar.run_id = vm.run_id
-                    WHERE vm.wallet_id = cm.wallet_id AND vm.metric_name = 'pagerank'
-                      AND ar.snapshot_id = %s
-                    ORDER BY vm.run_id DESC LIMIT 1
-                ) vm ON TRUE
-                LEFT JOIN LATERAL (
-                    SELECT COUNT(*) AS flag_count,
-                           MAX(CASE WHEN a.verdict = 'frameable' THEN 1 ELSE 0 END) AS any_frameable,
-                           COUNT(a.verdict) AS audited
-                    FROM flag f
-                    JOIN analysis_run far ON far.run_id = f.run_id
-                    LEFT JOIN LATERAL (
-                        SELECT verdict FROM flag_audit
-                        WHERE flag_id = f.flag_id
-                        ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
-                    ) a ON TRUE
-                    WHERE f.wallet_id = cm.wallet_id AND far.snapshot_id = %s
-                ) raw ON TRUE
-                CROSS JOIN LATERAL (
-                    SELECT raw.flag_count,
-                           CASE WHEN raw.flag_count = 0 THEN 'unflagged'
-                                WHEN raw.audited = 0 THEN 'unaudited'
-                                WHEN raw.any_frameable = 1 THEN 'frameable'
-                                ELSE 'robust' END AS verdict
-                ) fv
+                LEFT JOIN vertex_metric vm
+                       ON vm.run_id = %s AND vm.wallet_id = cm.wallet_id
+                      AND vm.metric_name = 'pagerank'
                 WHERE cm.cluster_id = %s
                 ORDER BY vm.metric_value DESC NULLS LAST, cm.wallet_id
                 """,
-                (snapshot_id, snapshot_id, cluster_id),
+                (pagerank_run_id, cluster_id),
             )
             ranked = rows_as_dicts(cur)
 
@@ -611,10 +630,48 @@ def cluster_subgraph(cluster_id: int, limit: int = 300):
                 adjacency.setdefault(edge["src_wallet_id"], set()).add(edge["dst_wallet_id"])
                 adjacency.setdefault(edge["dst_wallet_id"], set()).add(edge["src_wallet_id"])
 
-            keep = set(select_connected_subgraph([n["wallet_id"] for n in ranked], adjacency, limit))
-            nodes = [n for n in ranked if n["wallet_id"] in keep]
+            keep = select_connected_subgraph([n["wallet_id"] for n in ranked], adjacency, limit)
+            keep_set = set(keep)
+            pagerank_by_wallet = {n["wallet_id"]: n["pagerank"] for n in ranked}
+
+            # Detail pass: addresses and verdicts for the kept nodes only.
+            cur.execute(
+                """
+                SELECT w.wallet_id, w.address,
+                       COALESCE(fl.flag_count, 0) AS flag_count,
+                       CASE WHEN COALESCE(fl.flag_count, 0) = 0 THEN 'unflagged'
+                            WHEN fl.audited = 0 THEN 'unaudited'
+                            WHEN fl.any_frameable = 1 THEN 'frameable'
+                            ELSE 'robust' END AS verdict
+                FROM wallet w
+                LEFT JOIN LATERAL (
+                    SELECT COUNT(*) AS flag_count,
+                           MAX(CASE WHEN a.verdict = 'frameable' THEN 1 ELSE 0 END) AS any_frameable,
+                           COUNT(a.verdict) AS audited
+                    FROM flag f
+                    JOIN analysis_run far ON far.run_id = f.run_id
+                    LEFT JOIN LATERAL (
+                        SELECT verdict FROM flag_audit
+                        WHERE flag_id = f.flag_id
+                        ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
+                    ) a ON TRUE
+                    WHERE f.wallet_id = w.wallet_id AND far.snapshot_id = %s
+                ) fl ON TRUE
+                WHERE w.wallet_id = ANY(%s)
+                """,
+                (snapshot_id, keep),
+            )
+            detail = {row["wallet_id"]: row for row in rows_as_dicts(cur)}
+
+            # Ordered by the ranking pass, so the response still reads
+            # highest-PageRank first.
+            nodes = []
+            for wallet_id in (n["wallet_id"] for n in ranked if n["wallet_id"] in keep_set):
+                row = detail.get(wallet_id, {"wallet_id": wallet_id, "address": None,
+                                             "flag_count": 0, "verdict": "unflagged"})
+                nodes.append({**row, "pagerank": pagerank_by_wallet.get(wallet_id)})
             edges = [e for e in internal_edges
-                     if e["src_wallet_id"] in keep and e["dst_wallet_id"] in keep]
+                     if e["src_wallet_id"] in keep_set and e["dst_wallet_id"] in keep_set]
             return {
                 "cluster_id": cluster_id,
                 "community_label": community_label,
