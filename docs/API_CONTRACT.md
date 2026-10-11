@@ -387,21 +387,169 @@ Errors: `403 {"detail": "invalid or missing internal token"}`.
 Loopback-only hand-off from the Rust shell (which owns the key in the OS
 keychain) to the running Python process, once per key change. The token is
 random, generated fresh by Rust each app launch, passed to the sidecar at
-spawn. Not reachable from the webview: `CORSMiddleware.allow_methods` only
-lists `GET`, so even a compromised page loaded in the app can't `fetch()`
-this route — only Rust's direct (non-CORS-subject) HTTP calls can. The UI
-branch never calls this directly; it's Rust-to-Python only, documented
-here for completeness since it is a real HTTP endpoint.
+spawn. The UI never calls this directly; it is Rust-to-Python only,
+documented here because it is a real HTTP endpoint.
 
-### Known simplifications (intentional, unchanged from v1)
-- No auth. Fine for a local, single-machine app; never expose this
-  publicly as-is.
+**Corrected 2026-10-11:** this section used to argue the route was
+unreachable from the webview because `CORSMiddleware.allow_methods` only
+listed `GET`. That stopped being true when Phase 5 added `POST` for the auth
+and job routes, so the CORS argument no longer holds. What actually protects
+the route is the internal token — a fresh random value per launch, held by
+Rust and never given to the page — plus the loopback bind. A page would have
+to steal the token to use this, and nothing hands it one.
+
+### GET /db/status
+Everything the Database view's header needs, in one call.
+```json
+{"mode": "live",
+ "settings": {"host": "localhost", "port": "5432", "dbname": "framecheck",
+              "user": "postgres", "password_set": true},
+ "server": {"reachable": true, "error": null, "database_exists": true,
+            "server_version": "PostgreSQL 16.15 ..."},
+ "schema": {"state": "tracked", "schema_applied": true, "table_count": 24,
+            "migrations_available": ["002_framecheck.sql", "..."],
+            "migrations_applied": ["002_framecheck.sql", "..."],
+            "migrations_pending": []}}
+```
+`200` even when the server is unreachable — "Postgres is not running" is an
+answer the setup view has to render, not an error that blanks it. `schema`
+is `null` until the database exists.
+
+`schema.state` is one of three, deliberately not collapsed:
+- `empty` — no FrameCheck tables; everything can be applied in order.
+- `untracked` — FrameCheck tables exist but there is no `schema_migration`
+  table, so which migrations ran is genuinely unknown. `migrations_pending`
+  is `null`, not `[]`: unknown is not the same as none. Every database built
+  by this project before 2026-10-11 is in this state.
+- `tracked` — `schema_migration` lists what has been applied.
+
+The password is never returned, only `password_set`.
+
+### POST /db/create
+Creates the configured database if it is missing.
+```json
+{"created": true, "detail": "database 'framecheck' created"}
+```
+An existing database returns `created: false` and is left untouched — this
+never drops or recreates anything. Errors: `503` (server unreachable),
+`400` (Postgres refused, e.g. the user lacks CREATEDB).
+
+### POST /db/schema
+Applies `db/schema.sql` (only when absent) and then every unapplied
+migration, each in its own transaction.
+```json
+{"applied": ["schema.sql", "002_framecheck.sql", "..."], "state": {"...": "as /db/status"}}
+```
+Measured on an empty database: 0.57 s for schema.sql plus all seven
+migrations. Errors: `409` when `schema.state` is `untracked` — re-running a
+migration that already ran would fail confusingly, so it refuses and points
+at `/db/adopt`. `503` unreachable, `400` SQL error.
+
+### POST /db/adopt
+Records every migration file as applied **without running it**, for a
+database that predates migration tracking.
+```json
+{"adopted": ["002_framecheck.sql", "..."], "state": {"...": "as /db/status"}}
+```
+A claim about history that cannot be verified from inside the database, so
+it is a separate explicit action rather than something `/db/schema` infers.
+Errors: `409` when the database has no FrameCheck tables, where the claim
+would be plainly false.
+
+### GET /db/tables
+```json
+{"tables": [{"table": "wallet", "rows": 610055, "rows_are_estimates": true,
+             "estimate_unavailable": false, "bytes": 123456}]}
+```
+`rows` comes from `pg_class.reltuples`, not `count(*)`: counting every row
+of all 23 tables of the real database measured **6.85 s**, versus 0.013 s
+for the estimate. A table that has never been analysed reports
+`rows: null, estimate_unavailable: true` rather than Postgres' raw `-1`.
+
+### GET /db/tables/{table}/count
+Exact `count(*)` for one table, for when the estimate is not enough.
+```json
+{"table": "wallet", "rows": 610055, "rows_are_estimates": false}
+```
+
+### GET /db/tables/{table}?limit=50
+Read-only peek. `limit` is clamped to 1..500.
+```json
+{"table": "flag", "columns": ["flag_id", "run_id", "..."], "rows": [[1, 39, "..."]], "limit": 50}
+```
+The table name is checked against `information_schema.tables` and quoted as
+an identifier — never interpolated. `422` for a malformed name, `404` for one
+absent from this database. `NUMERIC(78,0)` wei values come back as strings;
+they exceed float precision.
+
+### POST /db/mode
+Body: `{"mode": "live" | "mock"}`.
+```json
+{"mode": "live"}
+```
+Switches data source without a restart — an installed app has no `.env` to
+edit. `live` is refused with `409` unless the server is reachable, the
+database exists and the schema is applied: switching and then failing every
+subsequent request would look like the app breaking.
+
+### POST /internal/db-settings (internal — not part of the UI contract)
+Body: the five DSN fields. Header: `X-Internal-Token: <token>`.
+```json
+{"status": "ok", "settings": {"host": "...", "password_set": true}}
+```
+Same loopback + per-launch-token arrangement as `/internal/api-key`, for the
+same reason: the password lives in the OS keychain and reaches the backend
+from Rust, never from the page. Resets the connection pool. `403` without
+the token, `422` for a half-filled DSN.
+
+### GET /ingest/plan
+```json
+{"api_key_set": true, "requests_per_second": 4.0,
+ "source": "configured", "reported_by_etherscan": null}
+```
+`source` is the honest field. Etherscan only reports an allowance for paid
+keys, so for most users this is `"configured"` — the rate the app is using,
+never presented as a detected plan. Any non-answer from the probe
+(unsupported, error status, unexpected shape, network failure) degrades to
+`"configured"`.
+
+### POST /ingest/start
+Body: `{"address": null, "hops": 1, "requests_per_second": null, "max_calls": 20000}`.
+Returns a job (same shape as `POST /jobs`, with `job_type: "ingest"`), whose
+`result` grows as it runs:
+```json
+{"addresses_processed": 184, "hops_completed": 1, "frontier_size": 912,
+ "calls_made": 553, "calls_remaining": 19447, "stopped_reason": null}
+```
+`total` stays `0` on purpose: a BFS frontier is discovered as it goes, so a
+percentage would need a made-up denominator. `requests_per_second` paces the
+calls; `max_calls` is a hard stop, so a multi-hour crawl cannot quietly
+consume a whole day's allowance — hitting it ends the job as `done` with
+`stopped_reason: "budget_exhausted"`, not as a failure. Cancel
+(`POST /jobs/{id}/cancel`) takes effect after the address in flight, which is
+also a commit and checkpoint boundary, so nothing already ingested is lost.
+Errors: `409` in demo mode or with no key saved, `422` for `hops` outside
+0..3 or `max_calls < 1`. The API key is stripped from every job response.
+
+### Known simplifications
+
+Two entries here described v1 and were left standing after they stopped
+being true; corrected 2026-10-11.
+
+- ~~No auth.~~ Google sign-in exists as of Phase 5 (`/auth/*`), and
+  `auth.auth_mode()` fails closed: anything other than the exact string
+  `disabled` in `FRAMECHECK_AUTH_MODE` means a session is required for every
+  route outside `auth.PUBLIC_PATHS`. The desktop app runs with the gate off,
+  since its sidecar is bound to loopback behind a per-launch internal token.
+- ~~CORS is wide open (`GET` only).~~ `allow_methods` is `["GET", "POST"]`
+  as of Phase 5, and the origin is an explicit regex (localhost, 127.0.0.1,
+  `tauri://localhost`), not `*` — a wildcard is invalid with
+  `allow_credentials=True`, which the session cookie needs.
 - No pagination cursor anywhere except the `run_id`-scoped `/clusters`
   (which returns everything for that run, no cap) — everything else is
   `limit` only, with `/clusters` unfiltered capped at a non-representative
   100 rows.
-- CORS is wide open (`GET` only) — see above; safe only because nothing
-  here mutates state except the token-gated internal route.
+- Row counts in `/db/tables` are estimates, by design — see that endpoint.
 
 ---
 
@@ -482,6 +630,17 @@ UI should expect verbatim: `"No network — the request timed out."`,
 `"No network — could not reach Etherscan."`, `"Rate limited by Etherscan —
 try again in a moment."`, `"Connected — key is valid."`, `"Invalid API key."`,
 or `"Unexpected response from Etherscan: {message}"`.
+
+### set_db_settings(settings) -> Result\<null, String\>
+`settings` is `{host, port, dbname, user, password}`. Saves them to the OS
+keychain and pushes them to the running backend over the loopback internal
+route. **An empty `password` means "keep the saved one"** — the page cannot
+read the stored password back, so a blank field has to mean no change rather
+than "set it to nothing". Validated before anything is written, so a
+half-filled form does not put a password in the keychain.
+
+### has_db_settings() -> bool
+Like `has_api_key`: a bool, never the value.
 
 ### run_layout(snapshotId, maxEdges, device, runId, clusterAttractionK) -> Result\<LayoutResult, String\>
 | param | type | meaning |

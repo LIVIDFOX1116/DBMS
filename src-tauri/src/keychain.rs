@@ -1,12 +1,32 @@
-//! The Etherscan API key's only storage. Never a config file, never
-//! localStorage, never sent to the webview -- see api/main.py's comment on
-//! _runtime_state for the rest of the handoff story.
+//! The only storage for the two secrets the app holds: the Etherscan API key
+//! and the Postgres password. Never a config file, never localStorage, never
+//! sent to the webview -- see api/main.py's comment on _runtime_state for the
+//! rest of the handoff story.
 
 const SERVICE: &str = "com.framecheck.app";
 const ACCOUNT: &str = "etherscan_api_key";
+/// The database connection settings, as JSON. The non-secret fields could
+/// live in a config file, but splitting them from the password would mean two
+/// stores to keep in step for no gain -- the keychain holds the lot.
+const DB_ACCOUNT: &str = "postgres_connection";
 
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| e.to_string())
+}
+
+fn db_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(SERVICE, DB_ACCOUNT).map_err(|e| e.to_string())
+}
+
+/// The saved connection settings as the JSON string they were stored as, or
+/// None if the user has never saved any (in which case the backend keeps
+/// using its environment, exactly as before this existed).
+pub fn get_db_settings() -> Option<String> {
+    db_entry().ok()?.get_password().ok()
+}
+
+pub fn set_db_settings(json: &str) -> Result<(), String> {
+    db_entry()?.set_password(json).map_err(|e| e.to_string())
 }
 
 /// Returns the stored key, or None if nothing's been saved yet. Callers in

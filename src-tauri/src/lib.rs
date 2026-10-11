@@ -127,7 +127,38 @@ pub fn run() {
                 }
             };
             log::info!("backend ready on port {}", handle.port);
+            let port = handle.port;
+            let internal_token = handle.internal_token.clone();
             app.manage(AppState(Mutex::new(handle)));
+
+            // Connection settings saved on a previous run, handed over the
+            // same loopback + internal-token route the Database view uses.
+            // Done after the backend is healthy rather than as a spawn env
+            // var, so the password never appears in the child's environment
+            // (readable by any process that can see it) -- only in the
+            // keychain and in one POST to 127.0.0.1.
+            if let Some(json) = keychain::get_db_settings() {
+                match serde_json::from_str::<serde_json::Value>(&json) {
+                    Ok(settings) => {
+                        let client = reqwest::blocking::Client::new();
+                        let sent = client
+                            .post(format!("http://127.0.0.1:{port}/internal/db-settings"))
+                            .header("X-Internal-Token", internal_token)
+                            .json(&settings)
+                            .send();
+                        match sent {
+                            Ok(resp) if resp.status().is_success() =>
+                                log::info!("applied saved database connection settings"),
+                            // Not fatal: the app still starts, serves demo
+                            // data, and the Database view says the
+                            // connection is unset so the user can fix it.
+                            Ok(resp) => log::warn!("backend rejected saved database settings: HTTP {}", resp.status()),
+                            Err(e) => log::warn!("could not apply saved database settings: {e}"),
+                        }
+                    }
+                    Err(e) => log::warn!("saved database settings are not valid JSON, ignoring: {e}"),
+                }
+            }
 
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
@@ -145,6 +176,8 @@ pub fn run() {
             commands::set_api_key,
             commands::clear_api_key,
             commands::test_api_key,
+            commands::set_db_settings,
+            commands::has_db_settings,
             commands::detect_gpus,
             commands::run_layout,
             commands::benchmark_layout,
