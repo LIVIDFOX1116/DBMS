@@ -507,5 +507,17 @@ class GraphRenderer {
     this.canvas.remove();
     this.labelLayer.remove();
     this.fpsBadge.remove();
+    // Dropping the canvas does NOT free the WebGL context -- it lingers
+    // until GC, and browsers cap live contexts (~16) then silently kill
+    // the OLDEST one to make room. Multiview opens eight at a time, so a
+    // few open/close cycles would start blanking panels that were working.
+    // loseContext() releases it now rather than eventually.
+    const gl = this.gl;
+    if (gl) {
+      try {
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+      } catch { /* extension unavailable: nothing to release early */ }
+      this.gl = null;
+    }
   }
 }
