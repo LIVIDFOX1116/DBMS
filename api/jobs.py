@@ -176,6 +176,38 @@ def _run_detectors(job: Job, conn) -> None:
         job.result = {"flags_per_detector": dict(flags_per_detector)}
     job.result = {"flags_per_detector": flags_per_detector,
                   "flags_total": sum(flags_per_detector.values())}
+    refresh_cluster_flag_stats(job)
+
+
+def refresh_cluster_flag_stats(job: Job) -> None:
+    """Rebuilds mv_cluster_flag_stats (migration 008) after new flags land.
+
+    The view exists so /clusters/top-flagged does not re-join 780,644
+    cluster_member rows to 128,637 flags on every call. That trade is only
+    honest if the view is refreshed when flags change -- a stale ranking
+    showing counts from the previous detector run is worse than the 0.5s it
+    saves. CONCURRENTLY so a dashboard open during the refresh keeps
+    reading the old rows instead of blocking.
+
+    Never fatal: the flags themselves are committed by this point, and
+    losing a refresh costs accuracy on one endpoint, not analysis.
+    """
+    job.message = "refreshing cluster flag statistics"
+    try:
+        # Its own connection: REFRESH CONCURRENTLY cannot run inside the
+        # transaction the detectors have been committing through.
+        conn = psycopg2.connect(**config.PG_DSN)
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_cluster_flag_stats")
+        finally:
+            conn.close()
+    except psycopg2.Error as e:
+        log.warning("Could not refresh mv_cluster_flag_stats: %s", e)
+        job.result = {**job.result, "cluster_stats_refreshed": False}
+        return
+    job.result = {**job.result, "cluster_stats_refreshed": True}
 
 
 def _run_audit(job: Job, conn) -> None:

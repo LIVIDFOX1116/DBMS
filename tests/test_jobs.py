@@ -207,3 +207,40 @@ class TestJobEndpoints:
         for i in range(jobs.MAX_REMEMBERED_JOBS + 10):
             jobs._remember(jobs.Job(job_id=f"j{i}", job_type="audit", snapshot_id=1, seed_wallet_id=1))
         assert len(jobs._jobs) == jobs.MAX_REMEMBERED_JOBS
+
+
+class TestClusterStatsRefresh:
+    """mv_cluster_flag_stats (migration 008) makes /clusters/top-flagged
+    cheap by precomputing a join. That is only honest if it is refreshed
+    when flags change -- a stale ranking is worse than the time it saves."""
+
+    def test_detector_job_refreshes_the_view(self):
+        with mock.patch.object(jobs.psycopg2, "connect") as connect, \
+             mock.patch.object(jobs.detectors_module, "run_impurity", return_value=2):
+            job = jobs.start("detectors", 2, 2, detector="impurity")
+            assert wait_for(lambda: job.status == "done"), job.status
+        statements = [
+            c.args[0]
+            for conn in [m for m in connect.return_value.cursor.return_value.__enter__.return_value.execute.call_args_list]
+            for c in [conn]
+        ]
+        assert any("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_cluster_flag_stats" in s for s in statements), statements
+        assert job.result["cluster_stats_refreshed"] is True
+
+    def test_a_failed_refresh_does_not_fail_the_job(self):
+        # The flags are already committed by this point; losing a refresh
+        # costs accuracy on one endpoint, not analysis.
+        def connect(*_a, **_k):
+            conn = mock.MagicMock()
+            conn.cursor.return_value.__enter__.return_value.execute.side_effect = (
+                lambda sql, *a: (_ for _ in ()).throw(jobs.psycopg2.OperationalError("view missing"))
+                if "REFRESH" in sql else None
+            )
+            return conn
+
+        with mock.patch.object(jobs.psycopg2, "connect", side_effect=connect), \
+             mock.patch.object(jobs.detectors_module, "run_impurity", return_value=1):
+            job = jobs.start("detectors", 2, 2, detector="impurity")
+            assert wait_for(lambda: job.status == "done"), job.status
+        assert job.status == "done"
+        assert job.result["cluster_stats_refreshed"] is False
