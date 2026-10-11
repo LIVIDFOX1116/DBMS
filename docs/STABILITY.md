@@ -720,3 +720,97 @@ The practical lesson is about the tool, not the mystery: `--limit` without
 `--run-id` or `--detector` silently audits the oldest flags in the database
 rather than anything related to what was just computed.
 
+## Phase 12, Feature 1: database setup and ingestion inside the app (2026-10-11)
+
+What a fresh install actually hit before this, found by reading the code and
+the bundle rather than assuming:
+
+| Blocker | Detail |
+|---|---|
+| Sign-in wall with nothing behind it | `auth_mode()` fails closed, and no `GOOGLE_CLIENT_ID` or session secret exists, so a new user met a Google modal they could not pass. Hit for real during this session's app test. |
+| No way to reach a database from the app | `PG_DSN` is read from the environment at import time; an installed app has no `.env`, so even a user with Postgres installed could not point the app at it. |
+| Demo mode half-empty | First launch defaults to mock mode, but `mock_data.json` has no `clusters_top_flagged` or `cluster_subgraphs`, so Multiview renders empty panels. |
+| No schema bootstrap | `db/schema.sql` and `db/migrations/` are not bundled in the sidecar. |
+
+### What was built
+
+`api/dbsetup.py` plus a Database view: connection settings, status, create
+database, apply schema and migrations, browse tables, and automatic Etherscan
+ingestion as a cancellable job.
+
+| Check | Result |
+|---|---|
+| Fresh-install path on a throwaway database | create 0.68 s -> `empty`, 7 pending -> schema.sql + 7 migrations in 0.57 s -> `tracked`, 24 tables, 0 pending |
+| Re-running create, and re-running schema | both no-ops, reported as such, nothing recreated |
+| Fresh tables vs the real database's | **identical apart from the new `schema_migration` table** -- the setup path reproduces the real schema |
+| Database view driven in headless Chrome against the live DB | 23 tables, estimates labelled, exact count on demand (wallet 610,055), 50-row peek at `flag`, 0 console errors, 0 uncaught exceptions, panel area 791,856 px² |
+| `pg_shadow` through the table-browse route | refused -- the catalogue check rejects anything outside `public` base tables |
+| `apply_schema` on the real (untracked) database | refused with the adopt pointer, as designed |
+| Python suite | 311 passed, 5 skipped; `cargo test --lib` 42 passed; ruff clean |
+
+### Two measurements that changed the design
+
+1. **Exact row counts are too slow for a panel.** The first version used
+   `count(*)` per table, with a comment arguing that `reltuples` can read -1
+   and showing "-1 rows" is worse. Measured on the real database: **6.85 s**
+   for 23 tables (2.1M `snapshot_edge_tx`, 1.3M `transaction`). Now one
+   `pg_class` query at **0.013 s** (525x), labelled as estimates, with an
+   exact count per table on demand (`wallet`: 0.41 s) and `null` +
+   "unknown" for a never-analysed table rather than Postgres' raw -1. Three
+   real tables (`algorithm`, `analyst`, `app_user`) are in that state.
+2. **Three schema states, not two.** Every database this project built before
+   today has FrameCheck tables and no migration record, so "has tables"
+   cannot be read as "up to date". `untracked` is reported as unknown
+   (`migrations_pending: null`, not `[]`), applying is refused on it, and
+   adopting -- recording history without running it -- is a separate explicit
+   action, because it is a claim that cannot be verified from inside the
+   database.
+
+### Things deliberately not built
+
+- **Nothing that drops, truncates or unscoped-deletes.** A test asserts that
+  about `api/dbsetup.py`'s source. Importing into a database that already
+  holds FrameCheck tables is refused rather than resolved by wiping it.
+- **No plan detection that is not real.** Etherscan reports an allowance only
+  for paid keys, so `/ingest/plan` reports `source: "configured"` -- the rate
+  the app is using -- and only says `"etherscan"` when Etherscan actually
+  answered. Every non-answer from the probe (unsupported endpoint, error
+  status, unexpected shape, network failure) degrades to configured. The app
+  never claims to know a plan it was not told.
+- **No progress percentage for a crawl.** A BFS frontier is discovered as it
+  goes, so `total` stays 0 and the UI shows counts (addresses, frontier size,
+  API calls) rather than a fabricated denominator.
+
+### Mistakes made while testing this
+
+Three of my own, all in the harness rather than the code, each of which first
+looked like a bug in the feature:
+
+1. A uvicorn started with PowerShell's `Start-Process` died with the tool
+   call, so the page showed `ERR_CONNECTION_REFUSED` and looked broken.
+2. The page reads its API base from `localStorage`, not a query string, so
+   `?api=...` was silently ignored and it kept calling port 8000.
+3. Serving the page from `file://` made every call fail CORS -- which is the
+   middleware working correctly (the origin regex allows localhost and
+   `tauri://localhost`, not `file://`). Fixed by serving the frontend over
+   `127.0.0.1` like the real app does.
+
+Also found and fixed while re-measuring benchmarks for the PageRank work:
+`scripts/benchmark.py`'s `merge_json_run` rewrote `docs/perf/benchmarks.json`
+as `{"runs": ...}` flat, which would have **deleted the crossover section**
+added one commit earlier. Pinned by a test now.
+
+### Left over
+
+- The self-test database `framecheck_selftest` is still on the Postgres
+  server. Dropping it needs a `DROP DATABASE`, which this project does not do
+  without asking.
+- `cargo test` (all targets) fails locally on the five `examples/` binaries
+  with `E0463 can't find crate for app_lib`. **Pre-existing and not caused by
+  this work** -- the same five errors appear with the changes stashed, CI
+  builds them fine, and `cargo test --lib` passes 42 tests. Stale local
+  `target/` artifacts (the E0460 "possibly newer version" hint points that
+  way).
+- Feature 1's "import a database" half -- restoring a dump, and a bundled
+  demo dataset -- is not built yet; only "import schema" is.
+
