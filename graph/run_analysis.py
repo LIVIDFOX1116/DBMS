@@ -7,7 +7,15 @@ never overwrite each other (see the ER diagram rationale).
 
     python -m graph.run_analysis --snapshot-id 1 --seed-wallet-id 1
 
-Runs all three algorithms in one invocation. --seed-wallet-id is the wallet_id
+Runs all three algorithms in one invocation, or a subset with --only:
+
+    python -m graph.run_analysis --snapshot-id 2 --seed-wallet-id 2 --only pagerank
+
+--only exists because re-running an algorithm is how a corrected
+implementation reaches the database (each run is a new ANALYSIS_RUN row;
+nothing is overwritten), and re-running the other two as collateral would
+create new cluster runs that change what every cluster-based view resolves
+to. --seed-wallet-id is the wallet_id
 (not the address) for the case-study seed, used as the BFS start vertex --
 look it up with:
     SELECT wallet_id FROM wallet WHERE address = lower('0x...');
@@ -22,6 +30,15 @@ from psycopg2.extras import execute_values
 
 from graph.backend import GraphBackend
 from ingestion import config
+
+ALGORITHMS = ("pagerank", "louvain", "bfs")
+
+
+def selected_algorithms(only) -> set:
+    """`--only` is repeatable; no --only at all means every algorithm. Kept
+    as a function so "nothing requested means everything" is pinned by a
+    test rather than living in an `or` inside main()."""
+    return set(only) if only else set(ALGORITHMS)
 
 
 def get_algorithm_id(conn, name: str) -> int:
@@ -245,7 +262,10 @@ def main():
     parser.add_argument("--snapshot-id", type=int, required=True)
     parser.add_argument("--seed-wallet-id", type=int, required=True)
     parser.add_argument("--force-cpu", action="store_true", help="skip RAPIDS even if installed")
+    parser.add_argument("--only", choices=ALGORITHMS, action="append", default=None,
+                        help="run only these algorithms (repeatable); default is all three")
     args = parser.parse_args()
+    wanted = selected_algorithms(args.only)
 
     conn = psycopg2.connect(**config.PG_DSN)
     try:
@@ -260,14 +280,18 @@ def main():
         backend = GraphBackend(force_cpu=args.force_cpu)
         G = backend.load_edgelist(edges_df)
 
-        pr = run_pagerank(conn, backend, G, args.snapshot_id)
-        print(f"pagerank: top wallet_id={int(pr.iloc[0].wallet_id)} score={pr.iloc[0].score:.6f}")
+        if "pagerank" in wanted:
+            pr = run_pagerank(conn, backend, G, args.snapshot_id)
+            print(f"pagerank: top wallet_id={int(pr.iloc[0].wallet_id)} score={pr.iloc[0].score:.6f}")
 
-        lv, flagged = run_louvain(conn, backend, G, args.snapshot_id, edges_df)
-        print(f"louvain: {lv.community_label.nunique()} communities found, {flagged} flagged as plausible Sybil fan-out")
+        if "louvain" in wanted:
+            lv, flagged = run_louvain(conn, backend, G, args.snapshot_id, edges_df)
+            print(f"louvain: {lv.community_label.nunique()} communities found, "
+                  f"{flagged} flagged as plausible Sybil fan-out")
 
-        bfs_df = run_bfs(conn, backend, G, args.snapshot_id, args.seed_wallet_id)
-        print(f"bfs: reached {len(bfs_df)} wallets from seed {args.seed_wallet_id}")
+        if "bfs" in wanted:
+            bfs_df = run_bfs(conn, backend, G, args.snapshot_id, args.seed_wallet_id)
+            print(f"bfs: reached {len(bfs_df)} wallets from seed {args.seed_wallet_id}")
     finally:
         conn.close()
 

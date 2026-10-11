@@ -17,11 +17,13 @@ import pandas as pd
 
 from graph.export_snapshot import write_parquet
 from graph.run_analysis import (
+    ALGORITHMS,
     classify_clusters,
     compute_internal_edges,
     finish_run,
     persist_clusters,
     persist_vertex_metric,
+    selected_algorithms,
     start_run,
 )
 
@@ -283,6 +285,22 @@ class TestClassifyClusters(unittest.TestCase):
         flagged = classify_clusters(conn, run_id=7)
         self.assertEqual(flagged, 1)
         self.assertNotIn("cluster_type", conn.state["clusters_full"][2])
+
+
+class TestSelectedAlgorithms(unittest.TestCase):
+    """--only exists so a corrected implementation can be re-run for one
+    algorithm without creating new cluster runs as collateral, which would
+    change what every cluster-based view resolves to."""
+
+    def test_no_selection_runs_everything(self):
+        self.assertEqual(selected_algorithms(None), set(ALGORITHMS))
+        self.assertEqual(selected_algorithms([]), set(ALGORITHMS))
+
+    def test_one_algorithm_runs_only_that(self):
+        self.assertEqual(selected_algorithms(["pagerank"]), {"pagerank"})
+
+    def test_repeats_accumulate_and_deduplicate(self):
+        self.assertEqual(selected_algorithms(["pagerank", "bfs", "pagerank"]), {"pagerank", "bfs"})
 
 
 if __name__ == "__main__":
