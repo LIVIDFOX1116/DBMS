@@ -482,6 +482,61 @@ an identifier — never interpolated. `422` for a malformed name, `404` for one
 absent from this database. `NUMERIC(78,0)` wei values come back as strings;
 they exceed float precision.
 
+### GET /db/datasets
+What can be imported.
+```json
+{"demo": {"path": ".../datasets/snapshot1_polynetwork.sql.gz", "bytes": 18886228,
+          "manifest": {"format": "framecheck-dataset v1", "snapshot_id": 1,
+                       "snapshot_name": "pipeline_20260910T165758",
+                       "vertex_count": 19133, "edge_count": 35776,
+                       "total_rows": 443963, "row_counts": {"wallet": 25462, "...": 0},
+                       "excluded_tables": ["app_user", "framing_scenario", "schema_migration"],
+                       "excludes_simulated_transactions": true}}}
+```
+`{"demo": null}` when the build carries no dataset — a source checkout that
+has never run `scripts/export_dataset.py` has no `datasets/` directory, and
+the UI says so rather than offering a button that cannot work.
+
+### POST /db/import
+Body: `{"source": "demo"}` or `{"source": "file", "path": "C:\\...\\dataset.sql.gz"}`.
+```json
+{"manifest": {"...": "as above"},
+ "loaded": {"wallet": 25462, "transaction": 96893, "...": 0},
+ "skipped_seed_tables": {"analyst": 1, "algorithm": 8},
+ "remapped_ids": {"analysis_run": 16},
+ "total_rows": 443954, "sequences_reset": 13}
+```
+One transaction: a half-loaded dataset would leave foreign keys pointing at
+rows that never arrived. Blocking rather than a job — the bundled dataset
+measured **8.5 s** for 444k rows. Runs `ANALYZE` on the loaded tables
+afterwards so `/db/tables` reports real numbers immediately instead of
+`estimate_unavailable` on everything.
+
+`skipped_seed_tables` and `remapped_ids` describe two things the import does
+that are worth seeing rather than inferring:
+
+- **Seed tables are kept as the target has them.** `db/schema.sql` seeds
+  `analyst` and `algorithm`, so a database that has only had its schema
+  applied is not empty, and those rows are not replaced.
+- **Ids are translated by name.** Ids are not portable between FrameCheck
+  databases: the database this project developed against numbers
+  `pagerank_threshold` 12, while a database freshly created from
+  `schema.sql` numbers it 6. An import that trusted the file's ids failed
+  with `analysis_run_algorithm_id_fkey: Key (algorithm_id)=(10) is not
+  present`, and merging the file's rows instead would have collided with the
+  unique constraint on `algorithm_name`. So `analysis_run`, `wallet_label`
+  and `alert` have their seed-referencing columns rewritten through a
+  name-to-id map. A name the target does not know maps to nothing and the
+  row fails its foreign key, rolling the import back — deliberately, since
+  silently dropping an analysis run would make the import quietly
+  incomplete.
+
+Errors: `409` when the target already holds rows in any of the dataset's own
+tables (FrameCheck will not delete them to make room) or when the file names
+a table it may not write to; `422` for a file that is not a FrameCheck
+dataset — refused on its header, before anything is written; `404` for a
+missing file or a build with no demo dataset; `503` unreachable.
+
 ### POST /db/mode
 Body: `{"mode": "live" | "mock"}`.
 ```json

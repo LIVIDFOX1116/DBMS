@@ -138,6 +138,54 @@ now agree on 100% of flags — the story is at the end of
 `docs/benchmark_results.md`. `docs/GPU_SETUP.md` covers the WSL2 RAPIDS
 install.
 
+## Setting the app up without a terminal (Feature 1)
+
+The desktop app's **Database** tab does the whole setup itself, which is what
+an installed copy has to do -- there is no `.env` to edit and no `psql` to
+run. It covers:
+
+- **Connection** -- host, port, database, user, password. The password goes
+  into the OS keychain via a Tauri command and is pushed to the backend over
+  loopback; it is never POSTed from the page and never read back.
+- **Create database** and **Import schema** -- `db/schema.sql` plus every
+  migration, applied in order and recorded in a `schema_migration` table.
+  Measured on an empty database: 0.57 s for the schema and all seven
+  migrations.
+- **Adopt** -- for a database built by this project *before* migration
+  tracking existed. It records the migrations as applied without running
+  them, as a separate explicit action, because it is a claim about history
+  that cannot be checked from inside the database.
+- **Tables** -- every table with a row-count estimate and size, and an exact
+  `count(*)` on demand. Estimates because counting all 23 tables of a real
+  database took 6.85 s against 0.013 s for the estimate.
+- **Import data** -- the bundled demo dataset, or any dataset file.
+- **Pull live data from Etherscan** -- a crawl with a calls-per-second rate
+  and a hard call budget, with progress and a Stop button that takes effect
+  after the address in flight.
+
+### Datasets
+
+A dataset is one snapshot's slice of a database -- its edges, the wallets and
+transactions behind them, and every analysis run over it:
+
+```bash
+python scripts/export_dataset.py --snapshot-id 1 --output datasets/snapshot1.sql.gz
+```
+
+Snapshot 1 comes to 443,963 rows in an 18.9 MB gzipped file, and imports in
+about 9 seconds. The app ships with exactly that file, so a fresh install has
+real flags, graphs and audit verdicts to look at before anyone has an
+Etherscan key.
+
+Two things a dataset deliberately leaves out: `app_user` (real people's
+Google identities -- a dataset is for sharing, an account list is not) and
+anything the framing simulator injected (`transaction.is_simulated`), since a
+dataset is the one artefact that leaves the machine and those rows must never
+be mistaken for real chain history.
+
+Importing needs an empty database. FrameCheck will not delete existing rows
+to make room -- create a new database in the Connection panel instead.
+
 ## Running the API (what the frontend talks to)
 
 ```bash
