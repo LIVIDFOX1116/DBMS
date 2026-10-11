@@ -4,13 +4,15 @@ report formatting). The live Postgres reads and the actual GraphBackend
 timing runs are exercised by hand (see README/docs/benchmark_results.md),
 not here -- same split as tests/test_export_and_analysis.py.
 """
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from scripts.benchmark import format_report, time_it
+from scripts.benchmark import format_report, merge_json_run, time_it
 
 
 class TestTimeIt(unittest.TestCase):
@@ -65,6 +67,48 @@ class TestFormatReport(unittest.TestCase):
         report = format_report("snap", 100, 200, seed_wallet_id=1, repeats=3, results=[cpu])
         self.assertIn("range", report)
         self.assertIn("steady-state figure", report)
+
+
+class TestMergeJsonRun(unittest.TestCase):
+    """docs/perf/benchmarks.json is shared: this script owns "runs",
+    benchmark_crossover.py owns "crossover", and GET /benchmarks serves
+    both."""
+
+    def _tmp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        return pathlib.Path(self.tmp.name) / "benchmarks.json"
+
+    def test_rebenchmarking_a_snapshot_replaces_its_row(self):
+        path = self._tmp()
+        merge_json_run(path, {"snapshot_id": 1, "edge_count": 10})
+        runs = merge_json_run(path, {"snapshot_id": 1, "edge_count": 11})
+        self.assertEqual(runs, [{"snapshot_id": 1, "edge_count": 11}])
+
+    def test_rows_are_ordered_by_graph_size(self):
+        path = self._tmp()
+        merge_json_run(path, {"snapshot_id": 3, "edge_count": 900})
+        runs = merge_json_run(path, {"snapshot_id": 2, "edge_count": 100})
+        self.assertEqual([r["snapshot_id"] for r in runs], [2, 3])
+
+    def test_the_crossover_section_survives_a_rerun(self):
+        """It used to not: the file was rewritten as {"runs": ...} flat,
+        which deleted the dashboard's crossover table."""
+        path = self._tmp()
+        path.write_text(json.dumps({
+            "runs": [{"snapshot_id": 1, "edge_count": 10}],
+            "crossover": {"measured_at": "2026-10-11", "sizes": [2000]},
+        }), encoding="utf-8")
+        merge_json_run(path, {"snapshot_id": 2, "edge_count": 20})
+        document = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(document["crossover"], {"measured_at": "2026-10-11", "sizes": [2000]})
+        self.assertEqual([r["snapshot_id"] for r in document["runs"]], [1, 2])
+
+    def test_an_unreadable_file_is_replaced_rather_than_crashing(self):
+        path = self._tmp()
+        path.write_text("not json at all", encoding="utf-8")
+        runs = merge_json_run(path, {"snapshot_id": 1, "edge_count": 10})
+        self.assertEqual(runs, [{"snapshot_id": 1, "edge_count": 10}])
 
 
 if __name__ == "__main__":

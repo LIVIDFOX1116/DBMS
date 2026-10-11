@@ -79,9 +79,19 @@ EXACT_SUBSET_CUTOFF = 15  # 2**15 = 32768 subsets -- fast; above this, fall back
 EXACT_REPLAY_ROW_BUDGET = 20_000_000      # replayed transfer rows
 EXACT_PAGERANK_EDGE_BUDGET = 20_000_000   # edges visited across PageRank runs
 # A PageRank probe is not one pass over the edge list: it iterates to
-# convergence (max_iter=100 in both NetworkX and cuGraph), so one probe
-# costs ~100 edge visits per edge. Counting a probe as a single pass is
-# what made a snapshot-scale exact search look affordable when it isn't.
+# convergence, so one probe costs ~this many edge visits per edge. Counting
+# a probe as a single pass is what made a snapshot-scale exact search look
+# affordable when it isn't.
+#
+# This used to be justified as "max_iter=100 in both NetworkX and cuGraph",
+# i.e. a cap, not a measurement -- and graph/backend.py now raises that cap
+# to PAGERANK_MAX_ITER=1000 so the CPU path can actually converge. Re-derived
+# as a measurement instead: a converged run needs 50 iterations on snapshots
+# 1 and 2 and 75 on snapshot 3 (455k vertices), so 100 still prices a probe
+# generously for the graphs this pipeline handles, and the budgets --
+# therefore every audit verdict and framing cost -- are unchanged. A graph
+# that needed the full 1000 would be under-priced here by 10x; backend.py
+# logs loudly if one ever fails to converge.
 PAGERANK_PASSES_PER_PROBE = 100
 
 

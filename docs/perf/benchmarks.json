@@ -6,7 +6,7 @@
       "vertex_count": 19133,
       "edge_count": 35776,
       "repeats": 3,
-      "recorded_at": "2026-10-11T05:51:16+00:00",
+      "recorded_at": "2026-10-11T12:41:08+00:00",
       "backends": {
         "cpu": "pandas+networkx (CPU)",
         "gpu": "cudf+cugraph (GPU)"
@@ -14,27 +14,27 @@
       "tasks": [
         {
           "task": "load_edgelist",
-          "cpu_seconds": 0.0869,
-          "gpu_seconds": 0.0211,
-          "speedup": 4.12
+          "cpu_seconds": 0.0932,
+          "gpu_seconds": 0.0149,
+          "speedup": 6.26
         },
         {
           "task": "pagerank",
-          "cpu_seconds": 0.0365,
-          "gpu_seconds": 0.0118,
-          "speedup": 3.09
+          "cpu_seconds": 0.0504,
+          "gpu_seconds": 0.0226,
+          "speedup": 2.23
         },
         {
           "task": "louvain",
-          "cpu_seconds": 1.4228,
-          "gpu_seconds": 0.1552,
-          "speedup": 9.17
+          "cpu_seconds": 1.663,
+          "gpu_seconds": 0.2053,
+          "speedup": 8.1
         },
         {
           "task": "bfs",
-          "cpu_seconds": 0.0003,
-          "gpu_seconds": 0.0162,
-          "speedup": 0.02
+          "cpu_seconds": 0.0065,
+          "gpu_seconds": 0.0334,
+          "speedup": 0.19
         }
       ]
     },
@@ -44,7 +44,7 @@
       "vertex_count": 253863,
       "edge_count": 355989,
       "repeats": 3,
-      "recorded_at": "2026-10-11T05:53:58+00:00",
+      "recorded_at": "2026-10-11T12:44:13+00:00",
       "backends": {
         "cpu": "pandas+networkx (CPU)",
         "gpu": "cudf+cugraph (GPU)"
@@ -52,27 +52,27 @@
       "tasks": [
         {
           "task": "load_edgelist",
-          "cpu_seconds": 1.2554,
-          "gpu_seconds": 0.0602,
-          "speedup": 20.85
+          "cpu_seconds": 1.3939,
+          "gpu_seconds": 0.0552,
+          "speedup": 25.25
         },
         {
           "task": "pagerank",
-          "cpu_seconds": 0.5152,
-          "gpu_seconds": 0.0419,
-          "speedup": 12.3
+          "cpu_seconds": 0.7009,
+          "gpu_seconds": 0.069,
+          "speedup": 10.16
         },
         {
           "task": "louvain",
-          "cpu_seconds": 25.4504,
-          "gpu_seconds": 0.7825,
-          "speedup": 32.52
+          "cpu_seconds": 30.1276,
+          "gpu_seconds": 0.8771,
+          "speedup": 34.35
         },
         {
           "task": "bfs",
-          "cpu_seconds": 0.0646,
-          "gpu_seconds": 0.0375,
-          "speedup": 1.72
+          "cpu_seconds": 0.0841,
+          "gpu_seconds": 0.0484,
+          "speedup": 1.74
         }
       ]
     },
@@ -82,7 +82,7 @@
       "vertex_count": 455073,
       "edge_count": 698273,
       "repeats": 3,
-      "recorded_at": "2026-10-11T05:59:10+00:00",
+      "recorded_at": "2026-10-11T12:50:04+00:00",
       "backends": {
         "cpu": "pandas+networkx (CPU)",
         "gpu": "cudf+cugraph (GPU)"
@@ -90,27 +90,27 @@
       "tasks": [
         {
           "task": "load_edgelist",
-          "cpu_seconds": 2.6754,
-          "gpu_seconds": 0.0603,
-          "speedup": 44.37
+          "cpu_seconds": 2.8659,
+          "gpu_seconds": 0.0753,
+          "speedup": 38.06
         },
         {
           "task": "pagerank",
-          "cpu_seconds": 1.0008,
-          "gpu_seconds": 0.1033,
-          "speedup": 9.69
+          "cpu_seconds": 1.4955,
+          "gpu_seconds": 0.2233,
+          "speedup": 6.7
         },
         {
           "task": "louvain",
-          "cpu_seconds": 52.4882,
-          "gpu_seconds": 1.0886,
-          "speedup": 48.22
+          "cpu_seconds": 60.9886,
+          "gpu_seconds": 1.2259,
+          "speedup": 49.75
         },
         {
           "task": "bfs",
-          "cpu_seconds": 0.1074,
-          "gpu_seconds": 0.039,
-          "speedup": 2.75
+          "cpu_seconds": 0.1308,
+          "gpu_seconds": 0.0553,
+          "speedup": 2.37
         }
       ]
     }

@@ -128,12 +128,15 @@ path automatically whenever RAPIDS is importable (i.e. on the RTX 4070 /
 GTX 1650 laptops, not the Zenbook). Read-only against Postgres -- it doesn't
 write to `analysis_run` / `vertex_metric`; that's `graph/run_analysis.py`'s
 job. `docs/benchmark_results.md` holds real CPU-vs-GPU numbers measured on the
-GTX 1650 — Louvain 9×/33×/48× as the graph grows, but BFS is **50× slower** on
-GPU at 2,000 edges and does not overtake the CPU until somewhere between
-20,000 and 40,000. `scripts/benchmark_crossover.py` measures that crossover per
-algorithm, and the dashboard's Benchmarks tab shows it. The two backends still
-disagree on PageRank — see the end of `docs/benchmark_results.md`.
-`docs/GPU_SETUP.md` covers the WSL2 RAPIDS install.
+GTX 1650 — Louvain 8×/34×/50× as the graph grows, but BFS is **5× slower** on
+GPU at 36k edges and does not overtake the CPU until somewhere between 20,000
+and 40,000. `scripts/benchmark_crossover.py` measures that crossover per
+algorithm, and the dashboard's Benchmarks tab shows it. The two backends used
+to disagree on PageRank; `scripts/pagerank_agreement.py` traced that to
+NetworkX never converging (its tolerance is scaled by vertex count) and they
+now agree on 100% of flags — the story is at the end of
+`docs/benchmark_results.md`. `docs/GPU_SETUP.md` covers the WSL2 RAPIDS
+install.
 
 ## Running the API (what the frontend talks to)
 
