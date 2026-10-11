@@ -240,6 +240,29 @@ fn wait_for_health(port: u16, timeout: Duration) -> Result<(), String> {
     Err(format!("backend never became healthy at {url}: {last_err}"))
 }
 
+/// What FRAMECHECK_AUTH_MODE the sidecar should run with.
+///
+/// The session gate defaults to ON in api/auth.py and fails closed, which is
+/// right for a backend somebody might serve over a network -- but wrong for
+/// this one. The sidecar is spawned by this process, bound to 127.0.0.1 on an
+/// ephemeral port, and gated by a per-launch random internal token for the
+/// routes that matter. Nothing else can reach it, so the only thing the
+/// session gate adds here is a Google sign-in wall a freshly installed app
+/// cannot pass: there is no GOOGLE_CLIENT_ID in a shipped build, and no
+/// session secret, so the modal has nothing behind it. A real user hit
+/// exactly that and could not open their own app.
+///
+/// So the app turns it off for its own child -- and only for its own child;
+/// `uvicorn api.main:app` still fails closed. An explicit
+/// FRAMECHECK_AUTH_MODE in this process's environment always wins, which is
+/// how someone who does want Google sign-in in the desktop app asks for it.
+pub fn desired_auth_mode(from_env: Option<String>) -> String {
+    match from_env {
+        Some(mode) if !mode.trim().is_empty() => mode,
+        _ => "disabled".to_string(),
+    }
+}
+
 /// Spawns the backend, injecting `api_key` and a fresh per-launch internal
 /// token as env vars (never as CLI args -- those are visible to any local
 /// process that can list this process's command line). Blocks until
@@ -268,6 +291,7 @@ pub fn spawn_backend(api_key: &str) -> Result<BackendHandle, String> {
     if let Ok(mode) = std::env::var("FRAMECHECK_API_MODE") {
         cmd.env("FRAMECHECK_API_MODE", mode);
     }
+    cmd.env("FRAMECHECK_AUTH_MODE", desired_auth_mode(std::env::var("FRAMECHECK_AUTH_MODE").ok()));
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -300,4 +324,28 @@ pub fn spawn_backend(api_key: &str) -> Result<BackendHandle, String> {
 pub fn shutdown(handle: &mut BackendHandle) {
     let _ = handle.child.kill();
     let _ = handle.child.wait();
+}
+
+#[cfg(test)]
+mod auth_mode_tests {
+    use super::desired_auth_mode;
+
+    #[test]
+    fn the_sidecar_runs_with_the_gate_off_by_default() {
+        // A shipped build has no Google client id, so a session gate would
+        // be an unpassable wall rather than security.
+        assert_eq!(desired_auth_mode(None), "disabled");
+    }
+
+    #[test]
+    fn an_explicit_setting_always_wins() {
+        assert_eq!(desired_auth_mode(Some("required".into())), "required");
+        assert_eq!(desired_auth_mode(Some("disabled".into())), "disabled");
+    }
+
+    #[test]
+    fn an_empty_value_is_not_a_setting() {
+        assert_eq!(desired_auth_mode(Some("".into())), "disabled");
+        assert_eq!(desired_auth_mode(Some("   ".into())), "disabled");
+    }
 }
