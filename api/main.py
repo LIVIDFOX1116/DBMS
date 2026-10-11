@@ -1277,15 +1277,21 @@ BENCHMARKS_PATH = pathlib.Path(__file__).parent.parent / "docs" / "perf" / "benc
 
 @app.get("/benchmarks")
 def benchmarks():
-    """CPU-vs-GPU timings recorded by scripts/benchmark.py --json. A file,
-    not a table: these are measurements of this machine, not pipeline
-    output, and they have to be readable with no Postgres at all. Returns
-    an empty list when nothing has been benchmarked yet -- the dashboard
-    shows that as an empty state, which is a real answer, not an error."""
+    """CPU-vs-GPU timings recorded by scripts/benchmark.py --json, plus the
+    per-size crossover from scripts/benchmark_crossover.py. A file, not a
+    table: these are measurements of this machine, not pipeline output, and
+    they have to be readable with no Postgres at all. Empty `runs` when
+    nothing has been benchmarked yet -- the dashboard shows that as an empty
+    state, which is a real answer, not an error.
+
+    Shape changed from a bare list to {"runs": [...], "crossover": {...}} so
+    the crossover could travel with the timings; the dashboard accepts both
+    so an older benchmarks.json still renders."""
     try:
-        return json.loads(BENCHMARKS_PATH.read_text(encoding="utf-8")).get("runs", [])
+        data = json.loads(BENCHMARKS_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return []
+        return {"runs": [], "crossover": None}
     except (json.JSONDecodeError, OSError):
         log.warning("Benchmark results at %s are unreadable", BENCHMARKS_PATH)
-        return []
+        return {"runs": [], "crossover": None}
+    return {"runs": data.get("runs", []), "crossover": data.get("crossover")}

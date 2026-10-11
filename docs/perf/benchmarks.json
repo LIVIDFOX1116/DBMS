@@ -6,7 +6,7 @@
       "vertex_count": 19133,
       "edge_count": 35776,
       "repeats": 3,
-      "recorded_at": "2026-10-08T07:05:13+00:00",
+      "recorded_at": "2026-10-11T05:51:16+00:00",
       "backends": {
         "cpu": "pandas+networkx (CPU)",
         "gpu": "cudf+cugraph (GPU)"
@@ -14,27 +14,27 @@
       "tasks": [
         {
           "task": "load_edgelist",
-          "cpu_seconds": 0.0832,
-          "gpu_seconds": 0.0129,
-          "speedup": 6.45
+          "cpu_seconds": 0.0869,
+          "gpu_seconds": 0.0211,
+          "speedup": 4.12
         },
         {
           "task": "pagerank",
-          "cpu_seconds": 0.0377,
-          "gpu_seconds": 0.0109,
-          "speedup": 3.46
+          "cpu_seconds": 0.0365,
+          "gpu_seconds": 0.0118,
+          "speedup": 3.09
         },
         {
           "task": "louvain",
-          "cpu_seconds": 1.4398,
-          "gpu_seconds": 0.1258,
-          "speedup": 11.45
+          "cpu_seconds": 1.4228,
+          "gpu_seconds": 0.1552,
+          "speedup": 9.17
         },
         {
           "task": "bfs",
-          "cpu_seconds": 0.0004,
-          "gpu_seconds": 0.0101,
-          "speedup": 0.04
+          "cpu_seconds": 0.0003,
+          "gpu_seconds": 0.0162,
+          "speedup": 0.02
         }
       ]
     },
@@ -44,7 +44,7 @@
       "vertex_count": 253863,
       "edge_count": 355989,
       "repeats": 3,
-      "recorded_at": "2026-10-08T07:07:52+00:00",
+      "recorded_at": "2026-10-11T05:53:58+00:00",
       "backends": {
         "cpu": "pandas+networkx (CPU)",
         "gpu": "cudf+cugraph (GPU)"
@@ -52,27 +52,27 @@
       "tasks": [
         {
           "task": "load_edgelist",
-          "cpu_seconds": 1.1697,
-          "gpu_seconds": 0.0406,
-          "speedup": 28.81
+          "cpu_seconds": 1.2554,
+          "gpu_seconds": 0.0602,
+          "speedup": 20.85
         },
         {
           "task": "pagerank",
-          "cpu_seconds": 0.5131,
-          "gpu_seconds": 0.0434,
-          "speedup": 11.82
+          "cpu_seconds": 0.5152,
+          "gpu_seconds": 0.0419,
+          "speedup": 12.3
         },
         {
           "task": "louvain",
-          "cpu_seconds": 24.6376,
-          "gpu_seconds": 0.7316,
-          "speedup": 33.68
+          "cpu_seconds": 25.4504,
+          "gpu_seconds": 0.7825,
+          "speedup": 32.52
         },
         {
           "task": "bfs",
-          "cpu_seconds": 0.0618,
-          "gpu_seconds": 0.0321,
-          "speedup": 1.93
+          "cpu_seconds": 0.0646,
+          "gpu_seconds": 0.0375,
+          "speedup": 1.72
         }
       ]
     },
@@ -82,7 +82,7 @@
       "vertex_count": 455073,
       "edge_count": 698273,
       "repeats": 3,
-      "recorded_at": "2026-10-08T07:12:53+00:00",
+      "recorded_at": "2026-10-11T05:59:10+00:00",
       "backends": {
         "cpu": "pandas+networkx (CPU)",
         "gpu": "cudf+cugraph (GPU)"
@@ -90,29 +90,124 @@
       "tasks": [
         {
           "task": "load_edgelist",
-          "cpu_seconds": 2.4987,
-          "gpu_seconds": 0.0629,
-          "speedup": 39.72
+          "cpu_seconds": 2.6754,
+          "gpu_seconds": 0.0603,
+          "speedup": 44.37
         },
         {
           "task": "pagerank",
-          "cpu_seconds": 1.0157,
-          "gpu_seconds": 0.1015,
-          "speedup": 10.01
+          "cpu_seconds": 1.0008,
+          "gpu_seconds": 0.1033,
+          "speedup": 9.69
         },
         {
           "task": "louvain",
-          "cpu_seconds": 50.0444,
-          "gpu_seconds": 1.1183,
-          "speedup": 44.75
+          "cpu_seconds": 52.4882,
+          "gpu_seconds": 1.0886,
+          "speedup": 48.22
         },
         {
           "task": "bfs",
-          "cpu_seconds": 0.1083,
-          "gpu_seconds": 0.0517,
-          "speedup": 2.09
+          "cpu_seconds": 0.1074,
+          "gpu_seconds": 0.039,
+          "speedup": 2.75
         }
       ]
     }
-  ]
+  ],
+  "crossover": {
+    "snapshot_id": 3,
+    "snapshot_name": "live_full_20260925T095654",
+    "repeats": 3,
+    "note": "GPU speedup by graph size, sampled from one real snapshot. Below 1.00x the CPU is faster.",
+    "speedups": [
+      {
+        "edges": 2000,
+        "load": 0.772,
+        "pagerank": 1.213,
+        "louvain": 1.981,
+        "bfs": 0.02
+      },
+      {
+        "edges": 5000,
+        "load": 0.609,
+        "pagerank": 0.571,
+        "louvain": 5.656,
+        "bfs": 0.013
+      },
+      {
+        "edges": 10000,
+        "load": 1.03,
+        "pagerank": 1.204,
+        "louvain": 8.973,
+        "bfs": 0.022
+      },
+      {
+        "edges": 20000,
+        "load": 3.498,
+        "pagerank": 5.563,
+        "louvain": 17.878,
+        "bfs": 0.034
+      },
+      {
+        "edges": 40000,
+        "load": 5.062,
+        "pagerank": 5.125,
+        "louvain": 10.566,
+        "bfs": 1.696
+      },
+      {
+        "edges": 80000,
+        "load": 19.105,
+        "pagerank": 15.567,
+        "louvain": 10.563,
+        "bfs": 1.963
+      },
+      {
+        "edges": 160000,
+        "load": 14.482,
+        "pagerank": 9.183,
+        "louvain": 12.129,
+        "bfs": 4.423
+      },
+      {
+        "edges": 320000,
+        "load": 21.572,
+        "pagerank": 14.551,
+        "louvain": 22.279,
+        "bfs": 4.131
+      },
+      {
+        "edges": 640000,
+        "load": 44.305,
+        "pagerank": 14.798,
+        "louvain": 48.897,
+        "bfs": 2.865
+      }
+    ],
+    "crossovers": {
+      "load": {
+        "status": "between",
+        "from_edges": 5000,
+        "to_edges": 10000,
+        "detail": "between 5,000 and 10,000 edges (0.61x to 1.03x)"
+      },
+      "pagerank": {
+        "status": "always",
+        "edges": 2000,
+        "detail": "GPU already faster at the smallest size measured (2,000 edges)"
+      },
+      "louvain": {
+        "status": "always",
+        "edges": 2000,
+        "detail": "GPU already faster at the smallest size measured (2,000 edges)"
+      },
+      "bfs": {
+        "status": "between",
+        "from_edges": 20000,
+        "to_edges": 40000,
+        "detail": "between 20,000 and 40,000 edges (0.03x to 1.70x)"
+      }
+    }
+  }
 }

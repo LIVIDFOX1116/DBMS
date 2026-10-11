@@ -534,12 +534,47 @@ function fcSpeedupCell(row) {
   return `<td class="${faster ? "fc-good" : "fc-warn"}">${row.speedup.toFixed(2)}× ${faster ? "faster" : "slower"}</td>`;
 }
 
+function fcCrossoverPanel(crossover) {
+  // "The GPU is 45x faster" is only true above a certain graph size. BFS on
+  // this hardware is ~50x SLOWER at 2,000 edges, so the size at which each
+  // algorithm crosses over is the honest headline, not the peak speedup.
+  if (!crossover || !crossover.speedups?.length) return "";
+  const algorithms = ["load", "pagerank", "louvain", "bfs"];
+  const cell = v => {
+    if (v == null) return `<td>–</td>`;
+    const cls = v >= 1 ? "fc-good" : "fc-warn";
+    return `<td class="${cls}">${v.toFixed(2)}×</td>`;
+  };
+  return `<div class="panel">
+    <div class="panel-head">
+      <h2>Where the GPU starts winning</h2>
+      <span class="fc-muted">${fcEsc(crossover.snapshot_name || "")} · median of ${crossover.repeats} runs</span>
+    </div>
+    <div class="table-wrap"><table class="dtable">
+      <thead><tr><th>Edges</th>${algorithms.map(a => `<th>${a}</th>`).join("")}</tr></thead>
+      <tbody>${crossover.speedups.map(r => `<tr>
+        <td class="num">${Number(r.edges).toLocaleString()}</td>
+        ${algorithms.map(a => cell(r[a])).join("")}
+      </tr>`).join("")}</tbody>
+    </table></div>
+    <div class="fc-panel-foot">
+      Speedup vs CPU; below 1.00× the CPU is faster.
+      ${algorithms.map(a => `<div>${fcEsc(a)}: ${fcEsc(crossover.crossovers?.[a]?.detail || "–")}</div>`).join("")}
+    </div>
+  </div>`;
+}
+
 async function fcLoadBenchmarks() {
   const host = document.getElementById("benchmarkPanels");
   if (FC.benchmarks) { host.innerHTML = FC.benchmarks; return; }
   host.innerHTML = `<div class="panel"><div class="fc-empty">Loading…</div></div>`;
   try {
-    const runs = await api("/benchmarks");
+    const payload = await api("/benchmarks");
+    // The endpoint used to return a bare array; it now returns an object
+    // with the per-size crossover alongside the runs. Accept both so an
+    // older benchmarks.json still renders.
+    const runs = Array.isArray(payload) ? payload : (payload.runs || []);
+    const crossover = Array.isArray(payload) ? null : payload.crossover;
     if (!runs.length) {
       FC.benchmarks = `<div class="panel"><div class="fc-empty">
         No benchmark has been recorded yet. Run:
@@ -548,7 +583,7 @@ async function fcLoadBenchmarks() {
       host.innerHTML = FC.benchmarks;
       return;
     }
-    FC.benchmarks = runs.map(run => `<div class="panel">
+    FC.benchmarks = fcCrossoverPanel(crossover) + runs.map(run => `<div class="panel">
       <div class="panel-head">
         <h2>${fcEsc(run.snapshot_name || `snapshot ${run.snapshot_id}`)}</h2>
         <span class="fc-muted">${Number(run.vertex_count).toLocaleString()} vertices ·

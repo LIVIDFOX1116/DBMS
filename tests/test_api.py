@@ -523,19 +523,19 @@ class TestBenchmarks:
     """GET /benchmarks reads a file, not Postgres: the numbers describe the
     machine, and the tab has to work with no database at all."""
 
-    def test_missing_results_file_is_an_empty_list_not_an_error(self, tmp_path, monkeypatch):
+    def test_missing_results_file_is_an_empty_result_not_an_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(api_main, "BENCHMARKS_PATH", tmp_path / "nope.json")
         resp = client.get("/benchmarks")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {"runs": [], "crossover": None}
 
-    def test_unreadable_results_file_is_an_empty_list_not_a_500(self, tmp_path, monkeypatch):
+    def test_unreadable_results_file_is_an_empty_result_not_a_500(self, tmp_path, monkeypatch):
         bad = tmp_path / "benchmarks.json"
         bad.write_text("{not json", encoding="utf-8")
         monkeypatch.setattr(api_main, "BENCHMARKS_PATH", bad)
         resp = client.get("/benchmarks")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {"runs": [], "crossover": None}
 
     def test_recorded_runs_are_served_in_order(self, tmp_path, monkeypatch):
         path = tmp_path / "benchmarks.json"
@@ -544,9 +544,27 @@ class TestBenchmarks:
              "tasks": [{"task": "pagerank", "cpu_seconds": 2.0, "gpu_seconds": 0.5, "speedup": 4.0}]},
         ]}), encoding="utf-8")
         monkeypatch.setattr(api_main, "BENCHMARKS_PATH", path)
-        rows = client.get("/benchmarks").json()
+        body = client.get("/benchmarks").json()
+        rows = body["runs"]
         assert [r["snapshot_id"] for r in rows] == [1]
         assert rows[0]["tasks"][0]["speedup"] == 4.0
+        # A file written before the crossover existed must still serve.
+        assert body["crossover"] is None
+
+    def test_crossover_travels_with_the_runs(self, tmp_path, monkeypatch):
+        # "The GPU is 45x faster" is only true above a size; the crossover is
+        # what makes the speedups honest, so it ships with them.
+        path = tmp_path / "benchmarks.json"
+        path.write_text(json.dumps({
+            "runs": [{"snapshot_id": 1, "tasks": []}],
+            "crossover": {"snapshot_name": "s", "repeats": 3,
+                          "speedups": [{"edges": 2000, "bfs": 0.02}],
+                          "crossovers": {"bfs": {"status": "between", "detail": "between 20,000 and 40,000 edges"}}},
+        }), encoding="utf-8")
+        monkeypatch.setattr(api_main, "BENCHMARKS_PATH", path)
+        body = client.get("/benchmarks").json()
+        assert body["crossover"]["speedups"][0]["bfs"] == 0.02
+        assert "20,000" in body["crossover"]["crossovers"]["bfs"]["detail"]
 
     def test_benchmarks_needs_no_database(self, monkeypatch):
         # Live mode, Postgres dead: the tab must still render.
