@@ -239,6 +239,48 @@ that have been audited so far (not every flag that exists — see
 frameable flags to compute a cost range from — see the `sybil_cluster`
 row in the example above, which has `0` frameable flags out of 2 audited).
 
+### GET /clusters/top-flagged?run_id=&snapshot_id=&limit=8
+Clusters holding the most distinct flagged wallets — what Multiview's
+"Top 8 flagged" opens. Ranked by **flagged wallets**, not raw flag count, so
+one wallet carrying five detector flags doesn't outrank five separately
+flagged wallets.
+```json
+[{"cluster_id": 351299, "community_label": 7, "member_count": 26594,
+  "cluster_type": null, "risk_score": null, "snapshot_id": 2,
+  "flagged_wallets": 26594, "flag_count": 26761,
+  "frameable_count": 0, "audited_count": 0, "frameable_share": null}]
+```
+`limit` is capped at 8 (`422` above that) because each Multiview panel holds
+its own WebGL context. `frameable_share` is `null` — not `0.0` — when
+nothing in the cluster has been audited, since "no data" and "none are
+frameable" are different facts.
+
+Cluster rows and flag rows live under **different** `analysis_run` ids (one
+Louvain run, one detector run), so they are related through `snapshot_id`;
+matching `run_id` to `run_id` returns nothing at all. `run_id` here is
+resolved to its snapshot first.
+
+### GET /clusters/{cluster_id}/subgraph?limit=300
+One cluster's members and the edges between them, for a Multiview panel.
+```json
+{"cluster_id": 351299, "community_label": 7, "snapshot_id": 2,
+ "member_count": 26594, "truncated": true,
+ "nodes": [{"wallet_id": 215093, "address": "0x09d4…", "pagerank": 0.00127,
+            "verdict": "frameable", "flag_count": 4}],
+ "edges": [{"src_wallet_id": 215093, "dst_wallet_id": 174669,
+            "edge_weight": 1.0, "transfer_count": 3}]}
+```
+`verdict` is per wallet: `frameable` (any flag on it audited frameable),
+`robust`, `unaudited` (flagged, not yet audited) or `unflagged`.
+
+**Truncation is by connected expansion, not top-N.** Taking the `limit`
+highest-PageRank members looks reasonable and renders as a dust cloud:
+measured on cluster 351299, the top 300 came back as 76 disconnected
+fragments with 22% of nodes having no edge to anything else shown. The same
+budget spent expanding outward from the highest-ranked member returns one
+connected component of 300. `truncated` is always reported so a partial
+view is never mistaken for a whole cluster. `limit` 1–2000 (`422` outside).
+
 ### POST /jobs  ·  GET /jobs  ·  GET /jobs/{job_id}  ·  POST /jobs/{job_id}/cancel
 Runs detectors or an audit pass from the UI. Body:
 `{"job_type": "detectors" | "audit", "snapshot_id": 2, "seed_wallet_id": 2,

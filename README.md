@@ -187,6 +187,24 @@ FRAMECHECK_SESSION_SECRET=   # python -c "import secrets; print(secrets.token_ur
 it signs everyone out, which is the intended way to do that. No client secret
 is used anywhere in the flow: both clients are public and rely on PKCE.
 
+### Multiview (comparing clusters)
+
+Opens up to 8 cluster graphs side by side in their own window — a separate
+Tauri window in the desktop app, a pop-up in the browser. Two ways in, both
+on the **Clusters** view: tick clusters (the 9th is blocked with a message),
+or press **Top 8 flagged** for the clusters holding the most flagged wallets.
+
+Nodes are coloured by verdict (frameable / robust / flagged-not-audited /
+unflagged); each panel pans and zooms on its own and can be expanded to fill
+the window, which refetches at a higher node cap.
+
+Panels are capped at 8 because each one holds its own WebGL2 context and
+browsers kill the oldest once they run out. Big clusters are truncated by
+expanding outward from the highest-PageRank member rather than taking the
+top N — the top N of a 26,594-member cluster is a scatter of disconnected
+nodes, not a picture of a cluster. Every panel states how many of the
+cluster's wallets it is showing.
+
 ### Running analyses from the app
 
 The dashboard's **Run analysis** view runs the detectors and the framing audit
