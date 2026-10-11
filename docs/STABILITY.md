@@ -678,3 +678,45 @@ path, so it never meant what it was taken to mean.
   and 249 that should be are not. Correcting it means re-running the detectors,
   which changes stored results -- a deliberate data change, not done here.
 
+## Correcting the stored pagerank_threshold flags (2026-10-11)
+
+The convergence fix changed what the detector computes, so the flags already
+in Postgres were the unconverged ones. Corrected on snapshot 2, the only
+affected snapshot: snapshot 1's stored PageRank run came from the GPU (already
+converged) and snapshot 3 has no stored PageRank run at all.
+
+| Step | Result |
+|---|---|
+| `pg_dump -Fc` before any write | 277 MB, `backups/txgraph_before_pagerank_fix_20261011T145002.dump` |
+| Re-ran PageRank only, CPU path | new `analysis_run` 38, top score 0.004099 (the converged value; the old run 10 gave 0.00461) |
+| Re-ran the `pagerank_threshold` detector | new flag run 39, 2,539 flags |
+| New flags vs an independent converged recomputation | **2,539 of 2,539 identical, 0 either way** |
+| New flags vs the old run 29 | 2,290 shared, **249 added, 249 dropped** |
+| Evidence for run 39 | 525,201 rows |
+| Audit, bounded sample of the new flags | 25 flags, all frameable (`greedy_upper_bound`), ~1 s each on GPU |
+
+Nothing was deleted: each re-run is a new `analysis_run`, so run 10's metrics
+and run 29's flags are still in the database and the API resolves the latest.
+That also makes this reversible without touching the dump.
+
+`graph/run_analysis.py` gained `--only pagerank` for this. Re-running all
+three algorithms would have created a new Louvain/cluster run as collateral,
+changing what every cluster-based view resolves to -- a much larger change
+than the one being made.
+
+### A Phase 11 loose end, probably explained
+
+Phase 11 recorded 4 unattributable `flag_audit` rows for flags 1776-1779 and
+said the audit benchmark could not have made them because it ran
+`--detector pagerank_threshold`. While auditing the new flags I reproduced
+the signature by accident: `graph.audit --limit 25` orders by `flag_id`, so
+it audits flags **1776-1800** -- the oldest `bfs_proximity` flags -- not the
+newest ones. Any plain `--limit` audit call lands exactly there, and the
+audit is deterministic, which is why those rows were byte-identical to the
+existing ones. That is a mechanism, not a receipt: it explains the rows
+without proving which invocation wrote them, so it is recorded as probable.
+
+The practical lesson is about the tool, not the mystery: `--limit` without
+`--run-id` or `--detector` silently audits the oldest flags in the database
+rather than anything related to what was just computed.
+
