@@ -318,13 +318,22 @@ def _save_checkpoint(path: pathlib.Path, hop: int, frontier: set, visited: set, 
     }))
 
 
-def crawl(seed_address: str, hop_count: int, client: EtherscanClient = None, conn=None, resume: bool = False) -> dict:
+def crawl(seed_address: str, hop_count: int, client: EtherscanClient = None, conn=None,
+          resume: bool = False, progress=None, should_stop=None) -> dict:
     """BFS out to `hop_count` hops from `seed_address`. Returns simple stats.
 
     resume=True (the CLI default) checkpoints progress to .state/ and picks
     back up from there if a matching checkpoint exists; left off (False) for
     the unit tests, which should stay hermetic -- no file I/O against a fake
     client's data.
+
+    `progress(stats)` and `should_stop()` exist for the app's automatic
+    ingestion, which has to show what is happening and be cancellable from
+    a button. Both are called once per address, at the point where a
+    checkpoint is written, so stopping there loses no work: everything up to
+    that address is committed and checkpointed, and the rest resumes later.
+    A crawl runs for minutes to hours, so a Cancel that only takes effect at
+    the end of a hop would not be a Cancel.
     """
     client = client or EtherscanClient()
     own_conn = conn is None
@@ -388,8 +397,18 @@ def crawl(seed_address: str, hop_count: int, client: EtherscanClient = None, con
                 conn.commit()
                 visited.add(addr)
                 stats["addresses_processed"] += 1
+                stats["hops_completed"] = hop
+                stats["frontier_size"] = len(next_frontier - visited)
+                stats["calls_made"] = getattr(client, "calls_made", None)
                 if ckpt_path:
                     _save_checkpoint(ckpt_path, hop, frontier, visited, next_frontier)
+                if progress is not None:
+                    progress(dict(stats))
+                if should_stop is not None and should_stop():
+                    stats["stopped_early"] = True
+                    log.info("stopping after %d addresses: caller asked to stop",
+                             stats["addresses_processed"])
+                    return stats
             frontier = next_frontier - visited
             next_frontier = set()
             stats["hops_completed"] = hop + 1

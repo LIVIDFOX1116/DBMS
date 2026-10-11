@@ -12,3 +12,7 @@ venv/
 /build/
 .ipynb_checkpoints/
 .claude/
+
+# Database dumps taken before migrations/data changes -- local safety copies,
+# often hundreds of MB, and they contain real ingested data. Never committed.
+backups/

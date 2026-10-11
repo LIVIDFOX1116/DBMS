@@ -27,6 +27,7 @@ import threading
 from contextlib import asynccontextmanager, contextmanager
 from typing import Optional
 
+import psycopg2
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,8 +37,9 @@ from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import auth, jobs
+from api import auth, dbsetup, jobs
 from ingestion import config
+from ingestion.etherscan_client import EtherscanClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("api.main")
@@ -57,14 +59,23 @@ _pool: "pg_pool.ThreadedConnectionPool | None" = None
 _pool_lock = threading.Lock()
 
 
+def close_pool() -> None:
+    """Drops the pool so the next request builds a fresh one. Called on
+    shutdown and whenever the connection settings change -- a pooled
+    connection to the old database would otherwise outlive the setting that
+    created it."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.closeall()
+            log.info("Postgres connection pool closed")
+            _pool = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    global _pool
-    if _pool is not None:
-        _pool.closeall()
-        log.info("Postgres connection pool closed")
-        _pool = None
+    close_pool()
 
 
 app = FastAPI(
@@ -151,8 +162,17 @@ app.add_middleware(
 MOCK_PATH = pathlib.Path(__file__).parent / "mock_data.json"
 
 
+# Set by POST /db/mode so a user who has just created and populated a
+# database from the Database view can switch to live data without quitting
+# the app (an installed app has no .env to edit and no shell to re-launch
+# from). None means "whatever the environment says", which is what every
+# terminal and CI run keeps seeing.
+_mode_override: str | None = None
+
+
 def using_mock() -> bool:
-    return os.getenv("FRAMECHECK_API_MODE", "mock").lower() != "live"
+    mode = _mode_override or os.getenv("FRAMECHECK_API_MODE", "mock")
+    return mode.lower() != "live"
 
 
 def load_mock() -> dict:
@@ -164,7 +184,7 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
     if _pool is None:
         with _pool_lock:
             if _pool is None:  # re-check: another thread may have won the race while we waited for the lock
-                _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=10, **config.PG_DSN)
+                _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=10, **dbsetup.current_dsn())
                 log.info("Postgres connection pool created (min=1, max=10)")
     return _pool
 
@@ -1103,9 +1123,18 @@ def start_job(body: JobRequest):
     return job.as_dict()
 
 
+def _without_secrets(job: dict) -> dict:
+    """An ingest job carries the Etherscan key in its params so the crawl can
+    authenticate. Every route that returns a job strips it -- the page asked
+    for progress, not for the secret back."""
+    if not job.get("params"):
+        return job
+    return {**job, "params": {k: v for k, v in job["params"].items() if k != "api_key"}}
+
+
 @app.get("/jobs")
 def list_jobs():
-    return jobs.list_jobs()
+    return [_without_secrets(j) for j in jobs.list_jobs()]
 
 
 @app.get("/jobs/{job_id}")
@@ -1113,7 +1142,7 @@ def get_job(job_id: str):
     job = jobs.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="no such job (jobs are forgotten when the backend restarts)")
-    return job.as_dict()
+    return _without_secrets(job.as_dict())
 
 
 @app.post("/jobs/{job_id}/cancel")
@@ -1295,3 +1324,272 @@ def benchmarks():
         log.warning("Benchmark results at %s are unreadable", BENCHMARKS_PATH)
         return {"runs": [], "crossover": None}
     return {"runs": data.get("runs", []), "crossover": data.get("crossover")}
+
+
+# --------------------------------------------------------------- Database view
+# Feature 1: an installed app has no .env, no psql and no repo checkout, so
+# everything needed to get from "Postgres is installed" to "FrameCheck has
+# data" is reachable from the UI. See api/dbsetup.py for the operations and
+# for what is deliberately absent (anything that drops or truncates).
+
+
+class DbSettingsUpdate(BaseModel):
+    host: str
+    port: str = "5432"
+    dbname: str
+    user: str
+    password: str = ""
+
+
+@app.post("/internal/db-settings")
+def set_internal_db_settings(body: DbSettingsUpdate, request: Request):
+    """Loopback-only and internal-token-gated, like /internal/api-key: the
+    password arrives from Rust's keychain, never from the page. Resets the
+    pool, since pooled connections to the previous database would otherwise
+    outlive the setting that made them."""
+    token = request.headers.get("x-internal-token", "")
+    expected = _runtime_state["internal_token"]
+    if not expected or not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=403, detail="invalid or missing internal token")
+    try:
+        redacted = dbsetup.set_runtime_dsn(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    close_pool()
+    return {"status": "ok", "settings": redacted}
+
+
+@app.get("/db/settings")
+def db_settings():
+    """Never includes the password -- only whether one is set, which the UI
+    needs in order to say so."""
+    return {"settings": dbsetup.redact(dbsetup.current_dsn()),
+            "source": "app" if dbsetup.has_runtime_dsn() else "environment"}
+
+
+@app.get("/db/status")
+def db_status():
+    """One call answering everything the Database view's header needs: is
+    the server reachable, does the database exist, is the schema applied,
+    which migrations are pending, and is the API serving live or demo data."""
+    dsn = dbsetup.current_dsn()
+    probe = dbsetup.server_probe(dsn)
+    out = {
+        "mode": "mock" if using_mock() else "live",
+        "settings": dbsetup.redact(dsn),
+        "server": probe,
+        "schema": None,
+    }
+    if not probe["reachable"] or not probe["database_exists"]:
+        return out
+    try:
+        conn = dbsetup.connect(dsn)
+    except OperationalError as e:
+        out["server"] = {**probe, "reachable": False, "error": str(e).strip()}
+        return out
+    try:
+        out["schema"] = dbsetup.schema_state(conn)
+    finally:
+        conn.close()
+    return out
+
+
+@app.post("/db/create")
+def db_create():
+    """Creates the configured database if it is missing. An existing
+    database is reported and left alone -- never recreated."""
+    try:
+        return dbsetup.create_database(dbsetup.current_dsn())
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from None
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=400, detail=str(e).strip()) from None
+
+
+@app.post("/db/schema")
+def db_schema():
+    """Applies schema.sql (only if absent) and every unapplied migration,
+    each in its own transaction. Refuses a database whose migration history
+    is unknown -- see /db/adopt."""
+    try:
+        conn = dbsetup.connect(dbsetup.current_dsn())
+    except OperationalError as e:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {str(e).strip()}") from None
+    try:
+        return dbsetup.apply_schema(conn)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=400, detail=str(e).strip()) from None
+    finally:
+        conn.close()
+
+
+@app.post("/db/adopt")
+def db_adopt():
+    """Records every migration as applied WITHOUT running it, for a database
+    that predates migration tracking. A claim about history that cannot be
+    checked from inside the database, so it is its own explicit action."""
+    try:
+        conn = dbsetup.connect(dbsetup.current_dsn())
+    except OperationalError as e:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {str(e).strip()}") from None
+    try:
+        return dbsetup.mark_existing_as_applied(conn)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    finally:
+        conn.close()
+
+
+@app.get("/db/tables")
+def db_tables():
+    """Every table with an estimated row count and on-disk size. Estimates
+    because counting all 23 tables of a real FrameCheck database measured
+    6.85 s; /db/tables/{table}/count gives the exact figure for one."""
+    try:
+        conn = dbsetup.connect(dbsetup.current_dsn())
+    except OperationalError as e:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {str(e).strip()}") from None
+    try:
+        return {"tables": dbsetup.table_inventory(conn)}
+    finally:
+        conn.close()
+
+
+@app.get("/db/tables/{table}/count")
+def db_table_count(table: str):
+    """Exact count(*) for one table, for when the estimate is not enough."""
+    try:
+        conn = dbsetup.connect(dbsetup.current_dsn())
+    except OperationalError as e:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {str(e).strip()}") from None
+    try:
+        return dbsetup.exact_row_count(conn, table)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
+    finally:
+        conn.close()
+
+
+@app.get("/db/tables/{table}")
+def db_table_sample(table: str, limit: int = 50):
+    """Read-only peek at one table. The name is validated against the live
+    catalogue and quoted as an identifier, never interpolated."""
+    try:
+        conn = dbsetup.connect(dbsetup.current_dsn())
+    except OperationalError as e:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {str(e).strip()}") from None
+    try:
+        return dbsetup.sample_table(conn, table, limit)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
+    finally:
+        conn.close()
+
+
+class ModeUpdate(BaseModel):
+    mode: str
+
+
+@app.post("/db/mode")
+def db_mode(body: ModeUpdate):
+    """Switches between demo (mock) and live data without a restart. Live is
+    refused unless the database is actually reachable with the schema
+    applied: silently switching to live and then failing every subsequent
+    request would look like the app breaking."""
+    global _mode_override
+    mode = body.mode.lower().strip()
+    if mode not in ("mock", "live"):
+        raise HTTPException(status_code=422, detail="mode must be 'mock' or 'live'")
+    if mode == "live":
+        status = db_status()
+        if not status["server"]["reachable"]:
+            raise HTTPException(status_code=409,
+                                detail=f"cannot switch to live: {status['server']['error']}")
+        if not status["server"]["database_exists"]:
+            raise HTTPException(status_code=409,
+                                detail="cannot switch to live: the database does not exist yet")
+        if not (status["schema"] or {}).get("schema_applied"):
+            raise HTTPException(status_code=409,
+                                detail="cannot switch to live: the schema has not been applied yet")
+    _mode_override = mode
+    close_pool()
+    log.info("API mode switched to %s", mode)
+    return {"mode": mode}
+
+
+# ------------------------------------------------------- automatic ingestion
+# The other half of Feature 1: with an Etherscan key saved, the app pulls
+# live wallet data itself instead of the user running `python -m
+# ingestion.ingest_subgraph` in a terminal they do not have.
+
+
+class IngestRequest(BaseModel):
+    address: Optional[str] = None            # defaults to the configured case study
+    hops: int = 1
+    requests_per_second: Optional[float] = None
+    max_calls: Optional[int] = None          # hard stop, not a rate -- see jobs._run_ingest
+
+
+@app.get("/ingest/plan")
+def ingest_plan():
+    """What we know about this key's allowance, and how we know it.
+
+    `source` is the honest part. Etherscan only reports an allowance for
+    paid keys, so for most users this is `"configured"` -- the rate the app
+    is using, not a plan it detected. It is never presented as detected
+    when it was not.
+    """
+    key = _runtime_state["etherscan_api_key"]
+    plan = {
+        "api_key_set": bool(key),
+        "requests_per_second": float(config.REQUESTS_PER_SECOND),
+        "source": "configured",
+        "reported_by_etherscan": None,
+    }
+    if not key:
+        return plan
+    try:
+        reported = EtherscanClient(api_key=key).get_api_limit()
+    except Exception as e:                      # a plan probe must never break the page
+        log.info("API limit probe failed: %s", e)
+        reported = None
+    if reported:
+        plan["reported_by_etherscan"] = reported
+        plan["source"] = "etherscan"
+    return plan
+
+
+@app.post("/ingest/start")
+def ingest_start(body: IngestRequest):
+    """Starts a crawl as a background job. Live mode only -- there is no
+    demo-mode equivalent of writing real wallets to a database."""
+    if using_mock():
+        raise HTTPException(status_code=409,
+                            detail="ingestion needs live mode: connect a database in the Database view first")
+    if not _runtime_state["etherscan_api_key"]:
+        raise HTTPException(status_code=409, detail="no Etherscan API key is set -- add one in Settings first")
+    if body.hops < 0 or body.hops > 3:
+        # 3 hops out of a busy address is already hundreds of thousands of
+        # calls; a bigger number is a mistake, not a request.
+        raise HTTPException(status_code=422, detail="hops must be between 0 and 3")
+    if body.max_calls is not None and body.max_calls < 1:
+        raise HTTPException(status_code=422, detail="max_calls must be at least 1")
+    try:
+        job = jobs.start("ingest", snapshot_id=0, seed_wallet_id=0, params={
+            "address": body.address,
+            "hops": body.hops,
+            "requests_per_second": body.requests_per_second,
+            "max_calls": body.max_calls,
+            "api_key": _runtime_state["etherscan_api_key"],
+        })
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return _without_secrets(job.as_dict())
