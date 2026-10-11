@@ -392,3 +392,73 @@ difference is cache: `Swatinem/rust-cache` is keyed per workflow, so a tag build
 recompiles `tauri-cli` and the whole Tauri tree from scratch. Not a fault -- but a release is not a
 five-minute operation, which matters when cutting one under time pressure.
 
+## Phase 9: Multiview graph (2026-10-11)
+
+New feature, so the pass is "does it work and is it honest", not only "does it crash". Verified in
+headless Chrome against the live API **and** in the real packaged desktop app -- which is where
+three of the five bugs below only appeared.
+
+| Check | Result |
+|---|---|
+| `GET /clusters/top-flagged?limit=8` live | 8 rows in 1.1 s |
+| `GET /clusters/{id}/subgraph` live | 0.4 s (1,872-member cluster), 1.3 s (26,594-member cluster) |
+| `limit` bounds | `422` outside 1-8 (top-flagged) and 1-2000 (subgraph) |
+| Route order | `/clusters/top-flagged` resolves, not shadowed by `/clusters/{cluster_id}` -- pinned by a test |
+| Browser: 8 panels | 8 canvases, 8 live WebGL2 contexts, 150 nodes each, all settled, no console errors |
+| Desktop: 8 panels via "Top 8 flagged" | same, in a second WebviewWindow, no errors |
+| Per-panel zoom / pan | independent: panning panel 0 left panel 1's camera untouched |
+| Hover tooltip | shows wallet, verdict, flag count, PageRank |
+| Expand / collapse | one panel fills the window and refetches at 600 nodes; collapse restores all 8 |
+| 9th cluster selected | checkbox disables itself with "8 selected -- the maximum"; a 9-id URL shows the first 8 and says so |
+| Settled panels | render loop stops (`_raf` null on all 8) and restarts on input |
+| Python / Rust suites | 240 passed, 5 skipped; 42 Rust tests; ruff clean |
+
+### Findings and fixes
+
+1. **Top-N-by-PageRank truncation produced a dust cloud, not a cluster.** On cluster 351299
+   (26,594 members) the top 300 by PageRank came back as **76 disconnected fragments with 22% of
+   nodes having no edge to anything else shown** -- the panel would have been visually
+   meaningless. Truncation now expands outward from the highest-ranked member along real edges:
+   the same 300-node budget returns **one connected component, zero isolated nodes**. Fetching
+   every internal edge to do this costs 0.05 s even on that cluster.
+2. **The force layout exploded at 600 nodes.** Coordinates reached **1e94** and the camera's fit
+   scale collapsed to 0, so an expanded panel went blank. Two nodes landing nearly on top of each
+   other produced `52000/0.01` of repulsion in one step with nothing damping it. A
+   minimum-distance floor plus a per-step displacement cap bound it; the same panel now settles at
+   3.8e3. **At 150 nodes the old code looked perfectly fine** -- this only existed on the expand
+   path, which is why it needed exercising rather than reasoning about.
+3. **`open_multiview` deadlocked as a sync command.** A sync `#[tauri::command]` runs on the main
+   thread, and `WebviewWindowBuilder::build()` needs that thread's event loop to pump to finish.
+   The symptom was not an error: a window appeared on `about:blank` and the invoke never resolved.
+   Now `async`.
+4. **`WebviewUrl::App` is a `PathBuf`**, so `multiview.html?clusters=1,2` did not survive into the
+   window. The selection is passed as typed parameters and injected before the page runs. That
+   also removed the need to accept a caller-supplied URL at all -- the earlier version did, and a
+   command that opens an arbitrary URL in a window with Tauri IPC attached would hand a remote
+   page the app's whole command surface.
+5. **`GraphRenderer.destroy()` never released its WebGL context.** Dropping the canvas leaves the
+   context alive until GC, and browsers cap live contexts (~16) then silently kill the *oldest* to
+   make room. Multiview opens eight at a time, so repeated opens would have started blanking
+   panels that had been working. `loseContext()` now releases on teardown.
+
+### A process mistake worth recording
+
+After adding the two endpoints I rebuilt the Tauri shell (`cargo tauri build`) and tested -- and
+got `422 Unprocessable Entity` from `/clusters/top-flagged`, which looked exactly like the
+route-ordering bug I had just written a test against. It was not: **the packaged app bundles a
+frozen copy of the Python backend**, and `cargo tauri build` does not rebuild it.
+`scripts/build_backend_sidecar.py` has to run first, or the desktop app keeps serving the previous
+API. Worth knowing before chasing a phantom bug: the passing test was right and the binary was
+stale.
+
+### Honest limits
+
+- **`frameable_share` reads "-" on every panel** against the current data. That is real: only ~126
+  of snapshot 2's 126,862 flags have been audited, so almost no cluster has an audited flag in it.
+  The column is correct and the data is thin; `null` is deliberately not rendered as `0%`.
+- **Ranking by flagged wallets currently ranks by cluster size**, because `sybil_cluster` flags
+  every member of a cluster -- all eight top clusters have `flagged_wallets == member_count`. The
+  ranking is what was asked for and is defensible, but on this data it is not very discriminating.
+- A panel showing 150 of 26,594 wallets is **0.6% of the cluster**. The footer states the ratio on
+  every panel rather than leaving the impression that the picture is the whole cluster.
+
