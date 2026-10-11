@@ -41,6 +41,38 @@ import time
 
 log = logging.getLogger("graph.backend")
 
+# --- PageRank convergence -----------------------------------------------
+# NetworkX stops when sum|x - x_last| < N * tol, where N is the VERTEX COUNT.
+# Its default tol=1e-6 therefore allows a total L1 error of 0.455 on
+# snapshot 3's 455,073 vertices -- on a distribution that sums to 1. The CPU
+# path was quitting early and reporting a top score of 0.00097 where the
+# converged value is 0.00349 (3.6x low), which is the whole of the
+# "the two backends disagree on PageRank" problem recorded in
+# docs/benchmark_results.md through Phase 11: with the CPU default, the two
+# backends agreed on only 3,053 of 4,551 pagerank_threshold flags
+# (Jaccard 0.50); converged, they agree on all 4,551.
+#
+# So express the criterion as an absolute L1 budget and divide by N, which
+# makes it independent of graph size -- the actual root cause. Measured cost
+# of converging on snapshot 3: 0.88s -> 1.03s, 75 iterations.
+PAGERANK_L1_TARGET = 1e-6
+# cuGraph's tol is NOT scaled by N. Its default (1e-5) already converges on
+# these graphs (identical flags against a 1e-11 run), but pin it explicitly
+# rather than inherit a library default that could change under us.
+PAGERANK_GPU_TOL = 1e-8
+# Generous because the tolerance above is tight, not because these graphs
+# need it; 75 iterations was the worst case measured across all three
+# snapshots. Non-convergence within this is reported, never silently
+# accepted -- an unconverged run is exactly the bug this block fixes.
+PAGERANK_MAX_ITER = 1000
+
+
+def cpu_pagerank_tol(vertex_count: int, l1_target: float = PAGERANK_L1_TARGET) -> float:
+    """The `tol` to hand NetworkX so its N-scaled criterion means "total L1
+    error below `l1_target`", whatever the graph's size. Guards against
+    vertex_count 0 so an empty graph can't divide by zero."""
+    return l1_target / max(1, vertex_count)
+
 
 def gpu_available() -> bool:
     if os.getenv("FRAMECHECK_FORCE_CPU", "").lower() in ("1", "true", "yes"):
@@ -106,14 +138,36 @@ class GraphBackend:
 
     # ------------------------------------------------------------- algorithms
 
+    def _cpu_pagerank(self, G):
+        """NetworkX PageRank with a convergence criterion that does not get
+        looser as the graph grows -- see PAGERANK_L1_TARGET above for why
+        the default one does, and what it cost.
+
+        If the power iteration genuinely cannot converge within
+        PAGERANK_MAX_ITER, say so and fall back to the library default
+        rather than failing the whole pipeline: a loosely-converged answer
+        with a warning in the log beats a run that dies, but it must never
+        be returned silently as if it were converged."""
+        tol = cpu_pagerank_tol(G.number_of_nodes())
+        try:
+            return self._networkx.pagerank(G, weight="edge_weight", tol=tol, max_iter=PAGERANK_MAX_ITER)
+        except self._networkx.PowerIterationFailedConvergence:
+            log.warning(
+                "PageRank did not converge to an L1 error below %g in %d iterations on %d vertices; "
+                "falling back to NetworkX's own default tolerance. These scores are NOT comparable "
+                "with the GPU backend's -- see PAGERANK_L1_TARGET in graph/backend.py.",
+                PAGERANK_L1_TARGET, PAGERANK_MAX_ITER, G.number_of_nodes(),
+            )
+            return self._networkx.pagerank(G, weight="edge_weight", max_iter=PAGERANK_MAX_ITER)
+
     def pagerank(self, G):
         """Returns a pandas.DataFrame[wallet_id, score], sorted descending."""
         t0 = time.time()
         if self.use_gpu:
-            result = self._cugraph.pagerank(G)
+            result = self._cugraph.pagerank(G, tol=PAGERANK_GPU_TOL, max_iter=PAGERANK_MAX_ITER)
             df = result.to_pandas().rename(columns={"vertex": "wallet_id", "pagerank": "score"})
         else:
-            scores = self._networkx.pagerank(G, weight="edge_weight")
+            scores = self._cpu_pagerank(G)
             df = self._pandas.DataFrame(scores.items(), columns=["wallet_id", "score"])
         df = df.sort_values("score", ascending=False).reset_index(drop=True)
         log.info("pagerank (%s): %d vertices in %.2fs", self.backend_name, len(df), time.time() - t0)

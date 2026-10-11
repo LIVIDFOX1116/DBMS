@@ -602,3 +602,79 @@ libraries' dangling-vertex conventions dominate. `pagerank_threshold` compares a
 speedup in `docs/benchmark_results.md` is a timing comparison and explicitly **not** a claim that
 both backends computed the same answer. This needs a deliberate decision and has not had one.
 
+## PageRank convergence: the backend disagreement was ours (2026-10-11)
+
+Carried as unresolved through Phases 4, 10 and 11, and wrong in all three: the
+CPU/GPU PageRank disagreement was recorded as a weighting problem (wei values,
+71.3% zero-weight edges, dangling-vertex conventions). It was **NetworkX never
+converging.**
+
+NetworkX converges when `sum|x - x_last| < N * tol`, with `N` the vertex
+count, so the default `tol=1e-6` allows a total L1 error of 0.455 on snapshot
+3's 455,073 vertices -- on a distribution summing to 1. Top score came out
+0.00097 against a converged 0.00349, which is precisely the "GPU scores ~3.5x
+larger" that three phases of docs attributed to the weights.
+
+| Check | Result |
+|---|---|
+| Flag agreement, snapshot 3 (4,551 flags) | 3,053 agreed before, **4,551 after** (Jaccard 0.505 -> 1.0000) |
+| Flag agreement, snapshot 2 (2,539 flags) | 2,290 -> **2,539** (0.821 -> 1.0000) |
+| Flag agreement, snapshot 1 (192 flags) | 189 -> **192** (0.969 -> 1.0000) |
+| Agreement under unweighted and `log1p` weights | also 1.0000 -- the weighting decision was moot |
+| Ties at the percentile cut as an explanation | ruled out: exactly 1 wallet on the cut score, 0 disagreeing wallets within 1e-9 of it |
+| `benchmark.py`'s own agreement check | same top PageRank wallet on both backends now (173, 1868, 1868); previously disjoint |
+| Cost of converging | 75 iterations worst case; CPU PageRank 0.88s -> 1.03s on snapshot 3 |
+| Python suite | 247 passed, 5 skipped; ruff clean |
+
+### How it was found, and what that says about the earlier evidence
+
+By measuring the disagreement in the units that matter -- how many wallets
+`pagerank_threshold` actually flags, via the production selection path
+(`scripts/pagerank_agreement.py`, new) -- rather than comparing scores.
+That reframing is what exposed it: 1,498 of snapshot 3's 4,551 flags changed
+with the backend, far worse than the "84/100 top-100 overlap" the earlier
+write-ups reported, and a Spearman of 1.0000 had been hiding it because the
+hundreds of thousands of low-rank vertices dominate the correlation.
+
+Two hypotheses were tested and killed before the right one: ties at the
+percentile cut (0 of the disagreeing wallets are within 1e-9 of the cut
+score), and `log1p` weight compression, which made agreement **worse**
+(0.4206 vs 0.5047). The previously-reported evidence that "an unweighted CPU
+run matches the GPU *less*" was itself measured with the unconverged CPU
+path, so it never meant what it was taken to mean.
+
+### Fixes
+
+1. `graph/backend.py`: CPU PageRank derives its tolerance from an absolute L1
+   budget (`PAGERANK_L1_TARGET / N`) so the criterion stops getting looser as
+   the graph grows, with `max_iter=1000`. Non-convergence logs a loud warning
+   and falls back to the library default rather than killing a pipeline run --
+   it must never be returned silently as if converged. The GPU tolerance is
+   pinned at 1e-8 rather than inheriting cuGraph's default.
+2. `graph/audit.py`: `PAGERANK_PASSES_PER_PROBE` was justified as
+   "max_iter=100 in both backends" -- a cap that no longer holds. Re-derived
+   as a measurement (50 iterations on snapshots 1-2, 75 on snapshot 3), so the
+   value and therefore every audit budget, verdict and framing cost is
+   unchanged.
+3. `scripts/benchmark.py`: found while re-measuring. `merge_json_run` rewrote
+   `docs/perf/benchmarks.json` as `{"runs": ...}` flat, which would have
+   **deleted the crossover section** -- added one commit earlier and served by
+   `GET /benchmarks` -- on the next benchmark run. It now rewrites the
+   document and preserves keys it does not own. Pinned by a test.
+
+### Honest consequences
+
+- **PageRank speedups fall**, because the CPU column now does the whole job
+  and the GPU is held to a tighter tolerance: snapshot 3 goes 9.69x -> 6.70x,
+  snapshot 2 12.30x -> 10.16x, snapshot 1 3.09x -> 2.23x. Louvain and
+  load_edgelist are unaffected (49.75x, 38.06x on snapshot 3).
+- **The 18.4x audit-pass figure predates this** and has not been re-measured;
+  its CPU side ran early-stopping PageRank probes, so it is a lower bound on
+  the gap, not an overstatement. Left as-is rather than quietly rescaled.
+- **The flags in the live database are still the unconverged ones.** Verified
+  for snapshot 2, whose latest stored PageRank run is the CPU one: stored flags
+  match the unconverged recomputation exactly (2,539/2,539) and differ from the
+  converged one by 249 each way. 249 wallets are flagged that should not be,
+  and 249 that should be are not. Correcting it means re-running the detectors,
+  which changes stored results -- a deliberate data change, not done here.
+

@@ -1,9 +1,11 @@
 # Benchmark: CPU vs GPU
 
-Re-measured 2026-10-11 (Phase 11), after the Phase 10 database work. Both
-passes run in **one process inside WSL2**, so the only thing that differs
-between the columns is the backend. Each stage is timed 3 times and the
-**median** reported. See `docs/GPU_SETUP.md` for the environment.
+Re-measured 2026-10-11, after the PageRank convergence fix described below
+(which changed the CPU numbers, so every table here is from that re-run; the
+Phase 11 figures it replaced are kept only in the comparison table near the
+end). Both passes run in **one process inside WSL2**, so the only thing that
+differs between the columns is the backend. Each stage is timed 3 times and
+the **median** reported. See `docs/GPU_SETUP.md` for the environment.
 
 | | |
 |---|---|
@@ -33,34 +35,40 @@ All three snapshots record `backends.gpu` in `docs/perf/benchmarks.json`.
 
 | Task | CPU s | GPU s | Speedup |
 |---|---|---|---|
-| load_edgelist | 0.0869 | 0.0211 | 4.12× |
-| pagerank | 0.0365 | 0.0118 | 3.09× |
-| louvain | 1.4228 | 0.1552 | 9.17× |
-| bfs | 0.0003 | 0.0162 | **0.02× (GPU 50× slower)** |
+| load_edgelist | 0.0932 | 0.0149 | 6.26× |
+| pagerank | 0.0504 | 0.0226 | 2.23× |
+| louvain | 1.6630 | 0.2053 | 8.10× |
+| bfs | 0.0065 | 0.0334 | **0.19× (GPU 5× slower)** |
 
 ## snapshot 2 — `live_full_20260924T214007` (253,863 vertices, 355,989 edges)
 
 | Task | CPU s | GPU s | Speedup |
 |---|---|---|---|
-| load_edgelist | 1.2554 | 0.0602 | 20.85× |
-| pagerank | 0.5152 | 0.0419 | 12.30× |
-| louvain | 25.4504 | 0.7825 | 32.52× |
-| bfs | 0.0646 | 0.0375 | 1.72× |
+| load_edgelist | 1.3939 | 0.0552 | 25.25× |
+| pagerank | 0.7009 | 0.0690 | 10.16× |
+| louvain | 30.1276 | 0.8771 | 34.35× |
+| bfs | 0.0841 | 0.0484 | 1.74× |
 
 ## snapshot 3 — `live_full_20260925T095654` (455,073 vertices, 698,273 edges)
 
 | Task | CPU s | GPU s | Speedup |
 |---|---|---|---|
-| load_edgelist | 2.6754 | 0.0603 | 44.37× |
-| pagerank | 1.0008 | 0.1033 | 9.69× |
-| louvain | 52.4882 | 1.0886 | 48.22× |
-| bfs | 0.1074 | 0.0390 | 2.75× |
+| load_edgelist | 2.8659 | 0.0753 | 38.06× |
+| pagerank | 1.4955 | 0.2233 | 6.70× |
+| louvain | 60.9886 | 1.2259 | 49.75× |
+| bfs | 0.1308 | 0.0553 | 2.37× |
 
 ## Audit pass (`pagerank_threshold`, snapshot 2, 5 flags sampled)
 
 | Task | CPU | GPU | Speedup |
 |---|---|---|---|
 | audit_flag | 14.02 s/flag (4.3 flags/min) | 0.76 s/flag (78.9 flags/min) | **18.4×** |
+
+> Measured **before** the PageRank convergence fix below, and not yet
+> re-measured. The CPU side of this figure ran PageRank probes that stopped
+> early, so the real CPU cost is somewhat higher and this 18.4× is a
+> **lower** bound on the gap, not an overstatement. It is left here as the
+> last honestly-measured number rather than quietly rescaled.
 
 Only `pagerank_threshold` has a GPU path — its framing-cost search re-runs
 masked PageRank per candidate. The other four detectors' audits are CPU
@@ -118,28 +126,89 @@ Phase 10 are not on this path. Comparing Phase 4 against Phase 11:
 Differences are run-to-run variation (±20% on the small tasks), not an effect
 of the database change. Reported as a non-result rather than dressed up.
 
-## Still unresolved: the two backends do not agree on PageRank
+## Resolved: why the two backends disagreed on PageRank
 
-This remains open from Phase 4 and is **not** fixed by anything here. On
-snapshot 3 the CPU and GPU produce materially different PageRank scores:
-disjoint top-5 wallets, 84/100 top-100 overlap, and GPU top scores ~3.5×
-larger — while overall rank correlation stays at 0.9995.
+Open from Phase 4 to Phase 11, and recorded in all of them as a weighting
+problem. It was not. **NetworkX was never converging.**
 
-Ruled out by measurement: the GPU is not dropping edge weights (an unweighted
-CPU run matches it *less*, 35/100 overlap), and it is not float32 precision
-(cuGraph keeps `edge_weight` float64 end to end). What remains is the weights
-themselves — `edge_weight` is wei, and **71.3% of edges carry weight 0** on
-that snapshot, so the two libraries' differing dangling-vertex conventions
-dominate.
+NetworkX stops when `sum|x - x_last| < N * tol`, where `N` is the vertex
+count. Its default `tol=1e-6` therefore permits a total L1 error of
+**0.455** on snapshot 3's 455,073 vertices — on a distribution that sums to
+1. The CPU path was quitting several iterations early, and the top of the
+distribution is exactly where those iterations still matter:
 
-**Why this matters more than the speedups:** `pagerank_threshold` flags
-wallets whose score crosses an *absolute* threshold, so whether RAPIDS happens
-to be installed can change which wallets get flagged. Every speedup above is a
-timing comparison; it is **not** a claim that both backends computed the same
-answer. `graph/backend.py`'s own docstring says GPU availability must never
-silently change what a run computed — this is a concrete case where it does,
-and it needs a deliberate decision (run PageRank unweighted, compress the
-weight range with `log1p`, or pin PageRank to one backend).
+| snapshot 3, wei weights | Top PageRank score |
+|---|---|
+| CPU, default `tol=1e-6` | 0.00097 |
+| CPU, converged | 0.00349 |
+| GPU | 0.00349 |
+
+That 3.6× gap is the "GPU top scores ~3.5× larger" previously attributed to
+dangling-vertex conventions and to 71.3% of edges carrying weight 0. The
+weights were never the problem — the earlier evidence (an unweighted CPU run
+matching *less*) was itself measured with the unconverged CPU path.
+
+### What it cost in flags, not in scores
+
+`scripts/pagerank_agreement.py` (new) measures the disagreement the only way
+that matters: how many wallets `pagerank_threshold` actually flags, selected
+through `select_pagerank_threshold_flags` — the production path, not a
+reimplementation.
+
+| Snapshot | Flags | Agreed before | Agreed after |
+|---|---|---|---|
+| 1 (35,776 edges) | 192 | 189 (Jaccard 0.969) | **192 (1.0000)** |
+| 2 (355,989 edges) | 2,539 | 2,290 (Jaccard 0.821) | **2,539 (1.0000)** |
+| 3 (698,273 edges) | 4,551 | 3,053 (Jaccard 0.505) | **4,551 (1.0000)** |
+
+After the fix, top-100 overlap is 100/100 and Spearman 1.0000 on both
+snapshots, under raw-wei, unweighted *and* `log1p` weights — so the three-way
+weighting decision this section used to call for is moot. It was a
+convergence bug, not a modelling choice.
+
+Nor was it ties at the percentile cut: exactly one wallet sits on the cut
+score, and none of the disagreeing wallets were within 1e-9 of it.
+
+### The fix, and what it cost
+
+`graph/backend.py` now derives the CPU tolerance from an absolute L1 budget,
+`tol = PAGERANK_L1_TARGET / N`, which makes the criterion independent of
+graph size — the actual root cause — with `max_iter=1000`. Non-convergence
+is logged loudly and falls back rather than killing a pipeline run, because
+an unconverged score that looks converged is the bug being fixed here. The
+GPU tolerance is pinned at `1e-8` instead of inheriting cuGraph's default
+(which already converged on these graphs, but was not ours to rely on).
+
+Converging is cheap: 75 power iterations on the largest snapshot, and CPU
+PageRank goes from 0.88 s to 1.03 s on snapshot 3 in isolation. The honest
+consequence is that the published PageRank speedups fall, because the CPU
+column now does the whole job and the GPU is held to a tighter tolerance:
+
+| Snapshot | PageRank, before | PageRank, after |
+|---|---|---|
+| 1 | 3.09× | 2.23× |
+| 2 | 12.30× | 10.16× |
+| 3 | 9.69× | 6.70× |
+
+`scripts/benchmark.py`'s own result-agreement check now reports the **same
+top PageRank wallet on both backends** for all three snapshots (173, 1868,
+1868), where the two used to pick different wallets entirely.
+
+### What is still wrong in the database
+
+The fix changes what the detector computes, so the flags already stored in
+Postgres are the unconverged ones. Verified directly for snapshot 2, whose
+latest stored PageRank run is the CPU one (`analysis_run` 10):
+
+- stored flags vs the unconverged recomputation: **2,539 of 2,539 identical**
+- stored flags vs the converged recomputation: **2,290 shared, 249 wrong in
+  each direction** (9.8%)
+
+So 249 wallets are flagged in the live database that should not be, and 249
+that should be are not. Snapshot 1's stored run came from the GPU and is
+unaffected; snapshot 3 has no stored PageRank run at all. Re-running the
+detectors would correct this and change stored results, which is a deliberate
+data change and has not been done.
 
 ## Reproducing
 

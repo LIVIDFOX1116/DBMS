@@ -267,18 +267,28 @@ def build_json_run(snapshot_id, snapshot_name, vertex_count, edge_count, repeats
 
 def merge_json_run(path: Path, run: dict) -> list:
     """Replaces any previous run for the same snapshot, so re-benchmarking a
-    snapshot updates it in place instead of growing a pile of stale rows."""
-    runs = []
+    snapshot updates it in place instead of growing a pile of stale rows.
+
+    Only the "runs" key is this script's to own: `scripts/
+    benchmark_crossover.py` writes a "crossover" section into the same file
+    and `GET /benchmarks` serves both, so rewrite the document rather than
+    replacing it -- this used to emit `{"runs": ...}` flat, which silently
+    deleted the crossover table from the dashboard on the next run."""
+    document = {}
     if path.exists():
         try:
-            runs = json.loads(path.read_text(encoding="utf-8")).get("runs", [])
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                document = loaded
         except (json.JSONDecodeError, OSError):
-            runs = []
+            document = {}
+    runs = document.get("runs") or []
     runs = [r for r in runs if r.get("snapshot_id") != run["snapshot_id"]]
     runs.append(run)
     runs.sort(key=lambda r: r.get("edge_count") or 0)
+    document["runs"] = runs
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"runs": runs}, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     return runs
 
 

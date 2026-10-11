@@ -17,6 +17,7 @@ importability the way it always has, not the new gate.
 import os
 import pathlib
 import sys
+import types
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -24,6 +25,7 @@ os.environ.setdefault("FRAMECHECK_USE_GPU_GRAPH", "1")
 
 import pandas as pd
 
+from graph import backend
 from graph.backend import GraphBackend, gpu_available
 
 
@@ -102,6 +104,68 @@ class _GraphBackendTests:
 
 class TestGraphBackendCPU(_GraphBackendTests, unittest.TestCase):
     force_cpu = True
+
+
+class TestPageRankConvergence(unittest.TestCase):
+    """NetworkX converges on sum|x - x_last| < N * tol, so a fixed tol gets
+    looser as the graph grows. That is what made the CPU and GPU backends
+    disagree on 1,498 of snapshot 3's 4,551 pagerank_threshold flags, so the
+    N-scaling is pinned here rather than left as a comment."""
+
+    def test_tolerance_scales_with_vertex_count(self):
+        self.assertAlmostEqual(backend.cpu_pagerank_tol(1), backend.PAGERANK_L1_TARGET)
+        self.assertAlmostEqual(backend.cpu_pagerank_tol(1_000), backend.PAGERANK_L1_TARGET / 1_000)
+        # The whole point: NetworkX multiplies tol by N again, so the
+        # effective L1 budget is the same no matter how big the graph is.
+        for n in (10, 10_000, 455_073):
+            self.assertAlmostEqual(backend.cpu_pagerank_tol(n) * n, backend.PAGERANK_L1_TARGET)
+
+    def test_empty_graph_does_not_divide_by_zero(self):
+        self.assertEqual(backend.cpu_pagerank_tol(0), backend.PAGERANK_L1_TARGET)
+
+    def test_cpu_path_asks_networkx_for_the_scaled_tolerance(self):
+        """The tolerance only helps if it actually reaches NetworkX -- the
+        original bug was a default nobody passed."""
+        b = GraphBackend(force_cpu=True)
+        G = b.load_edgelist(synthetic_edges())
+        seen = {}
+        real_pagerank = b._networkx.pagerank
+
+        def spy(graph, **kwargs):
+            seen.update(kwargs)
+            return real_pagerank(graph, **kwargs)
+
+        b._networkx = types.SimpleNamespace(
+            pagerank=spy, PowerIterationFailedConvergence=b._networkx.PowerIterationFailedConvergence,
+        )
+        b.pagerank(G)
+        self.assertEqual(seen["tol"], backend.cpu_pagerank_tol(G.number_of_nodes()))
+        self.assertEqual(seen["max_iter"], backend.PAGERANK_MAX_ITER)
+        self.assertEqual(seen["weight"], "edge_weight")
+
+    def test_non_convergence_is_logged_and_falls_back_rather_than_raising(self):
+        """A pipeline run must not die on a graph that won't converge, but it
+        must not look converged either."""
+        b = GraphBackend(force_cpu=True)
+        G = b.load_edgelist(synthetic_edges())
+        real_nx = b._networkx
+        calls = []
+
+        def stubborn(graph, **kwargs):
+            calls.append(kwargs)
+            if "tol" in kwargs:
+                raise real_nx.PowerIterationFailedConvergence(kwargs["max_iter"])
+            return real_nx.pagerank(graph, **kwargs)
+
+        b._networkx = types.SimpleNamespace(
+            pagerank=stubborn, PowerIterationFailedConvergence=real_nx.PowerIterationFailedConvergence,
+        )
+        with self.assertLogs("graph.backend", level="WARNING") as logged:
+            df = b.pagerank(G)
+        self.assertEqual(len(calls), 2, "should retry once without the tight tolerance")
+        self.assertNotIn("tol", calls[1])
+        self.assertIn("NOT comparable", "\n".join(logged.output))
+        self.assertEqual(len(df), G.number_of_nodes())
 
 
 @unittest.skipUnless(gpu_available(), "RAPIDS (cudf+cugraph) not installed -- expected off the GPU laptops")
