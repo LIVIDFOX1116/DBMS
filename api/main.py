@@ -16,6 +16,7 @@ Run it:
     curl localhost:8000/docs      # interactive OpenAPI docs, free from FastAPI
 """
 import csv
+import heapq
 import io
 import json
 import logging
@@ -387,6 +388,242 @@ def list_clusters(run_id: Optional[int] = None):
                         ORDER BY c.run_id DESC LIMIT 100"""
                 )
             return rows_as_dicts(cur)
+
+
+CLUSTER_ALGORITHM = "louvain"
+
+
+def resolve_cluster_run_id(cur, snapshot_id: int):
+    """The newest Louvain run on this snapshot. Cluster rows and flag rows
+    live under DIFFERENT analysis_run ids -- one is a Louvain run, the
+    other a detector run -- so the only thing that relates them is the
+    snapshot they were both computed on. Matching run_id to run_id across
+    the two would silently return nothing."""
+    cur.execute(
+        """
+        SELECT ar.run_id FROM analysis_run ar
+        JOIN algorithm al ON al.algorithm_id = ar.algorithm_id
+        WHERE ar.snapshot_id = %s AND al.algorithm_name = %s
+        ORDER BY ar.run_id DESC LIMIT 1
+        """,
+        (snapshot_id, CLUSTER_ALGORITHM),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def resolve_snapshot_for_run(cur, run_id: int):
+    cur.execute("SELECT snapshot_id FROM analysis_run WHERE run_id = %s", (run_id,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+# Registered BEFORE /clusters/{cluster_id}: FastAPI matches in declaration
+# order, so the typed-int route would otherwise capture "top-flagged" and
+# reject it as a 422 before this handler is ever reached.
+@app.get("/clusters/top-flagged")
+def clusters_top_flagged(run_id: Optional[int] = None, snapshot_id: Optional[int] = None, limit: int = 8):
+    """Clusters holding the most distinct flagged wallets, for Multiview's
+    "Top 8 flagged". Ranked by flagged wallets rather than raw flag count
+    so one wallet carrying five detector flags doesn't outrank five
+    separately flagged wallets."""
+    if limit < 1 or limit > 8:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 8")
+    if using_mock():
+        return load_mock().get("clusters_top_flagged", [])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if snapshot_id is None:
+                if run_id is not None:
+                    snapshot_id = resolve_snapshot_for_run(cur, run_id)
+                    if snapshot_id is None:
+                        raise HTTPException(status_code=404, detail="no such run")
+                else:
+                    cur.execute("SELECT snapshot_id FROM flag f JOIN analysis_run ar ON ar.run_id = f.run_id "
+                                "ORDER BY f.flag_id DESC LIMIT 1")
+                    row = cur.fetchone()
+                    if row is None:
+                        return []
+                    snapshot_id = row[0]
+            cluster_run_id = resolve_cluster_run_id(cur, snapshot_id)
+            if cluster_run_id is None:
+                return []
+            detector_run_ids = resolve_latest_run_ids(cur, snapshot_id)
+            if not detector_run_ids:
+                return []
+            cur.execute(
+                """
+                WITH flagged AS (
+                    SELECT f.flag_id, f.wallet_id, fa.verdict
+                    FROM flag f
+                    LEFT JOIN LATERAL (
+                        SELECT verdict FROM flag_audit
+                        WHERE flag_id = f.flag_id
+                        ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
+                    ) fa ON TRUE
+                    WHERE f.run_id = ANY(%s)
+                )
+                SELECT c.cluster_id, c.community_label, c.member_count,
+                       c.cluster_type, c.risk_score,
+                       COUNT(DISTINCT fl.wallet_id) AS flagged_wallets,
+                       COUNT(*) AS flag_count,
+                       COUNT(*) FILTER (WHERE fl.verdict = 'frameable') AS frameable_count,
+                       COUNT(*) FILTER (WHERE fl.verdict IS NOT NULL) AS audited_count
+                FROM cluster c
+                JOIN cluster_member cm ON cm.cluster_id = c.cluster_id
+                JOIN flagged fl ON fl.wallet_id = cm.wallet_id
+                WHERE c.run_id = %s
+                GROUP BY c.cluster_id, c.community_label, c.member_count,
+                         c.cluster_type, c.risk_score
+                ORDER BY flagged_wallets DESC, flag_count DESC, c.cluster_id
+                LIMIT %s
+                """,
+                (detector_run_ids, cluster_run_id, limit),
+            )
+            rows = rows_as_dicts(cur)
+            for row in rows:
+                row["snapshot_id"] = snapshot_id
+                row["frameable_share"] = (
+                    row["frameable_count"] / row["audited_count"] if row["audited_count"] else None
+                )
+            return rows
+
+
+def select_connected_subgraph(ranked_wallet_ids: list, adjacency: dict, limit: int) -> list:
+    """Pick `limit` wallets that actually hang together, not just the
+    `limit` highest-ranked ones.
+
+    Taking the top N by PageRank out of a big cluster looks reasonable and
+    renders as a dust cloud: on cluster 351299 (26,594 members) the top 300
+    came back as 76 disconnected fragments with 22% of nodes having no edge
+    to any other node shown. That is not a picture of a cluster.
+
+    So: start from the highest-ranked wallet and expand outward along real
+    edges, taking the best-ranked frontier node each step, which yields a
+    connected component. If that component is exhausted before the budget
+    is, restart from the next-highest unvisited wallet -- so a panel shows
+    whole structures, largest first, rather than scattered singletons.
+    """
+    rank = {wallet_id: i for i, wallet_id in enumerate(ranked_wallet_ids)}
+    chosen, seen = [], set()
+    for seed in ranked_wallet_ids:
+        if len(chosen) >= limit:
+            break
+        if seed in seen:
+            continue
+        # A heap, not a sorted list: the frontier of a hub node can be
+        # thousands wide, and re-sorting it on every step is what turns a
+        # 300-node panel into a visible stall.
+        frontier = [(rank[seed], seed)]
+        seen.add(seed)
+        while frontier and len(chosen) < limit:
+            _, current = heapq.heappop(frontier)
+            chosen.append(current)
+            for neighbour in adjacency.get(current, ()):
+                if neighbour not in seen:
+                    seen.add(neighbour)
+                    heapq.heappush(frontier, (rank.get(neighbour, len(rank)), neighbour))
+    return chosen
+
+
+@app.get("/clusters/{cluster_id}/subgraph")
+def cluster_subgraph(cluster_id: int, limit: int = 300):
+    """One cluster's members and the edges between them, for a Multiview
+    panel. Truncation is by connected expansion from the highest-PageRank
+    member (see select_connected_subgraph), and is always reported, since a
+    silently truncated graph is a misleading one."""
+    if limit < 1 or limit > 2000:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 2000")
+    if using_mock():
+        return load_mock().get("cluster_subgraphs", {}).get(str(cluster_id),
+                                                            {"nodes": [], "edges": [], "truncated": False})
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT c.cluster_id, c.run_id, c.member_count, c.community_label, ar.snapshot_id
+                   FROM cluster c JOIN analysis_run ar ON ar.run_id = c.run_id
+                   WHERE c.cluster_id = %s""",
+                (cluster_id,),
+            )
+            meta = cur.fetchone()
+            if meta is None:
+                raise HTTPException(status_code=404, detail="no such cluster")
+            _cid, _run_id, member_count, community_label, snapshot_id = meta
+
+            # PageRank lives in vertex_metric under its own run; absent (not
+            # yet computed) it is NULL and ordering falls back to wallet_id,
+            # which is stable rather than arbitrary.
+            cur.execute(
+                """
+                SELECT cm.wallet_id, w.address, vm.metric_value AS pagerank,
+                       fv.verdict, fv.flag_count
+                FROM cluster_member cm
+                JOIN wallet w ON w.wallet_id = cm.wallet_id
+                LEFT JOIN LATERAL (
+                    SELECT vm.metric_value FROM vertex_metric vm
+                    JOIN analysis_run ar ON ar.run_id = vm.run_id
+                    WHERE vm.wallet_id = cm.wallet_id AND vm.metric_name = 'pagerank'
+                      AND ar.snapshot_id = %s
+                    ORDER BY vm.run_id DESC LIMIT 1
+                ) vm ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT COUNT(*) AS flag_count,
+                           MAX(CASE WHEN a.verdict = 'frameable' THEN 1 ELSE 0 END) AS any_frameable,
+                           COUNT(a.verdict) AS audited
+                    FROM flag f
+                    JOIN analysis_run far ON far.run_id = f.run_id
+                    LEFT JOIN LATERAL (
+                        SELECT verdict FROM flag_audit
+                        WHERE flag_id = f.flag_id
+                        ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
+                    ) a ON TRUE
+                    WHERE f.wallet_id = cm.wallet_id AND far.snapshot_id = %s
+                ) raw ON TRUE
+                CROSS JOIN LATERAL (
+                    SELECT raw.flag_count,
+                           CASE WHEN raw.flag_count = 0 THEN 'unflagged'
+                                WHEN raw.audited = 0 THEN 'unaudited'
+                                WHEN raw.any_frameable = 1 THEN 'frameable'
+                                ELSE 'robust' END AS verdict
+                ) fv
+                WHERE cm.cluster_id = %s
+                ORDER BY vm.metric_value DESC NULLS LAST, cm.wallet_id
+                """,
+                (snapshot_id, snapshot_id, cluster_id),
+            )
+            ranked = rows_as_dicts(cur)
+
+            # Every edge inside the cluster, so the expansion below walks
+            # real structure. Cheap even at the extreme: the 26,594-member
+            # cluster's 28,870 internal edges come back in ~0.05s.
+            cur.execute(
+                """SELECT src_wallet_id, dst_wallet_id, edge_weight, transfer_count
+                   FROM snapshot_edge
+                   WHERE snapshot_id = %s
+                     AND src_wallet_id IN (SELECT wallet_id FROM cluster_member WHERE cluster_id = %s)
+                     AND dst_wallet_id IN (SELECT wallet_id FROM cluster_member WHERE cluster_id = %s)""",
+                (snapshot_id, cluster_id, cluster_id),
+            )
+            internal_edges = rows_as_dicts(cur)
+
+            adjacency = {}
+            for edge in internal_edges:
+                adjacency.setdefault(edge["src_wallet_id"], set()).add(edge["dst_wallet_id"])
+                adjacency.setdefault(edge["dst_wallet_id"], set()).add(edge["src_wallet_id"])
+
+            keep = set(select_connected_subgraph([n["wallet_id"] for n in ranked], adjacency, limit))
+            nodes = [n for n in ranked if n["wallet_id"] in keep]
+            edges = [e for e in internal_edges
+                     if e["src_wallet_id"] in keep and e["dst_wallet_id"] in keep]
+            return {
+                "cluster_id": cluster_id,
+                "community_label": community_label,
+                "snapshot_id": snapshot_id,
+                "member_count": member_count,
+                "nodes": nodes,
+                "edges": edges,
+                "truncated": member_count is not None and len(nodes) < member_count,
+            }
 
 
 @app.get("/clusters/{cluster_id}")
