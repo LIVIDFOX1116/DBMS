@@ -80,6 +80,30 @@ class TestTopFlaggedRouting:
     def test_mock_mode_returns_a_list_not_an_error(self):
         assert isinstance(client.get("/clusters/top-flagged").json(), list)
 
+    def test_demo_mode_actually_has_clusters_to_show(self):
+        """Both Multiview endpoints have had mock branches since Phase 9, and
+        mock_data.json had neither key -- so a fresh install, which starts in
+        demo mode, rendered eight empty panels. The data is part of the
+        contract, not a nicety."""
+        clusters = client.get("/clusters/top-flagged?limit=8").json()
+        assert len(clusters) == 8, "demo mode should fill all eight panels"
+        for entry in clusters:
+            assert entry["flag_count"] > 0, "a top-FLAGGED cluster with no flags is not one"
+
+    def test_every_demo_cluster_has_a_subgraph_to_render(self):
+        for entry in client.get("/clusters/top-flagged?limit=8").json():
+            sub = client.get(f"/clusters/{entry['cluster_id']}/subgraph").json()
+            assert sub["nodes"], f"cluster {entry['cluster_id']} has no nodes in demo mode"
+            # Every edge must land on a node the panel actually holds, or the
+            # renderer draws a line to nowhere.
+            ids = {n["wallet_id"] for n in sub["nodes"]}
+            for edge in sub["edges"]:
+                assert edge["src_wallet_id"] in ids and edge["dst_wallet_id"] in ids
+
+    def test_demo_subgraphs_report_truncation_rather_than_hiding_it(self):
+        sub = client.get("/clusters/21/subgraph").json()
+        assert sub["truncated"] is True, "these panels are capped at 40 nodes and must say so"
+
 
 class TestTopFlaggedLive:
     def _conn(self, rows, fetchone_values):

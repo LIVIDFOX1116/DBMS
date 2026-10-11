@@ -663,11 +663,28 @@ def import_dataset(conn, path, progress=None) -> dict:
             cur.execute(sql.SQL("ANALYZE {}").format(sql.Identifier(table)))
     conn.commit()
 
+    # Materialized views are not filled by COPY. mv_cluster_flag_stats
+    # (migration 008) is created empty, so straight after an import
+    # /clusters/top-flagged returned [] and Multiview showed eight blank
+    # panels on a database that held 84 clusters with flagged wallets --
+    # the shipped demo data would have looked broken on first use.
+    #
+    # Plain REFRESH, not CONCURRENTLY: concurrent refresh requires the view
+    # to have been populated at least once, which is exactly what is not true
+    # here, and nothing else is reading this database mid-import anyway.
+    refreshed = []
+    with conn.cursor() as cur:
+        cur.execute("SELECT matviewname FROM pg_matviews WHERE schemaname = 'public' ORDER BY matviewname")
+        for (view,) in cur.fetchall():
+            cur.execute(sql.SQL("REFRESH MATERIALIZED VIEW {}").format(sql.Identifier(view)))
+            refreshed.append(view)
+    conn.commit()
+
     log.info("imported dataset %s: %d tables, %d rows (%d seed tables kept, %d id fields remapped)",
              path, len(loaded), sum(loaded.values()), len(skipped), sum(remapped.values()))
     return {"manifest": manifest, "loaded": loaded, "skipped_seed_tables": skipped,
             "remapped_ids": remapped, "total_rows": sum(loaded.values()),
-            "sequences_reset": len(sequences)}
+            "sequences_reset": len(sequences), "views_refreshed": refreshed}
 
 
 def table_inventory(conn) -> list:
