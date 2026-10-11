@@ -534,3 +534,71 @@ live query and looked perfect on the eight rows anyone would have eyeballed.
 - **Partitioning** was assessed and rejected: `transaction` never appeared in the slow query list,
   so partitioning 1.3 M rows would add planning overhead and migration risk for no measured gain.
 
+## Phase 11: CPU vs GPU, re-measured (2026-10-11)
+
+The brief's question was "did the GPU actually run, or did everything fall back to CPU?" --
+answered by evidence rather than by the recorded backend string -- plus a re-measurement after
+the Phase 10 database work and a hunt for the crossover point.
+
+| Check | Result |
+|---|---|
+| GPU actually executing | **Yes.** Graph object is `cugraph.structure.graph_classes.Graph`; the CPU path returns `networkx.DiGraph`. Device memory 838 MB -> 876 MB on graph build |
+| Re-benchmark, snapshots 1/2/3 | completed, 3 runs each, median; `backends.gpu` recorded on all three |
+| Audit pass CPU vs GPU | 14.02 s/flag -> 0.76 s/flag (18.4x) |
+| Audit benchmark cleanup | verified directly: 260 rows before, 260 after |
+| Crossover sweep, 2k-640k edges | completed on snapshot 3 |
+| Regression guard after all of it | snapshots 1 and 2 **identical** (both sha256 match) |
+| Benchmarks tab | crossover table renders above the per-snapshot panels, no console errors |
+| Python suite | 243 passed, 5 skipped; ruff clean |
+
+### The answer to the brief's question
+
+The GPU ran. Three independent signals, not one: `gpu_available()` is true, the graph object is a
+cuGraph `Graph` (a fallback would be a NetworkX `DiGraph` -- which is exactly what the CPU path
+returns in the same script), and GPU device memory genuinely grows when the graph is built.
+
+### The crossover, which is the part the speedups were hiding
+
+"The GPU is 48x faster" is true for Louvain at 698k edges and badly misleading in general. On the
+same hardware **BFS is ~50x slower at 2,000 edges** and does not overtake the CPU until somewhere
+between 20,000 and 40,000. `scripts/benchmark_crossover.py` (new) measures this rather than
+asserting it:
+
+- `pagerank`, `louvain`: GPU ahead from the smallest size measured (2,000 edges)
+- `load_edgelist`: crosses between 5,000 and 10,000 edges
+- `bfs`: crosses between 20,000 and 40,000 edges
+
+BFS is not simply "slower"; it is doing more work. The CPU BFS stops once it has reached what it
+can reach (76 wallets on snapshot 1), while `cugraph.bfs` returns a row for every vertex.
+
+### Did the database work move the numbers? No.
+
+Expected, and stated as a non-result rather than dressed up: `scripts/benchmark.py` reads the
+snapshot Parquet files, not Postgres, so Phase 10's indexes and materialized view are not on this
+path. Louvain on snapshot 2 went 33.68x -> 32.52x and on snapshot 3 44.75x -> 48.22x, which is
+run-to-run variation, not an effect.
+
+### Something I could not fully explain
+
+Four `flag_audit` rows dated during this session remain for flags 1776-1779. They are
+**byte-identical** to those flags' existing audits (same verdict, same framing cost, same method
+-- the audit is deterministic), and the regression guard confirms no conclusion changed. But the
+audit benchmark ran `--detector pagerank_threshold`, and these are `bfs_proximity` flags, so it
+did not create them; the API logged no job in that window either. I could not pin the provenance
+and am recording that rather than inventing an explanation.
+
+One real weakness did surface while chasing it: `benchmark_audit.py` cleans up by deleting
+`flag_audit_id > max_id_before`. That is correct in isolation (verified: 260 rows before, 260
+after) but it is **not safe against concurrent writers** -- anything else inserting an audit while
+the benchmark runs would have its row deleted too. Fine for a single-operator tool, worth knowing
+before anything runs analyses in parallel.
+
+### Still unresolved, and more important than any speedup
+
+CPU and GPU PageRank still disagree on snapshot 3 (disjoint top-5, 84/100 top-100 overlap, GPU top
+scores ~3.5x larger), because `edge_weight` is wei and 71.3% of edges carry weight 0, so the two
+libraries' dangling-vertex conventions dominate. `pagerank_threshold` compares against an
+**absolute** threshold, so whether RAPIDS is installed can change which wallets get flagged. Every
+speedup in `docs/benchmark_results.md` is a timing comparison and explicitly **not** a claim that
+both backends computed the same answer. This needs a deliberate decision and has not had one.
+
