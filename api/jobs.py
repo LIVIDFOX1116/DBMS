@@ -15,8 +15,9 @@ is written down rather than hidden:
   same CPU, which is slower AND harder to reason about than running them in
   order.
 
-Jobs only ever INSERT: detectors add flag rows, audits add flag_audit rows.
-Nothing here deletes or rewrites existing analysis.
+Jobs only ever INSERT: detectors add flag rows, audits add flag_audit rows,
+ingestion upserts wallets/transactions. Nothing here deletes or rewrites
+existing analysis.
 """
 import logging
 import threading
@@ -26,13 +27,15 @@ from dataclasses import dataclass, field
 
 import psycopg2
 
+from api import dbsetup
 from graph import audit as audit_module
 from graph import detectors as detectors_module
-from ingestion import config
+from ingestion import config, ingest_subgraph
+from ingestion.etherscan_client import BudgetExhausted, EtherscanClient
 
 log = logging.getLogger("framecheck.jobs")
 
-JOB_TYPES = ("detectors", "audit")
+JOB_TYPES = ("detectors", "audit", "ingest")
 MAX_REMEMBERED_JOBS = 50
 
 
@@ -44,6 +47,12 @@ class Job:
     seed_wallet_id: int
     detector: str | None = None
     limit: int | None = None
+    # Job-type-specific input. The three job types do not take the same
+    # arguments -- an ingest run has an address, a hop count and a call
+    # budget, none of which mean anything to an audit -- and widening the
+    # dataclass with one optional field per type would make every job carry
+    # every other job's parameters.
+    params: dict = field(default_factory=dict)
     status: str = "queued"       # queued | running | done | failed | cancelled
     total: int = 0
     completed: int = 0
@@ -58,7 +67,7 @@ class Job:
         return {
             "job_id": self.job_id, "job_type": self.job_type,
             "snapshot_id": self.snapshot_id, "seed_wallet_id": self.seed_wallet_id,
-            "detector": self.detector, "limit": self.limit,
+            "detector": self.detector, "limit": self.limit, "params": self.params,
             "status": self.status, "total": self.total, "completed": self.completed,
             "message": self.message, "error": self.error, "result": self.result,
             "started_at": self.started_at, "finished_at": self.finished_at,
@@ -107,7 +116,8 @@ def cancel(job_id: str) -> bool:
 
 
 def start(job_type: str, snapshot_id: int, seed_wallet_id: int,
-          detector: str | None = None, limit: int | None = None) -> Job:
+          detector: str | None = None, limit: int | None = None,
+          params: dict | None = None) -> Job:
     if job_type not in JOB_TYPES:
         raise ValueError(f"unknown job type {job_type!r}")
     existing = active_job()
@@ -116,7 +126,8 @@ def start(job_type: str, snapshot_id: int, seed_wallet_id: int,
         raise RuntimeError(f"{article} {existing.job_type} job is already running")
 
     job = Job(job_id=uuid.uuid4().hex[:12], job_type=job_type, snapshot_id=snapshot_id,
-              seed_wallet_id=seed_wallet_id, detector=detector, limit=limit)
+              seed_wallet_id=seed_wallet_id, detector=detector, limit=limit,
+              params=dict(params or {}))
     _remember(job)
     global _running
     with _lock:
@@ -128,10 +139,16 @@ def start(job_type: str, snapshot_id: int, seed_wallet_id: int,
 def _run(job: Job) -> None:
     job.status = "running"
     try:
-        conn = psycopg2.connect(**config.PG_DSN)
+        # dbsetup.current_dsn(), not config.PG_DSN: the connection settings
+        # can be changed from the Database view at runtime, and a job that
+        # ignored that would write to whichever database the environment
+        # happened to name at import time.
+        conn = psycopg2.connect(**dbsetup.current_dsn())
         try:
             if job.job_type == "detectors":
                 _run_detectors(job, conn)
+            elif job.job_type == "ingest":
+                _run_ingest(job, conn)
             else:
                 _run_audit(job, conn)
         finally:
@@ -154,6 +171,77 @@ def _run(job: Job) -> None:
         with _lock:
             if _running is job:
                 _running = None
+
+
+def _run_ingest(job: Job, conn) -> None:
+    """Automatic ingestion: crawl outward from an address, inside the call
+    budget the user's Etherscan plan allows.
+
+    Two limits, because they are different things and only one of them is
+    about speed:
+
+    - `requests_per_second` paces the calls. Etherscan's free keys are
+      rate-limited per second, and the client has always throttled to
+      config.REQUESTS_PER_SECOND (4, deliberately under the documented
+      free-tier ceiling of 5/s). A user with a paid plan can raise it.
+    - `max_calls` is a hard stop. A rate limit alone does not stop a crawl
+      from quietly consuming an entire day's allowance over several hours,
+      which is someone else's resource to spend -- so the job stops at the
+      budget and says how far it got, rather than running until Etherscan
+      starts refusing.
+
+    Cancellation and the budget both land in the same place: crawl() calls
+    back once per address, right after that address is committed and
+    checkpointed, so stopping is clean and the rest resumes later.
+    """
+    address = (job.params.get("address") or config.CASE_STUDY_ADDRESS).strip()
+    hops = int(job.params.get("hops") or config.HOP_COUNT)
+    rps = float(job.params.get("requests_per_second") or config.REQUESTS_PER_SECOND)
+    max_calls = job.params.get("max_calls")
+    max_calls = int(max_calls) if max_calls else None
+
+    client = EtherscanClient(api_key=job.params.get("api_key") or None,
+                             requests_per_second=rps, max_calls=max_calls)
+    if not client.api_key:
+        raise RuntimeError("no Etherscan API key is set -- add one in Settings first")
+
+    job.total = 0          # a BFS frontier is not known in advance; see below
+    job.message = f"crawling {hops} hop(s) from {address[:10]}…"
+
+    def progress(stats):
+        # `total` stays 0 on purpose: the number of addresses a crawl will
+        # visit is discovered as it goes, so a percentage here would be a
+        # fabricated denominator. The UI shows a count and the live frontier
+        # size instead.
+        job.completed = stats["addresses_processed"]
+        remaining = client.calls_remaining()
+        job.message = (f"hop {stats['hops_completed']}, {stats['addresses_processed']} addresses, "
+                       f"{stats.get('frontier_size', 0)} queued, {client.calls_made} API calls"
+                       + (f", {remaining} left in budget" if remaining is not None else ""))
+        job.result = {"addresses_processed": stats["addresses_processed"],
+                      "hops_completed": stats["hops_completed"],
+                      "frontier_size": stats.get("frontier_size", 0),
+                      "calls_made": client.calls_made,
+                      "calls_remaining": remaining}
+
+    try:
+        stats = ingest_subgraph.crawl(address, hops, client=client, conn=conn,
+                                      resume=True, progress=progress,
+                                      should_stop=job._cancel.is_set)
+    except BudgetExhausted as e:
+        # Not a failure: the user set a budget and it was honoured. The job
+        # finishes as done, with the reason recorded.
+        job.message = f"stopped: {e}"
+        job.result = {**job.result, "stopped_reason": "budget_exhausted"}
+        log.info("ingest job %s stopped on budget after %d calls", job.job_id, client.calls_made)
+        return
+
+    job.result = {"addresses_processed": stats.get("addresses_processed", 0),
+                  "hops_completed": stats.get("hops_completed", 0),
+                  "calls_made": client.calls_made,
+                  "calls_remaining": client.calls_remaining(),
+                  "stopped_reason": "cancelled" if stats.get("stopped_early") else None}
+    job.completed = stats.get("addresses_processed", 0)
 
 
 def _run_detectors(job: Job, conn) -> None:

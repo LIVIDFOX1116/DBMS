@@ -38,11 +38,29 @@ class EtherscanError(RuntimeError):
     pass
 
 
+class BudgetExhausted(RuntimeError):
+    """The configured call budget ran out. Not an error in the usual sense --
+    the caller is expected to stop cleanly and report how far it got, which
+    is why it is its own type and not an EtherscanError."""
+
+
 class EtherscanClient:
-    def __init__(self, api_key: str = None, requests_per_second: float = None):
+    def __init__(self, api_key: str = None, requests_per_second: float = None, max_calls: int = None):
         self.api_key = api_key or config.ETHERSCAN_API_KEY
         self.min_interval = 1.0 / (requests_per_second or config.REQUESTS_PER_SECOND)
         self._last_call = 0.0
+        # Call accounting, for the app's automatic ingestion: a user on the
+        # free plan has a per-second rate AND a daily allowance, and the
+        # throttle above only addresses the first. `calls_made` is what the
+        # UI shows; `max_calls` is the budget the job stops at rather than
+        # burning through someone's whole day of API calls unasked.
+        self.calls_made = 0
+        self.max_calls = max_calls
+
+    def calls_remaining(self):
+        """None when no budget was set -- distinct from 0, which means the
+        budget is used up."""
+        return None if self.max_calls is None else max(0, self.max_calls - self.calls_made)
 
     def _throttle(self):
         elapsed = time.time() - self._last_call
@@ -56,7 +74,10 @@ class EtherscanClient:
             "apikey": self.api_key,
             **params,
         }
+        if self.max_calls is not None and self.calls_made >= self.max_calls:
+            raise BudgetExhausted(f"call budget of {self.max_calls} used up")
         self._throttle()
+        self.calls_made += 1
         resp = requests.get(config.ETHERSCAN_BASE_URL, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
@@ -123,3 +144,32 @@ class EtherscanClient:
         resp = requests.get(config.ETHERSCAN_BASE_URL, params=params, timeout=15)
         resp.raise_for_status()
         return resp.json().get("result") or "0x"
+
+
+    def get_api_limit(self) -> dict | None:
+        """What Etherscan itself says this key's allowance is, or None if it
+        will not say.
+
+        Etherscan exposes a plan/allowance lookup only for paid keys; a free
+        key gets an error back. This is therefore written to DEGRADE, not to
+        be relied on: any non-answer -- unsupported endpoint, error status,
+        unexpected shape, network failure -- returns None, and the caller
+        falls back to the rate the user configured. The app never claims to
+        know a plan it was not told about.
+        """
+        params = {"chainid": config.CHAIN_ID, "apikey": self.api_key,
+                  "module": "getapilimit", "action": "getapilimit"}
+        try:
+            self._throttle()
+            self.calls_made += 1
+            resp = requests.get(config.ETHERSCAN_BASE_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+        except (requests.RequestException, ValueError) as e:
+            log.info("Etherscan did not report an API limit for this key: %s", e)
+            return None
+        result = data.get("result")
+        if data.get("status") != "1" or not isinstance(result, dict):
+            log.info("Etherscan did not report an API limit for this key: %s", data.get("message"))
+            return None
+        return result
