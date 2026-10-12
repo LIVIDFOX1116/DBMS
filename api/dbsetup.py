@@ -208,14 +208,40 @@ def clear_runtime_dsn() -> None:
 # ------------------------------------------------------------------ operations
 
 
+# Hosts that mean "this machine", where an IPv6-first resolution can send a
+# connection somewhere nothing is listening.
+LOOPBACK_NAMES = {"localhost", "localhost.localdomain"}
+
+
 def connect(dsn: dict, dbname: str | None = None, autocommit: bool = False):
     """A one-off connection, outside api.main's pool: these operations run
     rarely, must not consume a pooled slot, and CREATE DATABASE needs its own
-    autocommit connection anyway."""
+    autocommit connection anyway.
+
+    Retries `localhost` as 127.0.0.1, because on Windows those are not the
+    same address and the difference is invisible from the UI. Measured on
+    this machine, with Postgres running in WSL: 127.0.0.1:5432 accepted every
+    connection, ::1:5432 refused every one -- and `localhost` resolves to ::1
+    first. WSL binds its listener on the VM's IPv4 loopback only, so a
+    perfectly correct-looking "localhost" setting fails intermittently
+    depending on which address the client tries, which is a miserable thing
+    to debug from a settings panel that says "unreachable".
+
+    The fallback is deliberately narrow: only for loopback names, only after
+    a connection error, and the caller is told it happened (see
+    server_probe), so nothing is silently rewritten behind the user's back.
+    """
     params = dict(dsn)
     if dbname is not None:
         params["dbname"] = dbname
-    conn = psycopg2.connect(**params)
+    try:
+        conn = psycopg2.connect(**params)
+    except psycopg2.OperationalError:
+        host = str(params.get("host", "")).lower()
+        if host not in LOOPBACK_NAMES:
+            raise
+        conn = psycopg2.connect(**{**params, "host": "127.0.0.1"})
+        log.info("connected to 127.0.0.1 after %s failed (IPv6 first, nothing listening on ::1)", host)
     if autocommit:
         conn.autocommit = True
     return conn
@@ -228,14 +254,21 @@ def server_probe(dsn: dict) -> dict:
     try:
         conn = connect(dsn, dbname="postgres")
     except psycopg2.OperationalError as e:
-        return {"reachable": False, "error": str(e).strip(), "database_exists": None, "server_version": None}
+        return {"reachable": False, "error": str(e).strip(), "database_exists": None,
+                "server_version": None, "connected_host": None}
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT version()")
             version = cur.fetchone()[0]
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dsn["dbname"],))
             exists = cur.fetchone() is not None
-        return {"reachable": True, "error": None, "database_exists": exists, "server_version": version}
+        # Which address actually answered. Differs from the configured host
+        # only when connect() had to fall back, and the UI says so -- an
+        # invisible fallback would turn one confusing problem into a
+        # different confusing problem later.
+        actual = conn.get_dsn_parameters().get("host")
+        return {"reachable": True, "error": None, "database_exists": exists,
+                "server_version": version, "connected_host": actual}
     finally:
         conn.close()
 
