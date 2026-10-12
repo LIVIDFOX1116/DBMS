@@ -769,6 +769,17 @@ table.dtable a { color: var(--accent-glow); }
         </select>
         <span class="fc-muted" id="fcFlagCount"></span>
       </div>
+      <!-- Feature 2: the chain is the first thing anyone reading a verdict
+           should see, so it sits above the flag list rather than in a tab
+           nobody opens. -->
+      <div class="panel fc-trail" id="fcTrailPanel">
+        <div class="fc-trail-row">
+          <div class="fc-trail-state" id="fcTrailState"><span class="fc-trail-dot checking"></span>checking the audit chain…</div>
+          <button class="btn fc-trail-recheck" id="fcTrailRecheck" title="Recompute every audit row's hash in the database">Re-verify</button>
+        </div>
+        <div class="fc-trail-detail" id="fcTrailDetail"></div>
+      </div>
+
       <div class="fc-split">
         <div class="panel fc-list">
           <div class="table-wrap">
@@ -964,6 +975,7 @@ document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("clic
 document.getElementById("fcDbSave").addEventListener("click", fcSaveDbSettings);
 document.getElementById("fcIngestStart").addEventListener("click", fcStartIngest);
 document.getElementById("fcImportFile").addEventListener("click", () => fcImportDataset("file"));
+document.getElementById("fcTrailRecheck").addEventListener("click", fcRefreshAuditTrail);
 
 /* ════════════════════════════════════════
    STATE + LOAD

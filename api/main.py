@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import secrets
 import threading
 from contextlib import asynccontextmanager, contextmanager
@@ -1053,6 +1054,156 @@ def audit_overview(snapshot_id: Optional[int] = None):
         "framing_cost_median_wei": float(median) if median is not None else None,
         "per_detector": per_detector,
     }
+
+
+@app.get("/audit/trail")
+def audit_trail():
+    """Whether the audit chain still verifies, and what has been removed from it.
+
+    Feature 2's headline: every flag_audit row is hash-chained to the one
+    before it (migration 009), so editing a verdict after the fact breaks the
+    chain at that row and at every row after it. This endpoint recomputes the
+    whole chain in the database -- not in Python, which could be made to agree
+    with whatever it was shown -- and reports the first row that does not fit.
+
+    A chain that does not verify is not necessarily foul play: a restored
+    backup or a hand-edited dump breaks it too. What it means is that the
+    database can no longer vouch for those rows, which is exactly the thing
+    an audit should be able to say out loud.
+    """
+    if using_mock():
+        return load_mock().get("audit_trail", {
+            "available": True, "rows_checked": 0, "intact": True,
+            "first_bad_audit_id": None, "reason": None, "tombstones": [],
+        })
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not audit_trail_installed(cur):
+                # The migration has not been applied here. Say so plainly
+                # rather than reporting an intact chain that does not exist.
+                return {"available": False,
+                        "detail": "migration 009 has not been applied to this database, "
+                                  "so audit rows are not chained yet"}
+            cur.execute("SELECT * FROM flag_audit_chain_verify()")
+            checked, intact, first_bad, reason, tombstone_count = cur.fetchone()
+            cur.execute("""
+                SELECT flag_audit_id, flag_id, verdict, deleted_by, deleted_at, reason
+                  FROM flag_audit_tombstone
+                 ORDER BY deleted_at DESC
+                 LIMIT 50
+            """)
+            tombstones = [
+                {"flag_audit_id": r[0], "flag_id": r[1], "verdict": r[2],
+                 "deleted_by": r[3], "deleted_at": r[4].isoformat() if r[4] else None,
+                 "reason": r[5]}
+                for r in cur.fetchall()
+            ]
+            return {"available": True, "rows_checked": checked, "intact": intact,
+                    "first_bad_audit_id": first_bad, "reason": reason,
+                    "tombstone_count": tombstone_count, "tombstones": tombstones}
+
+
+def audit_trail_installed(cur) -> bool:
+    """Whether migration 009's functions exist in this database."""
+    cur.execute("SELECT to_regprocedure('flag_audit_chain_verify()') IS NOT NULL")
+    return bool(cur.fetchone()[0])
+
+
+@app.get("/flags/{flag_id}/versions")
+def flag_versions(flag_id: int):
+    """Every version this flag row has had, oldest first.
+
+    A flag is a claim ("this wallet looks like it did X"), and an audit
+    verdict is a claim about the flag AS IT STOOD. If the flag's score or
+    threshold changed afterwards, the verdict refers to something that no
+    longer exists -- so the history is part of reading the verdict, not a
+    footnote to it.
+    """
+    if using_mock():
+        versions = load_mock().get("flag_versions", {})
+        return versions.get(str(flag_id), {"available": True, "flag_id": flag_id, "versions": []})
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not audit_trail_installed(cur):
+                return {"available": False, "flag_id": flag_id,
+                        "detail": "migration 009 has not been applied to this database"}
+            cur.execute("SELECT * FROM flag_versions(%s)", (flag_id,))
+            rows = cur.fetchall()
+            if not rows:
+                raise HTTPException(status_code=404, detail=f"no flag with id {flag_id}")
+            return {"available": True, "flag_id": flag_id, "versions": [
+                {"version": r[0],
+                 "valid_from": r[1].isoformat() if r[1] else None,
+                 "valid_to": r[2].isoformat() if r[2] else None,
+                 "is_current": r[3],
+                 "change_op": {"U": "updated", "D": "deleted", None: None}.get(r[4], r[4]),
+                 "changed_by": r[5],
+                 "row": r[6]}
+                for r in rows
+            ]}
+
+
+def normalize_timestamp_arg(at: str) -> str:
+    """Repairs the one way an otherwise-correct caller gets this wrong.
+
+    An ISO timestamp with a numeric offset -- 2026-10-12T01:35:55+00:00 --
+    has a '+' in it, and '+' in a URL query string decodes to a space. A
+    caller who passes a perfectly good timestamp therefore arrives here with
+    "2026-10-12T01:35:55 00:00", which Postgres rejects. Found by passing a
+    real timestamp straight from flag_history into this endpoint.
+
+    So a space followed by a UTC-offset-shaped tail is read back as the '+'
+    it almost certainly was. Everything else is left exactly as given --
+    including genuinely malformed input, which still earns its 422.
+    """
+    at = at.strip()
+    split = re.fullmatch(r"(.*\d) (\d{2}:?\d{2})", at)
+    return f"{split.group(1)}+{split.group(2)}" if split else at
+
+
+@app.get("/flags/as-of")
+def flags_as_of(at: str, limit: int = 50, detector: Optional[str] = None):
+    """The flag table as it stood at an instant, straight out of flag_as_of().
+
+    The reason this is a SQL function and not Python: reassembling history
+    outside the database means every caller has to get the same reasoning
+    right, and a caller that gets it wrong produces a plausible-looking past
+    that never happened.
+    """
+    if using_mock():
+        return {"available": True, "as_of": at, "flags": load_mock().get("flags", [])[:limit]}
+    limit = max(1, min(limit, 500))
+    at = normalize_timestamp_arg(at)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not audit_trail_installed(cur):
+                return {"available": False, "as_of": at,
+                        "detail": "migration 009 has not been applied to this database"}
+            query = """
+                SELECT flag_id, run_id, wallet_id, detector, score, threshold, created_at
+                  FROM flag_as_of(%s)
+            """
+            params: list = [at]
+            if detector:
+                query += " WHERE detector = %s"
+                params.append(detector)
+            query += " ORDER BY flag_id LIMIT %s"
+            params.append(limit)
+            try:
+                cur.execute(query, params)
+            except psycopg2.errors.InvalidDatetimeFormat:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{at!r} is not a timestamp -- try 2026-10-11T14:30:00Z") from None
+            rows = [
+                {"flag_id": r[0], "run_id": r[1], "wallet_id": r[2], "detector": r[3],
+                 "score": r[4], "threshold": r[5],
+                 "created_at": r[6].isoformat() if r[6] else None}
+                for r in cur.fetchall()
+            ]
+            cur.execute("SELECT count(*) FROM flag_as_of(%s)", (at,))
+            total = cur.fetchone()[0]
+            return {"available": True, "as_of": at, "total": total, "flags": rows}
 
 
 @app.get("/audit/summary")

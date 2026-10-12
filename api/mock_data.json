@@ -5050,5 +5050,85 @@
       ],
       "truncated": true
     }
+  },
+  "audit_trail": {
+    "available": true,
+    "rows_checked": 13,
+    "intact": true,
+    "first_bad_audit_id": null,
+    "reason": null,
+    "tombstone_count": 1,
+    "tombstones": [
+      {
+        "flag_audit_id": 14,
+        "flag_id": 1,
+        "verdict": "robust",
+        "deleted_by": "postgres",
+        "deleted_at": "2026-10-12T01:30:00+00:00",
+        "reason": "benchmark_audit.py removing its own timing rows"
+      }
+    ]
+  },
+  "flag_versions": {
+    "1": {
+      "available": true,
+      "flag_id": 1,
+      "versions": [
+        {
+          "version": 1,
+          "valid_from": "2026-10-07T02:20:44.650999+00:00",
+          "valid_to": "2026-10-12T01:35:55.410055+00:00",
+          "is_current": false,
+          "change_op": "updated",
+          "changed_by": "postgres",
+          "row": {
+            "flag_id": 1,
+            "run_id": 13,
+            "wallet_id": 401,
+            "detector": "bfs_proximity",
+            "score": 70,
+            "threshold": 50,
+            "created_at": "2026-10-07T02:20:44.650999",
+            "token_contract": null
+          }
+        },
+        {
+          "version": 2,
+          "valid_from": "2026-10-12T01:35:55.410055+00:00",
+          "valid_to": "2026-10-12T01:35:55.414749+00:00",
+          "is_current": false,
+          "change_op": "updated",
+          "changed_by": "postgres",
+          "row": {
+            "flag_id": 1,
+            "run_id": 13,
+            "wallet_id": 401,
+            "detector": "bfs_proximity",
+            "score": 71,
+            "threshold": 50,
+            "created_at": "2026-10-07T02:20:44.650999",
+            "token_contract": null
+          }
+        },
+        {
+          "version": 3,
+          "valid_from": "2026-10-12T01:35:55.414749+00:00",
+          "valid_to": null,
+          "is_current": true,
+          "change_op": null,
+          "changed_by": null,
+          "row": {
+            "flag_id": 1,
+            "run_id": 13,
+            "wallet_id": 401,
+            "detector": "bfs_proximity",
+            "score": 71,
+            "threshold": 50.1,
+            "created_at": "2026-10-07T02:20:44.650999",
+            "token_contract": null
+          }
+        }
+      ]
+    }
   }
 }

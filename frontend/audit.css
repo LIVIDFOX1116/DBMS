@@ -131,3 +131,31 @@
 .mv-pick { cursor: pointer; accent-color: var(--accent); width: 14px; height: 14px; }
 .mv-pick:disabled { cursor: not-allowed; opacity: .4; }
 #mvSelectionNote { font-size: 11.5px; }
+
+
+/* ── Feature 2: the audit chain's state ──
+   A verdict's worth depends on the chain behind it, so this reads at a
+   glance: green means the database still vouches for every audit row, amber
+   means it cannot. */
+.fc-trail { padding: 12px 16px; margin-bottom: 12px; }
+.fc-trail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fc-trail-state { display: flex; align-items: center; gap: 9px; font-size: 0.93rem; }
+.fc-trail-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--muted, #888); }
+.fc-trail-dot.intact { background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16); }
+.fc-trail-dot.broken { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16); }
+.fc-trail-dot.absent { background: var(--muted, #888); }
+.fc-trail-dot.checking { background: var(--muted, #888); opacity: 0.6; }
+.fc-trail-detail:not(:empty) { margin-top: 8px; font-size: 0.86rem; opacity: 0.85; line-height: 1.5; }
+.fc-trail-recheck { padding: 4px 11px; font-size: 0.82rem; }
+.fc-trail-tomb { margin-top: 8px; border-top: 1px solid var(--line, #2a2a2a); padding-top: 8px; }
+.fc-trail-tomb table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.fc-trail-tomb td { padding: 3px 8px 3px 0; vertical-align: top; }
+.fc-trail-tomb td:first-child { font-family: ui-monospace, monospace; white-space: nowrap; }
+
+/* a flag's version history, inside the detail pane */
+.fc-versions { margin-top: 14px; }
+.fc-versions h4 { margin: 0 0 6px; font-size: 0.86rem; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.7; }
+.fc-version { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; padding: 7px 0; border-top: 1px solid var(--line, #2a2a2a); font-size: 0.85rem; }
+.fc-version .vlabel { font-family: ui-monospace, monospace; white-space: nowrap; opacity: 0.75; }
+.fc-version .vchange { opacity: 0.9; }
+.fc-version.current .vlabel { color: #22c55e; }

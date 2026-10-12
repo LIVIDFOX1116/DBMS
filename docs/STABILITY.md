@@ -897,3 +897,102 @@ them needs `DROP DATABASE`, which this project does not run without asking.
 `framecheck_demo` and `framecheck_uitest` each hold a full copy of the
 snapshot-1 dataset (~250 MB apiece).
 
+## Phase 12, Feature 2: the audit trail the database enforces (2026-10-12)
+
+`db/migrations/009_framecheck_audit_trail.sql`. Chosen as Feature 2 because
+the project is a DBMS project and the audit layer had no database-side
+integrity at all: `flag_audit` was append-only by convention, which is to say
+not at all.
+
+Everything below was run against `framecheck_demo` (1,775 flags, 13 audit
+rows, the imported snapshot-1 dataset).
+
+### Does it do what it claims
+
+| Check | Result |
+|---|---|
+| Chain over the rows that were already there | **intact**, 13 rows, after backfill |
+| `UPDATE flag_audit SET verdict = ...` | refused: `flag_audit is append-only: audit row 1 cannot be edited` |
+| `DELETE FROM flag_audit` | refused, with a hint naming the setting that permits it |
+| Delete through the logged door | allowed, and tombstoned: `#13, postgres, "migration 009 self-test"` |
+| A new audit row | links onto the tail (`prev_hash` = previous `row_hash`), chain verifies at 14 rows |
+| **Tampering: edit a row with the guard trigger disabled** | **detected** — `intact=false, first_bad_audit_id=5, "row contents do not match its own hash"` |
+| 500 rows inserted with the chain trigger disabled | detected — `first_bad=516, "row has no hash"` |
+| Two edits to one flag | 2 history rows, 3 contiguous versions, **0 overlapping periods** |
+| Time travel | score 70 → edited to 999 → `flag_as_of(t0)` returns **70** |
+| `flag_as_of` before any flag existed | 0 rows, rather than every row |
+| Applying the migration twice | no-op, chain still intact |
+| Python suite | 355 passed, 5 skipped (22 new, all offline); ruff clean; Rust 45 passed |
+
+### What it costs
+
+| Measured | Result |
+|---|---|
+| Insert with the chain trigger | **0.054 ms/row** (500 rows in 26.7 ms) |
+| Insert without it | 0.009 ms/row (500 rows in 4.2 ms) |
+| So chaining costs | **6.3x** — of a number this small, and the audit engine's own work per flag is milliseconds to seconds |
+| Whole-chain verification, 13 rows | **1.0 ms** |
+| `flag_as_of(now())` over 1,775 flags | **2.25 ms** (plan: hash anti-join against `flag_history`) |
+| Plain `count(*)` on `flag`, for comparison | 0.14 ms |
+| One flag's version at an instant | **0.033 ms**, `Index Scan using flag_history_no_overlap` |
+| Storage added | `flag_history` 56 kB, `flag_audit_tombstone` 48 kB |
+
+The last two rows are the detail worth keeping: the GiST **exclusion
+constraint doubles as the point-in-time index**. The constraint that makes two
+overlapping versions unstorable is the same structure the planner uses for
+`sys_period @> now()`, so declarative integrity came free of a second index.
+
+### Decisions that went against the obvious choice
+
+**A logged door, not a wall.** The first design refused every `DELETE`
+outright. That breaks two scripts that legitimately remove their own rows
+(`benchmark_audit.py`, `run_experiment.py`), and the honest reading of
+"tamper-evident" is not "nobody can change it" — a superuser always can — but
+"no change without evidence". So `DELETE` needs an explicit per-transaction
+setting and lands in `flag_audit_tombstone` with who and why. A gap in the
+chain with no tombstone is tampering; a gap with one is housekeeping.
+
+**One serialization, shared.** `flag_audit_payload(flag_audit)` is used by
+both the insert trigger and the verifier. Two separate serializations would
+drift, and the chain would start failing on rows nobody had touched.
+
+**Columns listed explicitly, not `to_jsonb(row)`.** A column added by a later
+migration must not silently change the hash of every row already written.
+
+**`pg_advisory_xact_lock` in the insert trigger.** Two concurrent inserts
+would both read the same tail row and fork the chain — two rows claiming the
+same predecessor, and a verifier that cannot say which is the real successor.
+The audit engine writes from one process today, so this costs nothing now and
+is the difference between a chain and a guess the moment it does not.
+
+**`clock_timestamp()`, not `now()`, for version periods.** Two changes inside
+one transaction share a transaction timestamp, which would produce an empty
+period and lose a version. Verified: two edits in one transaction produced two
+distinct, non-overlapping periods.
+
+**`flag_history.flag_id` is deliberately not a foreign key.** History has to
+outlive the row it describes, and `run_experiment.py` deletes flags
+wholesale. A FK would either block that or cascade the history away.
+
+**A fallback for a server without `btree_gist`.** `EXCLUDE USING gist` needs
+that contrib extension for the bigint equality operator class. It is present
+here (1.7) and in every mainstream install, but this schema now ships inside
+a desktop app, so the migration falls back to a unique index on
+`(flag_id, lower(sys_period))` and says in a NOTICE why.
+
+### A bug found by using it
+
+Passing a real `flag_history` timestamp straight into `/flags/as-of` returned
+422. The timestamp was correct: `2026-10-12T01:35:55+00:00` — and `+` in a URL
+query string decodes to a space, so the server received
+`2026-10-12T01:35:55 00:00`. Now repaired at the edge (a space followed by an
+offset-shaped tail is read back as the `+` it was), while a date and time
+separated by a space is left alone, since that is also a valid timestamp.
+
+### What this does not claim
+
+A hash added by this migration proves nothing about what happened to a row
+before the migration ran. The backfill establishes the baseline from which
+tampering becomes detectable, and that is all. Nor does an intact chain prove
+a verdict is *correct* — only that it is the verdict that was recorded.
+
