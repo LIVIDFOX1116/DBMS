@@ -185,7 +185,19 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
     if _pool is None:
         with _pool_lock:
             if _pool is None:  # re-check: another thread may have won the race while we waited for the lock
-                _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=10, **dbsetup.current_dsn())
+                dsn = dbsetup.current_dsn()
+                try:
+                    _pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=10, **dsn)
+                except OperationalError:
+                    # Same IPv6-first trap as dbsetup.connect(): on Windows,
+                    # "localhost" can resolve to ::1 where nothing is
+                    # listening while 127.0.0.1 answers fine. The pool builds
+                    # its own connections, so it needs the retry too.
+                    if str(dsn.get("host", "")).lower() not in dbsetup.LOOPBACK_NAMES:
+                        raise
+                    _pool = pg_pool.ThreadedConnectionPool(
+                        minconn=1, maxconn=10, **{**dsn, "host": "127.0.0.1"})
+                    log.info("pool built against 127.0.0.1 after %s failed", dsn.get("host"))
                 log.info("Postgres connection pool created (min=1, max=10)")
     return _pool
 
