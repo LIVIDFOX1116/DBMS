@@ -482,6 +482,66 @@ an identifier — never interpolated. `422` for a malformed name, `404` for one
 absent from this database. `NUMERIC(78,0)` wei values come back as strings;
 they exceed float precision.
 
+### GET /audit/trail
+Whether the audit hash chain still verifies, and what has been removed from it.
+```json
+{"available": true, "rows_checked": 13, "intact": true,
+ "first_bad_audit_id": null, "reason": null,
+ "tombstone_count": 1,
+ "tombstones": [{"flag_audit_id": 14, "flag_id": 1, "verdict": "robust",
+                 "deleted_by": "postgres", "deleted_at": "2026-10-12T01:30:00+00:00",
+                 "reason": "benchmark_audit.py removing its own timing rows"}]}
+```
+When the chain does not verify, `intact` is false and `first_bad_audit_id`
+names the first row that does not fit, with `reason` one of three
+distinguishable cases: the row has no hash, the row does not link to the one
+before it, or the row's contents do not match its own hash. A broken chain is
+not proof of foul play — a restored backup breaks it too — it means the
+database can no longer vouch for those rows.
+
+`{"available": false, "detail": "..."}` when migration 009 has not been
+applied to the connected database. The chain is reported as absent rather
+than intact, because a green tick for a chain that does not exist is worse
+than no tick at all.
+
+Verification runs **in the database** (`flag_audit_chain_verify()`), not in
+Python: a verifier in the application could be made to agree with whatever it
+was shown. Measured at 1.0 ms for 13 rows.
+
+### GET /flags/{flag_id}/versions
+Every version a flag row has had, oldest first, with the current row last.
+```json
+{"available": true, "flag_id": 1, "versions": [
+  {"version": 1, "valid_from": "2026-10-07T02:20:44.650999+00:00",
+   "valid_to": "2026-10-12T01:35:55.410055+00:00", "is_current": false,
+   "change_op": "updated", "changed_by": "postgres",
+   "row": {"flag_id": 1, "detector": "bfs_proximity", "score": 70, "threshold": 50}},
+  {"version": 2, "...": "...", "is_current": true, "change_op": null, "changed_by": null}
+]}
+```
+`change_op` is `updated` or `deleted` for a historical version and `null` for
+the current row. 404 for a flag id that has never existed; `available: false`
+when migration 009 is not applied.
+
+### GET /flags/as-of
+`?at=<timestamp>&limit=50&detector=<name>` — the flag table as it stood at an
+instant, straight out of the `flag_as_of(timestamptz)` SQL function.
+```json
+{"available": true, "as_of": "2026-10-11T00:00:00Z", "total": 1775,
+ "flags": [{"flag_id": 1, "run_id": 13, "wallet_id": 401,
+            "detector": "bfs_proximity", "score": 70, "threshold": 50,
+            "created_at": "2026-10-07T02:20:44.650999"}]}
+```
+`limit` is capped at 500. A timestamp the server cannot parse earns a 422
+naming an example. One quirk is handled rather than inflicted on callers: an
+ISO timestamp with a `+00:00` offset loses its `+` to URL decoding and
+arrives as a space, so a space followed by an offset-shaped tail is read back
+as the `+` it was — a date and time separated by a space is left alone.
+
+Measured: 2.25 ms for 1,775 flags against 0.14 ms for a plain `count(*)` on
+`flag`. The difference is the anti-join against `flag_history` that decides
+which rows a later version supersedes.
+
 ### GET /db/datasets
 What can be imported.
 ```json

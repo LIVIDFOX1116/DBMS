@@ -138,6 +138,67 @@ now agree on 100% of flags — the story is at the end of
 `docs/benchmark_results.md`. `docs/GPU_SETUP.md` covers the WSL2 RAPIDS
 install.
 
+## The audit trail the database enforces (Feature 2)
+
+FrameCheck's output is an audit: rows in `flag_audit` saying a flag either
+could or could not have been manufactured by an outsider, and at what cost. A
+verdict is only worth something if it can be shown not to have been changed
+afterwards — and until migration 009, nothing enforced that. `flag_audit` was
+append-only because the Python that writes it happens never to issue an
+`UPDATE`.
+
+`db/migrations/009_framecheck_audit_trail.sql` moves that guarantee into the
+database. "Tamper-evident" here does not mean nobody can change a verdict — a
+superuser can always change anything, and pretending otherwise would be the
+dishonest version of this feature. It means **no change can happen without
+leaving evidence**:
+
+- **`UPDATE` on `flag_audit` is refused outright**, by trigger. There is no
+  legitimate update: a corrected verdict is a new audit row, and the API
+  already reports the latest one per flag.
+- **Every audit row is hash-chained** to the one before it:
+  `row_hash = sha256(prev_hash || canonical payload)`, computed by a
+  `BEFORE INSERT` trigger using Postgres' built-in digest, no extension
+  needed. Editing a row by any means — direct SQL, a restored backup, a
+  hand-edited dump — breaks the chain at that row and every row after it, and
+  `flag_audit_chain_verify()` names the first row that does not fit.
+- **`DELETE` is refused by default**, and permitted only when a session says
+  so explicitly (`SET LOCAL framecheck.allow_audit_delete = 'on'`), in which
+  case the deletion is recorded in `flag_audit_tombstone` with who did it and
+  why. This project's own tooling needs that door — `benchmark_audit.py`
+  removes the rows it just created, `run_experiment.py` clears a run before
+  re-running it — and a door with a log on it is worth more than a wall
+  somebody has to tunnel under.
+
+And because a verdict is a claim about a flag **at a moment**, `flag` is
+system-versioned: every before-image lands in `flag_history` with the period
+it was valid for (a `tstzrange`, with a GiST exclusion constraint making
+overlapping versions unstorable), and time travel is a query:
+
+```sql
+SELECT * FROM flag_as_of('2026-10-11 14:30:00+00');   -- the table as it stood
+SELECT * FROM flag_versions(1);                       -- one flag's full history
+SELECT * FROM flag_audit_chain_verify();              -- does the chain still hold?
+```
+
+The Flags view shows the chain's state above the flag list, because a reader
+needs to know whether the database still vouches for a verdict before reading
+it, and shows a flag's version history next to its evidence when the row has
+changed since it was raised.
+
+Measured on 1,775 flags and 13 audit rows: chaining costs **0.054 ms per
+inserted audit row** against 0.009 ms unchained (6.3x a very small number),
+whole-chain verification **1.0 ms**, `flag_as_of(now())` **2.25 ms** against
+0.14 ms for a plain count. The exclusion constraint's GiST index doubles as
+the point-in-time index — a single flag's version at an instant comes back in
+0.033 ms.
+
+Applying it: the **Database** tab lists it as a pending migration like any
+other. Existing audit rows are backfilled with hashes in id order, so an
+established database ends up with a chain that verifies rather than one
+permanently "broken at row 1" — which establishes the baseline from which
+tampering becomes detectable, and claims nothing about what happened before.
+
 ## Setting the app up without a terminal (Feature 1)
 
 The desktop app's **Database** tab does the whole setup itself, which is what

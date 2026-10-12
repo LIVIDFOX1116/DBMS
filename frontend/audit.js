@@ -643,6 +643,9 @@ function fcVerdictBadge(audit) {
 async function fcOpenFlagsView() {
   const tbody = document.getElementById("auditFlagRows");
   const myGen = ++FC.loadGen;
+  // Not awaited: the chain check is a separate query and the flag list is
+  // what the user came for.
+  fcRefreshAuditTrail();
   if (!FC.flags[FC.filter]) tbody.innerHTML = `<tr><td colspan="4"><div class="empty-hint">Loading…</div></td></tr>`;
   try {
     await fcLoadFlags(FC.filter);
@@ -751,6 +754,10 @@ async function fcSelectFlag(flagId) {
     ]);
     if (myGen !== FC.detailGen) return;
     box.innerHTML = fcDetailHtml(flagId, flag, edges, audit);
+    // The version history is a separate request on purpose: it is useful but
+    // not essential, so a database without migration 009 (or a slow answer)
+    // must not hold up the evidence and the verdict.
+    fcAppendFlagVersions(flagId, myGen);
   } catch (err) {
     if (myGen !== FC.detailGen) return;
     box.innerHTML = fcErrorBlock(err.message, `detail:${flagId}`);
@@ -1023,4 +1030,96 @@ function fcInit() {
       if (!WALLETS.length) renderGraph();
     }
   });
+}
+
+
+/* ── Feature 2: the audit chain, and a flag's version history ──
+
+   Why this is in front of the verdict rather than behind a tab: a framing
+   verdict is a claim about what the data said, and the chain is what makes
+   that claim checkable. If the database can no longer vouch for the audit
+   rows, that is the first thing a reader needs to know -- not a detail to go
+   looking for.
+*/
+
+async function fcRefreshAuditTrail() {
+  const state = document.getElementById("fcTrailState");
+  const detail = document.getElementById("fcTrailDetail");
+  if (!state) return;
+  state.innerHTML = `<span class="fc-trail-dot checking"></span>checking the audit chain…`;
+  detail.innerHTML = "";
+
+  let out;
+  try {
+    out = await api("/audit/trail");
+  } catch (err) {
+    state.innerHTML = `<span class="fc-trail-dot absent"></span>could not check the audit chain`;
+    detail.textContent = err.message;
+    return;
+  }
+
+  if (out.available === false) {
+    // An honest "not set up here" rather than a green tick for a chain that
+    // does not exist.
+    state.innerHTML = `<span class="fc-trail-dot absent"></span>audit rows are not chained in this database`;
+    detail.innerHTML = `${fcEsc(out.detail || "")} Apply it from the <b>Database</b> tab.`;
+    return;
+  }
+
+  const rows = (out.rows_checked || 0).toLocaleString();
+  if (out.intact) {
+    state.innerHTML = `<span class="fc-trail-dot intact"></span>` +
+      `<span>Audit chain verified — <b>${rows}</b> rows, each hashed onto the one before it</span>`;
+    detail.innerHTML = `Every verdict here is still exactly as it was recorded. Editing one would
+      break the chain at that row and at every row after it.`;
+  } else {
+    state.innerHTML = `<span class="fc-trail-dot broken"></span>` +
+      `<span>Audit chain broken at row <b>${out.first_bad_audit_id}</b></span>`;
+    detail.innerHTML = `${fcEsc(out.reason || "")}. Checked ${rows} rows.
+      This does not prove foul play — a restored backup or a hand-edited dump breaks the chain
+      too — but the database can no longer vouch for these rows.`;
+  }
+
+  if (out.tombstones && out.tombstones.length) {
+    detail.innerHTML += `<div class="fc-trail-tomb">
+      <b>${out.tombstone_count}</b> audit row(s) have been deleted, each with a recorded reason:
+      <table>${out.tombstones.slice(0, 5).map(t => `<tr>
+        <td>#${t.flag_audit_id}</td><td>${fcEsc(t.reason)}</td>
+        <td class="fc-muted">${fcEsc(t.deleted_by)} · ${(t.deleted_at || "").slice(0, 19).replace("T", " ")}</td>
+      </tr>`).join("")}</table></div>`;
+  }
+}
+
+async function fcAppendFlagVersions(flagId, myGen) {
+  let out;
+  try {
+    out = await api(`/flags/${flagId}/versions`);
+  } catch {
+    return;                      // not essential; stay quiet
+  }
+  if (myGen !== FC.detailGen) return;
+  const box = document.getElementById("fcDetail");
+  if (!box || out.available === false) return;
+  const versions = out.versions || [];
+  // One version means the row has never changed, which is the normal case
+  // and not worth a panel of its own.
+  if (versions.length < 2) return;
+
+  const when = (t) => t ? t.slice(0, 19).replace("T", " ") : "now";
+  box.insertAdjacentHTML("beforeend", `
+    <div class="fc-versions">
+      <h4>This flag has changed since it was raised</h4>
+      ${versions.map(v => `
+        <div class="fc-version${v.is_current ? " current" : ""}">
+          <div class="vlabel">v${v.version}${v.is_current ? " · current" : ""}</div>
+          <div class="vchange">
+            score ${v.row.score ?? "–"}, threshold ${v.row.threshold ?? "–"}
+            <span class="fc-muted">· ${when(v.valid_from)} → ${when(v.valid_to)}${
+              v.changed_by ? ` · ${v.change_op} by ${fcEsc(v.changed_by)}` : ""}</span>
+          </div>
+        </div>`).join("")}
+      <p class="fc-muted" style="margin-top:8px;font-size:0.82rem;">A verdict refers to the flag
+        as it stood when the audit ran. Where that is an earlier version, the verdict is about
+        that version, not this one.</p>
+    </div>`);
 }

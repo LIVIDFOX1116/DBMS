@@ -62,7 +62,18 @@ def benchmark_detector(conn, snapshot_id: int, seed_wallet_id: int, detector: st
 
 
 def cleanup_benchmark_audits(conn, max_id_before: int) -> int:
+    """Removes the audit rows this benchmark just wrote.
+
+    flag_audit is append-only, enforced by a trigger (migration 009), so this
+    has to say out loud that it is deleting and why. The deletion is recorded
+    in flag_audit_tombstone either way -- benchmark rows leaving a trace is
+    the point: a gap in the audit chain with no tombstone is tampering, and a
+    gap with one is housekeeping.
+    """
     with conn.cursor() as cur:
+        cur.execute("SET LOCAL framecheck.allow_audit_delete = 'on'")
+        cur.execute("SET LOCAL framecheck.audit_delete_reason = %s",
+                    ("benchmark_audit.py removing its own timing rows",))
         cur.execute("DELETE FROM flag_audit WHERE flag_audit_id > %s", (max_id_before,))
         deleted = cur.rowcount
     conn.commit()

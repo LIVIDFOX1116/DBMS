@@ -67,6 +67,11 @@ def cleanup_experiment(conn, scenario_id: int, launderer_scenario_id: int = None
             cur.execute("SELECT run_id FROM analysis_run WHERE snapshot_id = %s", (snapshot_id,))
             run_ids = [row[0] for row in cur.fetchall()]
             if run_ids:
+                # flag_audit is append-only (migration 009): say so explicitly
+                # and give a reason, which lands in flag_audit_tombstone.
+                cur.execute("SET LOCAL framecheck.allow_audit_delete = 'on'")
+                cur.execute("SET LOCAL framecheck.audit_delete_reason = %s",
+                            ("run_experiment.py clearing a snapshot before re-running it",))
                 cur.execute("DELETE FROM flag_audit WHERE flag_id IN (SELECT flag_id FROM flag WHERE run_id = ANY(%s))", (run_ids,))
                 cur.execute("DELETE FROM flag_evidence WHERE flag_id IN (SELECT flag_id FROM flag WHERE run_id = ANY(%s))", (run_ids,))
                 cur.execute("DELETE FROM flag WHERE run_id = ANY(%s)", (run_ids,))
