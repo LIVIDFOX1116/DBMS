@@ -193,3 +193,96 @@ class TestEndpointsInDemoMode:
     def test_as_of_caps_its_page_size(self):
         body = client.get("/flags/as-of?at=2026-10-11T00:00:00Z&limit=100000").json()
         assert len(body["flags"]) <= 500
+
+
+class TestAdoptionCannotClaimAMissingMigration:
+    """Adoption records migrations as applied WITHOUT running them, which was
+    fine while every migration predated tracking -- and became a bug the
+    moment a new one existed. Adopting a working database would have marked
+    009 applied, reported "up to date", and left the audit trail permanently
+    missing. Found by asking what would happen to the real txgraph database.
+    """
+
+    def test_the_new_migrations_declare_a_probe(self):
+        from api import dbsetup
+        probes = {f.name: dbsetup.migration_probe(f) for f in dbsetup.migration_files()}
+        assert probes["009_framecheck_audit_trail.sql"], "009 must be probeable"
+        assert "flag_audit_chain_verify" in probes["009_framecheck_audit_trail.sql"]
+        assert probes["008_framecheck_cluster_flag_matview.sql"], "008 must be probeable"
+        assert "mv_cluster_flag_stats" in probes["008_framecheck_cluster_flag_matview.sql"]
+
+    def test_a_migration_without_a_probe_is_still_trusted(self):
+        """The older migrations have no probe, and adoption must keep working
+        for them exactly as before."""
+        from api import dbsetup
+        older = [f for f in dbsetup.migration_files() if f.name.startswith(("002", "003"))]
+        assert older
+        for path in older:
+            assert dbsetup.migration_probe(path) is None
+            assert dbsetup.migration_is_present(None, path) is True
+
+    def test_a_probe_that_errors_counts_as_absent(self):
+        """A probe can fail because the table it looks at does not exist.
+        "Cannot confirm" has to mean "leave it pending": recording it as
+        applied is the failure that hides a feature forever."""
+        import psycopg2
+
+        from api import dbsetup
+
+        class ExplodingCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, sql):
+                raise psycopg2.ProgrammingError("relation does not exist")
+
+        class Conn:
+            rolled_back = False
+
+            def cursor(self):
+                return ExplodingCursor()
+
+            def rollback(self):
+                self.rolled_back = True
+
+        conn = Conn()
+        migration = next(f for f in dbsetup.migration_files() if f.name.startswith("009"))
+        assert dbsetup.migration_is_present(conn, migration) is False
+        assert conn.rolled_back, "a failed probe must not leave the transaction aborted"
+
+    def test_a_probe_returning_false_leaves_the_migration_pending(self):
+        from api import dbsetup
+
+        class Cursor:
+            def __init__(self, value):
+                self.value = value
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, sql):
+                pass
+
+            def fetchone(self):
+                return (self.value,)
+
+        class Conn:
+            def __init__(self, value):
+                self.value = value
+
+            def cursor(self):
+                return Cursor(self.value)
+
+            def rollback(self):
+                pass
+
+        migration = next(f for f in dbsetup.migration_files() if f.name.startswith("009"))
+        assert dbsetup.migration_is_present(Conn(False), migration) is False
+        assert dbsetup.migration_is_present(Conn(True), migration) is True
+        assert dbsetup.migration_is_present(Conn(None), migration) is False

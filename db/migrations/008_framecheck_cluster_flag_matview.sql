@@ -1,4 +1,5 @@
 -- FrameCheck migration (2026-10, Phase 10): precomputed cluster flag counts.
+-- probe: SELECT to_regclass('mv_cluster_flag_stats') IS NOT NULL
 --
 -- /clusters/top-flagged joined 780,644 cluster_member rows to 128,637 flag
 -- rows and grouped with COUNT(DISTINCT) on every call: 471 ms measured.
