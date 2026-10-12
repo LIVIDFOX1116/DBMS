@@ -347,12 +347,18 @@ class TestLoopbackFallback:
     """On Windows, "localhost" and 127.0.0.1 are not the same address, and
     Postgres running in WSL listens on the VM's IPv4 loopback only. Measured
     on this machine: 127.0.0.1:5432 accepted every connection while
-    ::1:5432 refused every one -- and "localhost" resolves to ::1 first. A
-    settings panel that just says "unreachable" makes that miserable to
-    debug, so connect() retries the IPv4 address.
+    ::1:5432 refused every one -- and "localhost" resolves to ::1 first.
+
+    This started as a retry after failure, which turned out to fix the wrong
+    problem: `localhost` does eventually succeed, after burning ~2 s on the
+    IPv6 attempt, so the retry never fired and every connection just paid the
+    2 s. Measured: localhost 2112 ms, 127.0.0.1 64 ms. Hence ordering rather
+    than fallback -- IPv4 first for loopback names.
     """
 
-    def test_a_loopback_name_is_retried_as_ipv4(self, monkeypatch):
+    def test_a_loopback_name_tries_ipv4_first(self, monkeypatch):
+        """The ordering IS the optimisation: /db/status opened two
+        connections and took 4.2 s before this."""
         import psycopg2
 
         from api import dbsetup
@@ -368,7 +374,33 @@ class TestLoopbackFallback:
         monkeypatch.setattr(dbsetup.psycopg2, "connect", fake_connect)
         conn = dbsetup.connect({"host": "localhost", "dbname": "x"})
         assert conn is not None
-        assert attempts == ["localhost", "127.0.0.1"]
+        assert attempts == ["127.0.0.1"], "the slow name must not be tried first"
+
+    def test_the_name_is_still_tried_when_ipv4_is_refused(self, monkeypatch):
+        """A server listening only on ::1 must keep working: 127.0.0.1 is
+        refused in about a millisecond, then the name succeeds."""
+        import psycopg2
+
+        from api import dbsetup
+
+        attempts = []
+
+        def fake_connect(**params):
+            attempts.append(params["host"])
+            if params["host"] == "127.0.0.1":
+                raise psycopg2.OperationalError("connection refused (127.0.0.1)")
+            return object()
+
+        monkeypatch.setattr(dbsetup.psycopg2, "connect", fake_connect)
+        assert dbsetup.connect({"host": "localhost", "dbname": "x"}) is not None
+        assert attempts == ["127.0.0.1", "localhost"]
+
+    def test_the_order_is_declared_in_one_place(self):
+        from api import dbsetup
+        assert dbsetup.connect_order("localhost") == ["127.0.0.1", "localhost"]
+        assert dbsetup.connect_order("LOCALHOST") == ["127.0.0.1", "LOCALHOST"]
+        assert dbsetup.connect_order("db.internal.example") == ["db.internal.example"]
+        assert dbsetup.connect_order("127.0.0.1") == ["127.0.0.1"]
 
     def test_a_real_host_is_not_second_guessed(self, monkeypatch):
         """Retrying 127.0.0.1 for a remote host would connect to the wrong

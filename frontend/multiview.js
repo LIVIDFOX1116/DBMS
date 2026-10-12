@@ -19,7 +19,9 @@ const MV_EXPANDED_NODE_CAP = 600; // when one panel fills the window
 const MV_MAX_PANELS = 8;
 
 const MV_VERDICT_COLORS = {
-  frameable: "#E5675A",
+  // Brighter than the salmon used elsewhere for "high": a frameable
+  // wallet is the thing a reader scans a panel to find.
+  frameable: "#FF3B30",
   robust: "#2FD9A8",
   unaudited: "#E8A63D",
   unflagged: "#5C7470",
@@ -279,9 +281,17 @@ function mvApplySubgraph(panel, data, nodeCap) {
   const nodes = data.nodes.map(n => ({
     id: n.wallet_id,
     label: n.address ? n.address.slice(0, 10) : String(n.wallet_id),
-    // Small: at panel scale a 7px node turns a dense neighbourhood into
-    // one solid blob and hides the structure the panel exists to show.
-    size: n.verdict === "unflagged" ? 3 : 4.5,
+    // Frameable nodes are the ones a reader is hunting for, so they get both
+    // the size and the brightest colour; everything else stays small on
+    // purpose, because at panel scale enlarging every flagged node turns a
+    // dense neighbourhood into one solid blob and hides the structure the
+    // panel exists to show.
+    //
+    // Size does more than draw here: the renderer ranks by it for both the
+    // level-of-detail cap and label priority, so a bigger frameable node is
+    // also the last to be dropped from a crowded panel and the first to be
+    // labelled. That is the behaviour we want anyway.
+    size: n.verdict === "frameable" ? 7 : n.verdict === "unflagged" ? 3 : 4.5,
     color: MV_VERDICT_COLORS[n.verdict] || MV_VERDICT_COLORS.unflagged,
     raw: n,
   }));
