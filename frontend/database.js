@@ -154,7 +154,15 @@ async function fcDbAction(path, pending) {
   try {
     const out = await fcDbPost(path);
     const applied = out.applied || out.adopted;
-    toast(out.detail || (applied ? `Applied: ${applied.join(", ") || "nothing to do"}` : "Done"), "success");
+    let message = out.detail || (applied ? `Applied: ${applied.join(", ") || "nothing to do"}` : "Done");
+    // Adoption can now decline to claim a migration whose work isn't
+    // actually in the database. Saying so is the whole point: a silent
+    // "adopted everything" is what used to hide a missing migration.
+    if (out.pending && out.pending.length) {
+      message = `Adopted ${applied.length}; ${out.pending.length} still to apply ` +
+        `(${out.pending.join(", ")}) — their objects aren't in this database yet.`;
+    }
+    toast(message, "success");
   } catch (err) {
     toast(err.message, "error");
   } finally {

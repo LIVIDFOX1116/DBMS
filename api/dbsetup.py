@@ -370,25 +370,78 @@ def apply_schema(conn, include_migrations: bool = True) -> dict:
     return {"applied": applied_now, "state": schema_state(conn)}
 
 
+PROBE_PATTERN = re.compile(r"^--\s*probe:\s*(.+)$", re.MULTILINE)
+
+
+def migration_probe(path) -> str:
+    """The SQL a migration offers for "is your work already in this database?"
+
+    Declared by the migration itself, as a `-- probe: SELECT ...` comment in
+    its header, so the knowledge lives with the migration rather than in a
+    table here that the next migration's author would have to remember to
+    update. Returns None when a migration declares none.
+    """
+    head = "\n".join(pathlib.Path(path).read_text(encoding="utf-8").split("\n")[:60])
+    match = PROBE_PATTERN.search(head)
+    return match.group(1).strip() if match else None
+
+
+def migration_is_present(conn, path) -> bool:
+    """Whether a migration's objects are actually in this database.
+
+    None-ish answers count as absent: a probe that errors (because the table
+    it looks at does not exist) or returns NULL means "cannot confirm", and
+    the safe direction is to leave the migration pending. Recording it as
+    applied when it is not is the failure that hides a feature forever.
+    """
+    probe = migration_probe(path)
+    if probe is None:
+        return True              # nothing declared: trust the adopter, as before
+    try:
+        with conn.cursor() as cur:
+            cur.execute(probe)
+            row = cur.fetchone()
+            return bool(row and row[0])
+    except psycopg2.Error:
+        conn.rollback()
+        return False
+
+
 def mark_existing_as_applied(conn) -> dict:
-    """Adopts a pre-existing database: records every migration file as
-    applied WITHOUT running it. For the databases that predate migration
-    tracking, whose objects are already there.
+    """Adopts a pre-existing database: records migration files as applied
+    WITHOUT running them. For the databases that predate migration tracking,
+    whose objects are already there.
 
     This is a claim about history that cannot be verified from inside the
     database, so it is a separate, explicit action rather than something
     apply_schema() infers -- and it refuses to run on a database that has no
     FrameCheck tables at all, where the claim would be plainly false.
+
+    What it will NOT claim: a migration whose own probe says its work is
+    absent. Adopting used to record every file, which was fine while every
+    migration predated tracking -- and became a bug the moment a NEW one
+    existed: adopting a working database would have marked migration 009 as
+    applied, reported "migrations up to date", and left the audit trail it
+    installs permanently missing. Those are returned as `pending` instead, so
+    the next click actually applies them.
     """
     state = schema_state(conn)
     if not state["schema_applied"]:
         raise RuntimeError("this database has no FrameCheck tables, so there is nothing to adopt")
     with conn:
         _ensure_tracking_table(conn)
+    adopted, pending = [], []
+    for path in migration_files():
+        if migration_is_present(conn, path):
+            adopted.append(path.name)
+        else:
+            pending.append(path.name)
     with conn:
-        for path in migration_files():
-            _record_migration(conn, path.name)
-    return {"adopted": [p.name for p in migration_files()], "state": schema_state(conn)}
+        for name in adopted:
+            _record_migration(conn, name)
+    log.info("adopted %d migration(s), left %d pending: %s",
+             len(adopted), len(pending), ", ".join(pending) or "none")
+    return {"adopted": adopted, "pending": pending, "state": schema_state(conn)}
 
 
 def demo_dataset():

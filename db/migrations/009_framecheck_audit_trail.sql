@@ -1,5 +1,12 @@
 -- 009_framecheck_audit_trail.sql
 --
+-- probe: SELECT to_regprocedure('flag_audit_chain_verify()') IS NOT NULL
+--
+-- (The `probe:` line above is how `Adopt this database` decides whether this
+--  migration's work is already present, instead of assuming it is. Without it,
+--  adopting a database that predates migration tracking would record this file
+--  as applied and leave the audit trail permanently missing.)
+--
 -- Feature 2: make the audit trail the DATABASE's guarantee, not the
 -- application's convention.
 --
