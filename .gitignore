@@ -1,4 +1,8 @@
 .env
+# ... and any backup of it: these carry the same secrets (PGPASSWORD, the
+# Etherscan key, the Google client secret) and a stray `.env.bak` is the
+# easiest way to commit all three at once.
+.env.*
 __pycache__/
 *.pyc
 .pytest_cache/

@@ -7,8 +7,10 @@ Etherscan ingestion -> PostgreSQL (18-table schema) -> Parquet snapshots -> Page
 via cuGraph with a pandas/NetworkX CPU fallback -> five flag detectors -> an audit layer -> FastAPI
 -> a dashboard + Tauri desktop app. Full rationale for the original analyzer lives in
 `docs/Project_Bible_TransactionGraphAnalyzer.docx`; this file is about how to work in the repo, not
-why it exists. (The repo is named `DBMS` on GitHub and a local database may still be called `txgraph`, set via `PGDATABASE` — the
-project itself, every endpoint, every page, and the desktop app are FrameCheck.)
+why it exists. (The repo is still named `DBMS` on GitHub; everything else is FrameCheck, including the local database, which
+was renamed from `txgraph` to `framecheck` on 2026-10-12 — `ALTER DATABASE ... RENAME`, metadata only, with
+`PGDATABASE` in `.env` updated to match. A checkout whose `.env` still says `txgraph` will simply be told the
+database does not exist.)
 
 The audit layer is what makes this FrameCheck rather than just a graph analyzer: on Ethereum,
 anyone can send funds to any wallet and the receiver cannot refuse it — so an attacker can make an

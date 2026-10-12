@@ -8,7 +8,7 @@ Prior work: Liu et al., "Evasion Under Blockchain Sanctions" (WWW '26) introduce
 
 Mock mode needs only steps 3-4 (zero setup). Live mode needs all of them.
 
-1. **Postgres (live only; WSL2 Ubuntu-24.04, PG16, localhost:5432, the database named by `PGDATABASE` in `.env`, `txgraph` on this machine).** Windows can only reach it while a WSL session stays attached:
+1. **Postgres (live only; WSL2 Ubuntu-24.04, PG16, localhost:5432, the database named by `PGDATABASE` in `.env`, `framecheck` on this machine).** Windows can only reach it while a WSL session stays attached:
    `wsl -d Ubuntu-24.04 -- sleep 21600` (leave it running).
 2. **`.env`:** `FRAMECHECK_API_MODE=live` (live) or `mock` (default). Never commit or show `.env`.
 3. **API:** `uvicorn api.main:app --port 8000`

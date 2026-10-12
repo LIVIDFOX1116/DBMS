@@ -218,33 +218,54 @@ def connect(dsn: dict, dbname: str | None = None, autocommit: bool = False):
     rarely, must not consume a pooled slot, and CREATE DATABASE needs its own
     autocommit connection anyway.
 
-    Retries `localhost` as 127.0.0.1, because on Windows those are not the
-    same address and the difference is invisible from the UI. Measured on
-    this machine, with Postgres running in WSL: 127.0.0.1:5432 accepted every
-    connection, ::1:5432 refused every one -- and `localhost` resolves to ::1
-    first. WSL binds its listener on the VM's IPv4 loopback only, so a
-    perfectly correct-looking "localhost" setting fails intermittently
-    depending on which address the client tries, which is a miserable thing
-    to debug from a settings panel that says "unreachable".
+    Tries 127.0.0.1 BEFORE the name `localhost`, which is worth 2 seconds a
+    connection here. Measured against this machine's Postgres (in WSL, which
+    binds the VM's IPv4 loopback only):
 
-    The fallback is deliberately narrow: only for loopback names, only after
-    a connection error, and the caller is told it happened (see
-    server_probe), so nothing is silently rewritten behind the user's back.
+        connect to localhost   2140 ms, 2112 ms, 2113 ms
+        connect to 127.0.0.1     68 ms,   64 ms,   64 ms
+
+    `localhost` resolves to ::1 first, nothing is listening there, and the
+    IPv6 attempt burns ~2 s before libpq falls back to IPv4. It then
+    SUCCEEDS, so this never surfaced as an error -- just as lag, on every
+    endpoint that opens its own connection. /db/status opens two and took
+    4.2 s; /db/tables took 2.1 s against the 13 ms its actual query costs.
+
+    Ordering, not a fallback, is the fix: a loopback name is tried as IPv4
+    first and as the name second, so a server listening only on ::1 still
+    works (127.0.0.1 is refused in about a millisecond, then the name
+    succeeds). Any other host is used exactly as given -- quietly connecting
+    to a local database instead of the intended remote one would be worse
+    than failing. server_probe reports which address answered, so nothing is
+    silently rewritten behind the user's back.
     """
     params = dict(dsn)
     if dbname is not None:
         params["dbname"] = dbname
-    try:
-        conn = psycopg2.connect(**params)
-    except psycopg2.OperationalError:
-        host = str(params.get("host", "")).lower()
-        if host not in LOOPBACK_NAMES:
-            raise
-        conn = psycopg2.connect(**{**params, "host": "127.0.0.1"})
-        log.info("connected to 127.0.0.1 after %s failed (IPv6 first, nothing listening on ::1)", host)
+    last_error = None
+    for host in connect_order(params.get("host")):
+        try:
+            conn = psycopg2.connect(**{**params, "host": host})
+            break
+        except psycopg2.OperationalError as e:
+            last_error = e
+    else:
+        raise last_error
     if autocommit:
         conn.autocommit = True
     return conn
+
+
+def connect_order(host) -> list:
+    """The addresses to try for `host`, best first.
+
+    Only loopback names get a second entry, and the IPv4 literal goes first:
+    see connect() for the 2-second measurement that motivates the order.
+    """
+    name = str(host or "")
+    if name.lower() in LOOPBACK_NAMES:
+        return ["127.0.0.1", name]
+    return [name]
 
 
 def server_probe(dsn: dict) -> dict:
