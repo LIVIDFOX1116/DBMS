@@ -1,6 +1,6 @@
 # FrameCheck — GPU-Accelerated Ethereum Framing Audit
 
-[![CI](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/ci.yml)
+[![CI](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/ci.yml)
 [![Release](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/release.yml/badge.svg)](https://github.com/LIVIDFOX1116/DBMS/actions/workflows/release.yml)
 
 Full context, rationale, and the 8-week beat sheet live in
@@ -175,6 +175,20 @@ its own setting in the keychain, so the two are independent and can disagree.
     $env:TMP = "E:\DBMS\build\wix_tmp"; $env:TEMP = $env:TMP
     cargo tauri build
     ```
+- **A standalone sidecar run locks the file the next build writes.** The
+  build script's own closing advice is to run the sidecar directly to check
+  it — and if you leave it running, the next build dies with
+  `PermissionError: [WinError 5] Access is denied` on the output `.exe`, which
+  looks like a toolchain or antivirus problem and is neither. Worse, the
+  process is easy to miss: launched standalone it is named
+  `framecheck-backend-x86_64-pc-windows-msvc`, so `Get-Process
+  framecheck-backend` does **not** find it (the desktop app stages a copy
+  under the shorter name, which is what you see when the app spawns it). Use
+  a match, not an exact name:
+  ```powershell
+  Get-CimInstance Win32_Process | Where-Object { $_.Name -match "framecheck" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+  ```
 - **Sign-in.** `uvicorn api.main:app` requires a Google sign-in by default and
   fails closed. The desktop app does not: the shell passes
   `FRAMECHECK_AUTH_MODE=disabled` to its own sidecar, which is loopback-bound
@@ -616,17 +630,27 @@ route (`/internal/api-key` in `api/main.py`) -- it's never written to `.env`,
 localStorage, or logged. "Test" makes one real call to Etherscan to confirm
 the key works, without saving it. "Clear" removes it from the keychain.
 
-**What the app actually does with a saved key today: nothing yet.** The
-handoff plumbing is fully built and works (Rust owns the key, the backend
-receives it at spawn and can be hot-swapped without a restart), but no
-endpoint in `api/main.py` reads `_runtime_state["etherscan_api_key"]` --
-mock vs. live mode is controlled purely by the unrelated `FRAMECHECK_API_MODE`
-env var (see "Running the API" above). Practically: with or without a
-saved key, the desktop app serves the same mock data as the browser version
-until something is built to actually use the key (see Backend, item 4, in
-the current work order). Save/Test/Clear all work as described above --
-"connected" from Test only confirms the key itself is valid, not that
-anything downstream consumes it yet.
+**What the app does with a saved key.** Rust owns the key, the backend
+receives it at spawn, and it can be hot-swapped without a restart. Two
+endpoints consume it:
+
+- `GET /ingest/plan` reports `api_key_set` plus the rate the app will crawl
+  at. The rate is labelled `"configured"`, not detected -- Etherscan only
+  reports an allowance for paid keys, so claiming otherwise would be a guess
+  dressed as a fact.
+- `POST /ingest/start` passes it into the crawl job (`api/jobs.py` builds the
+  `EtherscanClient` from it). Without a key it refuses with
+  `409 no Etherscan API key is set`; in demo mode it refuses with
+  `409 ingestion needs live mode`, since there is no demo-mode equivalent of
+  writing real wallets to a database.
+
+Mock vs. live is a separate axis, set by `FRAMECHECK_API_MODE` or by the
+**Use live data** toggle in the Database view. So a saved key does nothing on
+its own in demo mode — switch to live data, then crawl.
+
+*(This paragraph used to say the key was read by nothing at all, which was
+true when the handoff was built and stopped being true when the Database
+view's Etherscan ingestion landed.)*
 
 ### Troubleshooting
 

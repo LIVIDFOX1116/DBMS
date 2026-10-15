@@ -482,6 +482,59 @@ an identifier — never interpolated. `422` for a malformed name, `404` for one
 absent from this database. `NUMERIC(78,0)` wei values come back as strings;
 they exceed float precision.
 
+### GET /audit/overview
+`?snapshot_id=<id>` optional. The headline FrameCheck numbers the Overview
+view shows, in one call.
+```json
+{"total_flags": 131176, "total_audited": 164,
+ "frameable_count": 139, "frameable_share": 0.8475609756097561,
+ "framing_cost_median_wei": 8174974987125443.0,
+ "per_detector": [{"detector": "bfs_proximity", "flag_count": 222,
+                   "audited_count": 84, "frameable_count": 84}]}
+```
+`framing_cost_median_wei` is the true median across every frameable flag, not
+a median of per-detector medians. Each flag contributes its **latest** audit
+row only; with `snapshot_id`, only the latest run per detector on that
+snapshot counts, so re-running a detector does not double-count its flags.
+
+### GET /audit/verdicts
+`?snapshot_id=<id>` optional. The latest verdict per flag, so the Flags view
+does not probe `/flags/{id}/audit` once per row.
+```json
+[{"flag_id": 1, "verdict": "frameable", "framing_cost_wei": "1122800000000000",
+  "method": "exact",
+  "minimal_tx_set": ["0x7563df0ea875d3f7ef056c1084c50312b9b79974c2152e372ec15b355bd3322c"]}]
+```
+Flags that have never been audited are **absent** rather than present with
+nulls — "not audited" is a different statement from "audited, no cost".
+`framing_cost_wei` is a string: wei exceeds IEEE-754 integer range.
+
+### GET /flags/{flag_id}/evidence-edges
+The flag's evidence as graph edges, for the evidence panel's drawing.
+```json
+[{"tx_hash": "0x18e8a538…", "hop": 0, "block_number": 11769675,
+  "role": "unsolicited", "from_wallet_id": 27802, "to_wallet_id": 401,
+  "value_wei": "100000000000000000", "from_address": "0x…", "to_address": "0x…"}]
+```
+`role` is `signed` when the flagged wallet signed the transaction and
+`unsolicited` when it did not — computed from `transaction.from_wallet_id`
+only, never from `token_transfer.from_wallet_id`, which spam contracts can
+fake. Payloads are large (495 edges, ~155 kB on flag 1 of the working
+database), which is why this is a separate call from `/flags/{id}/evidence`.
+
+### GET /db/settings
+The connection the backend is using, and where it came from.
+```json
+{"settings": {"host": "localhost", "port": "5432", "dbname": "framecheck",
+              "user": "postgres", "password_set": true},
+ "source": "environment"}
+```
+Never includes the password — only `password_set`, which is what the UI needs
+in order to say whether one is stored. `source` is `"app"` when a user saved
+settings through the Database view (held in the OS keychain) and
+`"environment"` when they came from `.env`, so a developer with a `.env` is
+never left guessing which one is in force.
+
 ### GET /audit/trail
 Whether the audit hash chain still verifies, and what has been removed from it.
 ```json
