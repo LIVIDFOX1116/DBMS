@@ -17,6 +17,7 @@ is what tauri.conf.json's bundle.externalBin and backend.rs's release-mode
 sidecar resolution both expect. The triple is read from `rustc -vV` rather
 than hardcoded so this keeps working if it's ever built on arm64 Windows.
 """
+import os
 import shutil
 import subprocess
 import sys
@@ -103,8 +104,23 @@ def main() -> None:
         "--collect-all", "starlette",
         str(REPO_ROOT / "scripts" / "backend_entrypoint.py"),
     ]
+    # Keep PyInstaller's temporary files beside the repo instead of on the
+    # system drive.
+    #
+    # --workpath/--specpath above already point here, but PyInstaller (and the
+    # zip/wheel machinery underneath it) also uses the system temp directory,
+    # and that is usually on C:. This build needs a couple of GB there, which
+    # is a miserable dependency when the repo itself sits on another volume:
+    # the failure is `PyInstaller ... returned non-zero exit status
+    # 4294967295` -- no mention of disk space anywhere -- and it happened here
+    # with 80 MB free on C: while E: had 58 GB.
+    scratch = build_dir / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "TMP": str(scratch), "TEMP": str(scratch)}
+
     print("Running:", " ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+    print(f"  (temp files -> {scratch})")
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT, env=env)
 
     shutil.rmtree(build_dir, ignore_errors=True)
 
