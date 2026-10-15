@@ -10,6 +10,6 @@ scipy>=1.11           # required by networkx.pagerank
 fastapi>=0.141.1
 uvicorn[standard]>=0.52.4
 pytest>=9.1.1
-httpx>=0.24        # required by fastapi.testclient.TestClient
+httpx>=0.28.1        # required by fastapi.testclient.TestClient
 itsdangerous>=2.2        # signs api/auth.py's session tokens
 google-auth>=2.35        # verifies Google ID tokens (api/auth.py)
