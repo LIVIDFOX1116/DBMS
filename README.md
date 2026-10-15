@@ -13,6 +13,175 @@ outcome resolved (funds returned), good bounded fan-out/consolidation
 structure for PageRank/Louvain/BFS to actually find something. Change it in
 `.env` (`CASE_STUDY_ADDRESS`), not in code.
 
+## Setup: build it, then run it
+
+Three paths, shortest first. Pick one — they stack, so path 2 assumes path 1
+and path 3 assumes path 2. Every command below was run on the machine this
+was developed on; where something is measured, the number is what it actually
+took here.
+
+**What you need in all cases:** Python 3.12 (what CI pins) and a terminal.
+Nothing needs a GPU — `graph/backend.py` falls back to pandas/NetworkX
+wherever RAPIDS is absent. No Node or npm anywhere: the frontend is plain
+files and Tauri serves `frontend/` directly.
+
+### Path 1 — run it with no database and no API key (demo mode)
+
+```bash
+python -m venv .venv-win                       # on Windows; `.venv` elsewhere
+.venv-win\Scripts\pip install -r requirements.txt
+```
+
+```powershell
+# terminal 1 -- the API. Demo mode is the default; the auth variable is not
+# optional, see the note below.
+$env:FRAMECHECK_AUTH_MODE = "disabled"
+.venv-win\Scripts\python -m uvicorn api.main:app --port 8000
+```
+
+```powershell
+# terminal 2 -- the pages
+.venv-win\Scripts\python -m http.server 5500 --directory frontend
+```
+
+(In bash: `FRAMECHECK_AUTH_MODE=disabled python -m uvicorn api.main:app --port 8000`.)
+
+Open <http://localhost:5500/dashboard.html>. Demo mode serves
+`api/mock_data.json`, which carries real figures from a real run — flags,
+clusters with verdicts, eight Multiview panels, and the audit-chain panel —
+so every view has something in it before you have a database at all. Nothing
+is written anywhere.
+
+**Why that variable is required here.** The API's session gate defaults to ON
+and fails closed, so without it every endpoint but `/health` answers
+`401 {"detail": "sign-in required"}` and the dashboard shows a sign-in modal
+with nothing behind it — verified by running Path 1 without it. The desktop
+app (path 2) needs no such variable: it sets it for its own sidecar. Don't set
+it on a machine others can reach.
+
+**Check `mode` if the numbers look like real data.** `curl localhost:8000/health`
+reports `{"status":"ok","mode":"mock"}` in demo mode. A checkout with no `.env`
+defaults to demo, but an existing `.env` with `FRAMECHECK_API_MODE=live` wins
+over an unset variable, so on a machine that has one, pass
+`FRAMECHECK_API_MODE=mock` explicitly. (Worth knowing in PowerShell:
+`$env:X = ""` *removes* a variable rather than blanking it, which is exactly
+how the above went unnoticed here once.)
+
+### Path 2 — build the Windows desktop app
+
+One `.exe` instead of two terminals. In order, because step 4 must exist
+before step 5 can even start:
+
+```bash
+# 1. Rust toolchain, if `rustc --version` doesn't already work:
+#    https://rustup.rs -- needs the MSVC linker, from Visual Studio or the
+#    standalone "Build Tools for Visual Studio" C++ workload.
+
+# 2. The Tauri CLI (compiles from source; several minutes, once)
+cargo install tauri-cli --version "^2"
+
+# 3. The build-only Python deps (PyInstaller and friends)
+.venv-win\Scripts\pip install -r requirements-build.txt
+
+# 4. Freeze the backend into a sidecar executable -- REQUIRED before step 5,
+#    for `cargo tauri dev` as well as for a release build
+.venv-win\Scripts\python scripts/build_backend_sidecar.py
+
+# 5. Build the app and its installers
+cargo tauri build
+```
+
+That produces, under `src-tauri/target/release/`:
+
+| Artifact | What it is |
+|---|---|
+| `framecheck.exe` | the app itself (~19 MB) |
+| `bundle/nsis/FrameCheck_0.1.0_x64-setup.exe` | the installer most people want (~122 MB) |
+| `bundle/msi/FrameCheck_0.1.0_x64_en-US.msi` | the same thing for policy-managed installs (~124 MB) |
+
+The installer is large because the sidecar (~123 MB) carries a frozen Python
+runtime, `db/schema.sql`, every migration, and the demo dataset — so an
+installed copy can set up a database and load real data with no checkout
+present. `cargo tauri dev` instead of step 5 gives a hot-reloading window
+against `api/main.py` from source.
+
+**Two things that will waste your time if you skip them.** Step 4 is checked
+for existence at Tauri build-script time regardless of profile, so skipping
+it fails before a window opens — and a *stale* sidecar is silently used
+rather than erroring, so rebuild it whenever `api/` changes. And the build
+needs the app not to be running: it fails with `Access is denied (os error 5)`
+while `framecheck.exe` is open, which is easy to misread as a toolchain
+problem.
+
+### Path 3 — point it at your own Postgres (live data)
+
+Install Postgres 16, then do the rest **in the app**: the **Database** tab
+exists so this needs no terminal and no `.env`.
+
+1. **Connection** — host, port, database name, user, password. The password
+   goes to the OS keychain, is pushed to the backend over loopback, and is
+   never read back.
+2. **Create database**, then **Import schema** — `db/schema.sql` plus all
+   eight migrations, applied in order and recorded in a `schema_migration`
+   table. Measured on an empty database: 0.57 s for all of it.
+3. **Import data** — either the bundled demo dataset (443,963 rows, ~9 s) or
+   **Pull live data from Etherscan**, which needs a free key from
+   <https://etherscan.io/apis> and runs with a rate limit, a hard call budget
+   and a working Stop button.
+4. **Use live data** — the toggle is disabled until a reachable database with
+   the schema applied actually exists, so it cannot be switched on into a
+   broken state.
+
+An **existing** FrameCheck database from before migration tracking gets an
+extra button, **Adopt this database**, which records migrations as applied
+*without running them*. It deliberately refuses to claim any migration whose
+work it cannot find: adopting a pre-009 database records seven and leaves
+`009_framecheck_audit_trail.sql` pending, so the next click actually installs
+the audit trail.
+
+For repo tooling (`scripts/`, `python -m graph.*`) the database comes from
+`PGDATABASE` in `.env` instead — `framecheck` on this machine. The app keeps
+its own setting in the keychain, so the two are independent and can disagree.
+
+### Gotchas that actually cost time here
+
+- **Postgres inside WSL, app on Windows.** The Windows→WSL loopback relay
+  stops answering about 20 seconds after the WSL instance goes idle —
+  measured: fine immediately after touching WSL, refused at 20 s, 40 s and
+  60 s; fine at 0/25/50/75 s with a process held alive in the distro. Keep
+  one alive: `wsl -d Ubuntu-24.04 -- sleep 21600`. Nothing in this repo can
+  fix that from the Windows side.
+- **`localhost` is not `127.0.0.1`.** On Windows `localhost` resolves to
+  `::1` first, where a WSL Postgres isn't listening, and the IPv6 attempt
+  burns about 2 seconds before falling back — measured 2112 ms against 64 ms.
+  It *succeeded*, so it showed up as lag rather than an error. The app now
+  tries the IPv4 literal first for loopback names; if you see unexplained
+  two-second pauses in your own tooling, that's where to look.
+- **Free space on `C:`, even when the repo is on another drive.** Two
+  separate ways this bites:
+  - *Running.* Each launch extracts the ~230 MB sidecar into `%TEMP%`, and a
+    backend that is force-killed leaves its copy behind. Enough of those will
+    fill the drive and the app then fails to start for no visible reason.
+    They are the `_MEI*` directories in `%TEMP%`; deleting them while nothing
+    is running is safe.
+  - *Building.* PyInstaller and WiX both want a couple of GB of system temp.
+    With 80 MB free on `C:` (and 58 GB on `E:`) the sidecar build died as
+    `PyInstaller ... returned non-zero exit status 4294967295` and the MSI
+    step as ``failed to run ...\light.exe`` — neither message mentions disk
+    space. `scripts/build_backend_sidecar.py` now points its own temp at
+    `build/tmp` inside the repo so it no longer cares; for `cargo tauri
+    build`, set `TMP`/`TEMP` yourself if `C:` is tight:
+    ```powershell
+    $env:TMP = "E:\DBMS\build\wix_tmp"; $env:TEMP = $env:TMP
+    cargo tauri build
+    ```
+- **Sign-in.** `uvicorn api.main:app` requires a Google sign-in by default and
+  fails closed. The desktop app does not: the shell passes
+  `FRAMECHECK_AUTH_MODE=disabled` to its own sidecar, which is loopback-bound
+  on an ephemeral port behind a per-launch token, so the gate would only be an
+  unpassable modal in a shipped build. Set the variable explicitly if you do
+  want sign-in in the app.
+
 ## Who runs what, where
 
 | Machine | Role | Why |
@@ -26,7 +195,11 @@ does, and it **falls back to pandas/NetworkX automatically** wherever RAPIDS
 isn't installed — see the module docstring. That's what let this entire repo
 be built and unit-tested without touching a GPU at all.
 
-## One-time setup (Zenbook, or any machine — no GPU needed)
+## One-time setup for the repo tooling (no GPU needed)
+
+*(The app itself needs none of this — see **Setup: build it, then run it**
+above. This is for running the pipeline, the scripts and the tests from a
+checkout.)*
 
 ```bash
 cd DBMS
@@ -275,9 +448,14 @@ and this variable. Detectors are unaffected (they read from Postgres).
 
 ### Sign-in (Google)
 
-**The API requires a Google sign-in by default.** `/health` and `/benchmarks`
-stay public; everything else answers `401 {"detail": "sign-in required"}`
-without a session. For local work without an OAuth client:
+**`uvicorn api.main:app` requires a Google sign-in by default.** `/health`
+and `/benchmarks` stay public; everything else answers
+`401 {"detail": "sign-in required"}` without a session. **The desktop app
+does not** — it passes `FRAMECHECK_AUTH_MODE=disabled` to its own sidecar,
+which is loopback-bound on an ephemeral port behind a per-launch token (see
+`desired_auth_mode` in `src-tauri/src/backend.rs`); a shipped build has no
+OAuth client, so the gate would be a wall with nothing behind it. For local
+work without an OAuth client:
 
 ```bash
 FRAMECHECK_AUTH_MODE=disabled uvicorn api.main:app --port 8000
