@@ -12,4 +12,4 @@ uvicorn[standard]>=0.54.0
 pytest>=9.1.1
 httpx>=0.28.1        # required by fastapi.testclient.TestClient
 itsdangerous>=2.2        # signs api/auth.py's session tokens
-google-auth>=2.35        # verifies Google ID tokens (api/auth.py)
+google-auth>=2.62.0        # verifies Google ID tokens (api/auth.py)
