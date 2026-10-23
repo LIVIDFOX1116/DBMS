@@ -1,7 +1,301 @@
 # REVIEW_GUIDE.md
 
-Reference notes for the project review. Currently just the schema-management
-demo; add other sections here as needed.
+Reference notes for the project review.
+
+## Database: Location, Purpose & Failure Recovery
+
+Every fact below was verified directly against this project on 2026-10-23 --
+nothing here is assumed. The one scenario that could not be demonstrated
+exactly as specified is noted inline, with what was done instead and why.
+
+### 1. Where is the database?
+
+**Say:** "Postgres runs natively on this Windows machine -- not Docker, not
+WSL -- as the Windows service `postgresql-x64-17`, PostgreSQL version 17.11.
+It listens on localhost, port 5432. There's one database, called
+`framecheck`. Inside it, the real project data lives in the `public` schema
+-- that's 26 tables. For today's demo there's a second, completely separate
+schema called `demo`, used only for the schema-management walkthrough, so
+the two can never collide."
+
+- **Physical data files**: `SHOW data_directory;` returns
+  `C:/Program Files/PostgreSQL/17/data` -- run live with:
+  ```sql
+  SHOW data_directory;
+  ```
+- **Connection config file**: `.env` at the repo root holds `PGHOST`,
+  `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`. `ingestion/config.py`
+  loads it (`load_dotenv()`) into a `PG_DSN` dict at import time -- every
+  script in `graph/`, `scripts/`, and `ingestion/` connects with
+  `psycopg2.connect(**config.PG_DSN)`.
+- **How the running app connects** (two separate paths, both real):
+  - The dashboard's live API traffic goes through a connection **pool**:
+    `api/main.py`'s `_get_pool()` / `get_conn()`
+    (`psycopg2.pool.ThreadedConnectionPool`, 1-10 connections), created lazily
+    on the first live-mode request.
+  - The **Database tab**'s own admin actions (status, create, import, adopt)
+    use a separate one-off connection function, `api/dbsetup.py`'s
+    `connect()` / `current_dsn()` -- `current_dsn()` returns whatever the UI
+    saved at runtime, falling back to `.env` if nothing was saved.
+- **Live demo commands** (run these in front of the reviewer):
+  ```bash
+  # databases on the server
+  "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -U postgres -l
+
+  # schemas inside framecheck (real `public` vs the demo's isolated `demo`)
+  "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -U postgres -d framecheck -c "\dn"
+
+  # tables + row counts, the real project data
+  "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -U postgres -d framecheck -c "\dt+ public.*"
+
+  # the same thing the Database tab itself shows -- open it in the app
+  ```
+  Real output, captured verbatim:
+  ```
+  public schema table count: 26
+  public.wallet rows: 52581
+  ```
+
+### 2. How is it useful to the project?
+
+**Say:** "Postgres is the backbone the whole pipeline writes to and reads
+from. Ingestion pulls raw wallets, blocks, and transactions from Etherscan
+and writes them here. The analysis stage reads a snapshot of that graph,
+runs PageRank, Louvain, and BFS, and writes the results -- metrics, clusters,
+alerts -- back into Postgres. FrameCheck's audit layer then reads that same
+graph structure to decide whether each flag could have been faked by an
+outsider, and writes its verdicts here too, with a tamper-evident hash chain
+the database itself enforces. The API reads all of this to serve the
+dashboard. Nothing in live mode works without it -- only the offline demo
+mode, which reads a static JSON file instead, keeps working with no database
+at all."
+
+**The 26 tables, grouped by purpose, one line each** (confirmed against
+`db/schema.sql` and `db/migrations/002..009`):
+
+*Chain data ingested from Etherscan (8 tables)*
+| Table | What it holds |
+|---|---|
+| `wallet` | one row per address seen, with running balance/sent/received totals and a risk score |
+| `block` | one row per Ethereum block (hash, timestamp, gas, proposer) |
+| `transaction` | every signed transaction, who sent it, who received it, value in wei |
+| `token` | ERC-20 contracts seen (symbol, name, decimals) |
+| `token_transfer` | individual ERC-20 Transfer events, linked back to the transaction that carried them |
+| `label` | named tags (exchange, mixer, sanctioned, etc.) that can be attached to a wallet |
+| `wallet_label` | which wallet has which label, who tagged it, how confident |
+| `analyst` | who is allowed to review/tag things (seeded with one system user; no real auth gate here) |
+
+*Graph snapshots and algorithm output (8 tables)*
+| Table | What it holds |
+|---|---|
+| `graph_snapshot` | one row per exported slice of the graph (Parquet file, block range, vertex/edge counts) |
+| `snapshot_edge` | the aggregated wallet-to-wallet edges that make up one snapshot |
+| `snapshot_edge_tx` | bridge table: which individual transactions fed into one aggregated edge |
+| `algorithm` | the 3 algorithms this project runs (pagerank, louvain, bfs) and their parameters |
+| `analysis_run` | one row per algorithm run (which snapshot, which algorithm, GPU or CPU, how long it took) |
+| `vertex_metric` | per-wallet results of a run (e.g. its PageRank score) |
+| `cluster` | one row per Louvain community found in a run (size, modularity, risk type) |
+| `cluster_member` | which wallets belong to which cluster, and how central they are in it |
+
+*Review and visualization (2 tables)*
+| Table | What it holds |
+|---|---|
+| `alert` | plausible suspicious patterns (e.g. Sybil clusters) flagged for human review |
+| `visualization` | saved renders of a run's graph layout |
+
+*FrameCheck's audit layer (6 tables, added by migration 002 and 009)*
+| Table | What it holds |
+|---|---|
+| `framing_scenario` | a synthetic framing attack the simulator injected, for testing the audit engine itself |
+| `flag` | one row per signal a detector raised (which wallet, which detector, score vs. threshold) |
+| `flag_evidence` | the exact transactions a flag's case rests on, each marked signed-by-the-wallet or unsolicited |
+| `flag_audit` | the verdict for a flag -- frameable or robust, and at what cost, append-only |
+| `flag_audit_tombstone` | a record of any audit row ever deleted, who did it and why (the chain's "logged door") |
+| `flag_history` | every prior version of a `flag` row, with the time range it was valid for (time-travel queries) |
+
+*Accounts and plumbing (2 tables)*
+| Table | What it holds |
+|---|---|
+| `app_user` | Google sign-in accounts (keyed on Google's stable `sub`, not email) |
+| `schema_migration` | which of the 8 migration files have been applied to this database |
+
+**Why Postgres, not flat files/JSON/SQLite** -- based on what this project
+actually uses, not a generic argument:
+- **Real foreign keys everywhere** -- every table above references another
+  by id (`transaction.from_wallet_id REFERENCES wallet`, `flag.wallet_id
+  REFERENCES wallet`, etc.). A flat file can't refuse to write an orphaned
+  reference; Postgres does, by construction.
+- **Constraints that are actually load-bearing**: `flag_audit.verdict CHECK
+  (verdict IN ('frameable','robust'))`, `token_transfer` has a
+  `NUMERIC(78,0)` column specifically because an ERC-20 raw amount can
+  exceed what a 64-bit float or JSON number can hold exactly.
+- **Triggers enforcing the audit trail's guarantees**: `flag_audit` refuses
+  `UPDATE` outright and hash-chains every insert to the one before it (`db/
+  migrations/009_framecheck_audit_trail.sql`) -- this is a database-level
+  guarantee, not something application code promises and might forget.
+- **A GiST exclusion constraint** on `flag_history` makes two overlapping
+  version periods for the same flag physically unstorable -- the kind of
+  invariant only a real RDBMS enforces at write time.
+- **Materialized views** (`mv_cluster_flag_stats`) for a fast aggregate the
+  API needs on every page load, refreshed on demand rather than recomputed
+  per request.
+- **Real concurrent access**: the dashboard's API pool serves many
+  simultaneous requests from one process; a single JSON file has no
+  equivalent of row-level locking or MVCC.
+- **Migrations as a first-class, trackable concept** -- `db/schema.sql` +
+  `db/migrations/002..009_*.sql`, with `schema_migration` recording exactly
+  which have run. A directory of JSON files has no analogous "what version
+  of the shape is this" story.
+
+**What stops working without it**: every live-mode feature -- ingestion,
+the analysis pipeline, all five FrameCheck detectors, the audit engine, the
+Database tab, sign-in (no `app_user` table), and every dashboard view except
+when switched to demo/mock mode, which reads `api/mock_data.json` and needs
+no database at all by design.
+
+### 3. What happens if the database is deleted?
+
+Every case below was actually tested and the real output captured --
+against the isolated `demo` schema for case 1, and against a **temporary
+restored copy** of the real database for cases 2 and 3, never the real data
+(confirmed untouched before and after: `public.wallet` stayed at 52,581 rows
+and the `public` schema stayed at 26 tables throughout). Case 4 could not be
+demonstrated by literally stopping the Windows service -- this shell does
+not have the OS permission to control Windows services -- so it was
+demonstrated the honest alternative way: connecting to a port nothing is
+listening on, which produces the identical OS-level "connection refused"
+error a stopped service would. The resulting exception class and the
+app's handling of it are exactly the same either way.
+
+**Case 1 -- Demo schema dropped.** Safe to actually do; it's the one
+scenario that touches nothing but the isolated demo data.
+```bash
+# dropped it (real command actually run):
+DROP SCHEMA IF EXISTS demo CASCADE;
+# -> demo_schemas/demo_db.py list: "`demo` schema is empty or does not exist yet -- run `seed` first."
+python demo_schemas/reset_demo.py
+# -> recovered in under 2 seconds, all 10 tables back with the same row counts
+```
+**What's lost**: nothing real -- this is demo data by design.
+**Recovery**: `python demo_schemas/reset_demo.py`.
+
+**Case 2 -- One real table dropped** (tested: dropped `cluster` on a
+restored temporary copy, `framecheck_restore_test`, never the real
+database).
+- The Database tab's own status check did **not** notice: `schema_state()`
+  still reported `schema_applied: True` -- it only checks for one sentinel
+  table, `wallet`, not every table. The missing table only breaks whichever
+  feature actually queries it.
+- Querying the dropped table directly raised:
+  ```
+  psycopg2.errors.UndefinedTable: relation "cluster" does not exist
+  ```
+  This is a `ProgrammingError`, **not** an `OperationalError` -- and
+  `api/main.py`'s database-down handler (`_call()`, line ~119) only catches
+  `(OperationalError, InterfaceError)`. So this does **not** show the
+  friendly "database unavailable" banner; it falls through to the generic
+  handler and returns a plain `500 {"detail": "internal server error"}` on
+  whichever endpoint needs that table. (This is exactly the shape of a real
+  bug fixed earlier in this project's life, when `mv_cluster_flag_stats`
+  was missing and `/clusters/top-flagged` returned the same kind of 500.)
+- **What's lost**: every row in that table, plus anything that referenced
+  it by foreign key.
+- **Recovery**: `python db/init_db.py` re-creates the missing table
+  definition (every statement is `IF NOT EXISTS`, safe to re-run) -- but
+  that only brings back the empty table, not its rows. The actual data can
+  only come back from a backup restore (below) or a re-import of a
+  previously exported dataset.
+
+**Case 3 -- The whole FrameCheck database dropped** (tested: against the
+temporary copy's own name resolving to nothing, never the real `framecheck`
+database).
+- `api/dbsetup.py`'s `server_probe()` correctly reported
+  `reachable: True, database_exists: False` -- the Database tab shows
+  "Server: reachable" / "Database: does not exist yet" with a **Create
+  database** button.
+- A direct connection attempt raised:
+  ```
+  psycopg2.OperationalError: connection to server at "127.0.0.1", port 5432
+  failed: FATAL: database "..." does not exist
+  ```
+  This **is** an `OperationalError`, so live-mode API requests correctly
+  return `503 {"detail": "database unavailable"}` (`api/main.py` line
+  ~127-129), and the dashboard's health badge flips to "API unreachable"
+  with the `fcShowApiDown` overlay (`frontend/dashboard.html` line ~1030).
+- **What's lost**: everything -- schema and all data.
+- **Recovery**:
+  ```bash
+  createdb -h 127.0.0.1 -U postgres framecheck    # recreate the empty database
+  python db/init_db.py                             # re-apply schema.sql + all 8 migrations
+  # then restore data -- see the one-line restore command below
+  ```
+
+**Case 4 -- Postgres not running** (tested via an unreachable port, not an
+actual service stop -- see the note above).
+- Connecting raised:
+  ```
+  psycopg2.OperationalError: connection to server at "127.0.0.1", port 5433
+  failed: Connection refused (0x0000274D/10061)
+  Is the server running on that host and accepting TCP/IP connections?
+  ```
+- Same `OperationalError` path as Case 3: the Database tab shows "Server:
+  unreachable" with the raw error text, and explicitly says **"Demo data
+  keeps working meanwhile"** (`frontend/database.js` line ~97) -- the app
+  does not crash, it just can't show live data.
+- **What's lost**: nothing -- no data is touched by the service being down.
+- **Recovery**: start the `postgresql-x64-17` Windows service again
+  (`services.msc`, or an elevated `Start-Service postgresql-x64-17`). The
+  app's connection pool rebuilds itself automatically on the next request --
+  no restart of the app needed.
+
+**Said plainly: what genuinely cannot be recovered without a backup.**
+The *schema* -- every table definition, constraint, and index -- costs
+nothing to recreate: `python db/init_db.py` rebuilds all 26 tables from
+`db/schema.sql` and the 8 migration files, idempotently, any time. But the
+*rows* -- every ingested wallet and transaction, every analysis run, every
+flag and its audit verdict -- exist nowhere else. Re-running the Etherscan
+pipeline from scratch would eventually refill the chain data, but it is
+slow, rate-limited, and would **not** reproduce the same audit trail: the
+hash chain in `flag_audit` is defined by insertion order and each row's
+link to the one before it, so a fresh run starts a fresh, different chain.
+**The only way to get the exact same data and the exact same audit history
+back is restoring a backup.**
+
+### Backup and restore
+
+A real, timestamped backup of the live database was taken and its restore
+path verified end to end -- `pg_dump` into a `.dump` file, restored into a
+**separate temporary database** (`framecheck_restore_test`), row counts
+compared against the original, then the temporary database dropped. All real
+output:
+
+```
+pg_dump: ... (44.6 MB custom-format dump)
+backups/framecheck_backup_20261023T082430.dump created
+
+restored into framecheck_restore_test -- verified:
+ wallets | transactions | clusters | flags
+---------+--------------+----------+-------
+   52581 |       117705 |    70254 | 23143
+(matches the live database)
+
+dropdb framecheck_restore_test -- temp database removed
+```
+
+`backups/` is gitignored (it holds real ingested data) -- the backup file
+stays local only.
+
+**Take a fresh backup:**
+```bash
+"C:\Program Files\PostgreSQL\17\bin\pg_dump.exe" -h 127.0.0.1 -U postgres -d framecheck -Fc -f "backups\framecheck_backup_$(date +%Y%m%dT%H%M%S).dump"
+```
+
+**The one-line restore command** (into an existing, empty-or-damaged
+`framecheck` database -- run `createdb` first if the database itself is
+gone, per Case 3 above):
+```bash
+"C:\Program Files\PostgreSQL\17\bin\pg_restore.exe" -h 127.0.0.1 -U postgres -d framecheck --clean --if-exists --no-owner --no-privileges backups\framecheck_backup_20261023T082430.dump
+```
 
 ## Live Demo: Schema Management
 
