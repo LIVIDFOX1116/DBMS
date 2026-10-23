@@ -404,8 +404,9 @@ run. It covers:
   them, as a separate explicit action, because it is a claim about history
   that cannot be checked from inside the database.
 - **Tables** -- every table with a row-count estimate and size, and an exact
-  `count(*)` on demand. Estimates because counting all 23 tables of a real
-  database took 6.85 s against 0.013 s for the estimate.
+  `count(*)` on demand. Estimates because counting every table of a real
+  database (26 as of migration 009) took 6.85 s against 0.013 s for the
+  estimate.
 - **Import data** -- the bundled demo dataset, or any dataset file.
 - **Pull live data from Etherscan** -- a crawl with a calls-per-second rate
   and a hard call budget, with progress and a Stop button that takes effect
