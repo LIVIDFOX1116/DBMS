@@ -211,12 +211,13 @@ function mvWakePanel(panel) {
 function mvPanelHeader(cluster) {
   const share = cluster.frameable_share;
   const pct = share == null ? "–" : `${Math.round(share * 100)}%`;
-  const flags = cluster.flag_count ?? cluster.flagged_wallets ?? "–";
+  const flagsRaw = cluster.flag_count ?? cluster.flagged_wallets;
+  const flags = flagsRaw == null ? "–" : Number(flagsRaw).toLocaleString();
   return `<div class="mv-head">
     <div class="mv-title">Cluster ${mvEsc(cluster.cluster_id)}</div>
     <div class="mv-meta">
       <span>${Number(cluster.member_count ?? 0).toLocaleString()} wallets</span>
-      <span>${Number(flags).toLocaleString()} flags</span>
+      <span>${flags} flags</span>
       <span title="Share of audited flags in this cluster that are frameable">${pct} frameable</span>
     </div>
     <button class="mv-expand" data-mv-expand="${mvEsc(cluster.cluster_id)}" title="Expand this panel">⤢</button>
@@ -267,6 +268,11 @@ async function mvBuildPanel(cluster, host, nodeCap) {
 
   mvApplySubgraph(panel, data, nodeCap);
   panel.renderer.start();
+  // mvScheduleLayout's loop only marks a panel settled after stepping it;
+  // a cluster with <=1 node is born settled (MvLayout's constructor sets
+  // it directly) and would otherwise never take that branch, leaving the
+  // "Laying out..." status stuck forever.
+  if (panel.layout.settled) mvMarkSettled(panel);
 
   canvasHost.addEventListener("pointerdown", () => mvWakePanel(panel));
   canvasHost.addEventListener("wheel", () => mvWakePanel(panel), { passive: true });
