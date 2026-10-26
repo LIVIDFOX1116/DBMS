@@ -2,14 +2,14 @@
 # Install: pip install -r requirements.txt
 requests>=2.34.2
 psycopg2-binary>=2.9
-python-dotenv>=1.0
+python-dotenv>=1.2.4
 pandas>=2.0
 pyarrow>=25.0.1        # parquet read/write
-networkx>=3.6.1        # CPU graph fallback -- see graph/backend.py
+networkx>=3.7        # CPU graph fallback -- see graph/backend.py
 scipy>=1.18.1           # required by networkx.pagerank
-fastapi>=0.141.1
+fastapi>=0.146.0
 uvicorn[standard]>=0.54.0
 pytest>=9.1.1
 httpx>=0.28.1        # required by fastapi.testclient.TestClient
 itsdangerous>=2.2        # signs api/auth.py's session tokens
-google-auth>=2.35        # verifies Google ID tokens (api/auth.py)
+google-auth>=2.62.0        # verifies Google ID tokens (api/auth.py)
