@@ -1,7 +1,7 @@
 # CPU-only dependencies. Works on the Zenbook and in any plain Python env.
 # Install: pip install -r requirements.txt
 requests>=2.34.2
-psycopg2-binary>=2.9
+psycopg2-binary>=2.9.13
 python-dotenv>=1.2.4
 pandas>=2.0
 pyarrow>=25.0.1        # parquet read/write
