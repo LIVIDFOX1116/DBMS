@@ -1,7 +1,6 @@
 # FrameCheck
 
-FrameCheck's audit layer, built on top of its own graph-analysis detectors, for a 24-hour hackathon
-(DBTHON, 2 PM 7 Oct – 2 PM 8 Oct 2026).
+FrameCheck's audit layer, built on top of its own graph-analysis detectors.
 
 ## The idea
 

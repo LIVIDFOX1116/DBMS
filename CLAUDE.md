@@ -16,9 +16,8 @@ The audit layer is what makes this FrameCheck rather than just a graph analyzer:
 anyone can send funds to any wallet and the receiver cannot refuse it — so an attacker can make an
 innocent wallet look connected to a hack just by sending it dust. FrameCheck audits every flag its
 detectors raise and answers: could an outsider have produced this flag without the wallet owner
-doing anything, and how cheaply? Originally built in a 24-hour hackathon (DBTHON, 2 PM 7 Oct - 2 PM
-8 Oct 2026) as a layer added to an existing analyzer; the project has since been rebranded
-end-to-end as FrameCheck.
+doing anything, and how cheaply? Originally built as a layer added to an existing analyzer; the
+project has since been rebranded end-to-end as FrameCheck.
 
 FrameCheck builds on, and must never claim to compete with or have invented, Liu et al., "Evasion
 Under Blockchain Sanctions" (WWW '26) — dusting attacks and the proportional "impurity" score
