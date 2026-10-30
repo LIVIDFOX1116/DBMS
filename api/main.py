@@ -33,6 +33,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
@@ -87,6 +88,20 @@ app = FastAPI(
 )
 
 
+# Every route that writes to the database or changes a setting -- verified
+# against the actual route table (grep '@app\.(post|put|delete|patch)' finds
+# nothing outside these four prefixes and /auth/*, and /auth/* is exempt on
+# purpose: public-demo mode disables sign-in entirely, so there is no session
+# for those routes to create or destroy, and they touch no FrameCheck data).
+# A bare "/jobs" POST creates a job; "/jobs/{id}/cancel" needs the prefix
+# form, hence checking both the exact path and the "/"-suffixed prefix.
+PUBLIC_DEMO_BLOCKED_PREFIXES = ("/db/", "/jobs/", "/ingest/", "/internal/")
+
+
+def _is_mutating_path(path: str) -> bool:
+    return path == "/jobs" or path.startswith(PUBLIC_DEMO_BLOCKED_PREFIXES)
+
+
 @app.middleware("http")
 async def require_session(request: Request, call_next):
     """Gates every route except auth.PUBLIC_PATHS. A middleware rather
@@ -95,7 +110,10 @@ async def require_session(request: Request, call_next):
     new endpoint, while forgetting to add a path to PUBLIC_PATHS only
     makes a public route ask for a session, which is the safe direction
     to fail in."""
-    if auth.auth_mode() == "disabled" or request.method == "OPTIONS":
+    if auth.public_demo_mode() and request.method == "POST" and _is_mutating_path(request.url.path):
+        return JSONResponse(status_code=403, content={
+            "detail": "read-only public demo: this action is disabled on the shared link"})
+    if auth.auth_mode() == "disabled" or auth.public_demo_mode() or request.method == "OPTIONS":
         return await _call(request, call_next)
     if request.url.path in auth.PUBLIC_PATHS:
         return await _call(request, call_next)
@@ -236,7 +254,8 @@ def rows_as_dicts(cur) -> list:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mode": "mock" if using_mock() else "live"}
+    return {"status": "ok", "mode": "mock" if using_mock() else "live",
+            "public_demo": auth.public_demo_mode()}
 
 
 # ── Etherscan key handoff (desktop-app packaging, Part 2) ──────────────────
@@ -1820,3 +1839,25 @@ def ingest_start(body: IngestRequest):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     return _without_secrets(job.as_dict())
+
+
+# ── Serving the frontend from this same process ────────────────────────────
+# So a public tunnel (ngrok/Cloudflare, see README's "Sharing a public demo
+# link") pointed at this one port serves both the API and the pages -- no
+# second server, no CORS, no separate URL to hand someone. Mounted LAST and
+# deliberately at "/": Starlette matches routes in registration order and a
+# Mount only catches what nothing earlier already matched, so every
+# @app.get/@app.post above (and FastAPI's own /docs, /openapi.json, /redoc,
+# added at app construction, before any of this file's own routes) keeps
+# working exactly as it did -- confirmed by the test suite hitting both an
+# API path and a static one. html=True serves frontend/index.html at "/" and
+# any other file (frontend/dashboard.html, etc.) at its own path.
+#
+# Guarded by existence: the desktop app's frozen sidecar never bundles
+# frontend/ (Tauri serves it directly from its own bundle, see
+# scripts/build_backend_sidecar.py's --add-data list) -- mounting a missing
+# directory unconditionally would crash that backend at import time, which
+# is exactly the regression this guard exists to prevent.
+FRONTEND_DIR = pathlib.Path(__file__).resolve().parent.parent / "frontend"
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

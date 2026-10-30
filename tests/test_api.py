@@ -37,7 +37,7 @@ class TestHealth:
     def test_health_reports_mock_mode(self):
         resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok", "mode": "mock"}
+        assert resp.json() == {"status": "ok", "mode": "mock", "public_demo": False}
 
 
 class TestStatsOverview:
@@ -736,3 +736,92 @@ def test_audit_verdicts_one_row_per_audited_flag():
     assert by_flag[1]["verdict"] == "frameable"
     assert by_flag[2]["verdict"] == "robust"
     assert all(r["flag_id"] for r in rows)
+
+
+class TestPublicDemoMode:
+    """FRAMECHECK_PUBLIC_DEMO=1: a read-only link safe to hand to someone
+    outside the team (see README's "Sharing a public demo link"). Covers the
+    three guarantees that mode makes: sign-in is bypassed without a second
+    env var, every mutating route is refused before it can touch anything,
+    and nothing read-only breaks.
+
+    Each mutating-route case was confirmed live (not just in-process) against
+    a real uvicorn run on 2026-10-29 -- POST /db/create, /jobs, /ingest/start,
+    /internal/api-key and /jobs/123/cancel each returned exactly this 403
+    with no server-side work attempted (api/main.py's middleware returns
+    before the route handler, let alone a database connection, ever runs).
+    """
+
+    # One representative, genuinely mutating route per prefix the spec names,
+    # plus the one route whose own path has no trailing-slash prefix to
+    # match on (POST /jobs itself, as opposed to POST /jobs/{id}/cancel).
+    MUTATING_ROUTES = [
+        "/db/create", "/jobs", "/jobs/123/cancel", "/ingest/start", "/internal/api-key",
+    ]
+
+    def test_health_reports_public_demo_mode(self, monkeypatch):
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "1")
+        assert client.get("/health").json()["public_demo"] is True
+
+    def test_health_reports_false_when_unset(self):
+        # No monkeypatch here on purpose: confirms the module-level default
+        # (not just the previous test's cleanup) is off.
+        assert client.get("/health").json()["public_demo"] is False
+
+    @pytest.mark.parametrize("path", MUTATING_ROUTES)
+    def test_mutating_routes_return_403(self, monkeypatch, path):
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "1")
+        resp = client.post(path, json={})
+        assert resp.status_code == 403
+        assert "read-only" in resp.json()["detail"].lower()
+
+    @pytest.mark.parametrize("path", MUTATING_ROUTES)
+    def test_mutating_routes_not_blocked_when_demo_mode_is_off(self, monkeypatch, path):
+        # The inverse of the case above, proving the new check is additive:
+        # with public-demo mode off (this file's default), none of these
+        # paths get the demo-mode 403 -- whatever status they return instead
+        # is a pre-existing, unrelated concern (e.g. a validation error for
+        # an empty body), not this feature regressing normal operation.
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "0")
+        resp = client.post(path, json={})
+        assert resp.status_code != 403 or "read-only" not in resp.json().get("detail", "").lower()
+
+    def test_sign_in_bypassed_without_a_second_env_var(self, monkeypatch):
+        """Public-demo mode alone disables the sign-in gate -- it must not
+        require FRAMECHECK_AUTH_MODE=disabled as well. Forces auth_mode()
+        back to 'required' (overriding this file's own module-level
+        default) to prove public-demo mode is what is actually bypassing
+        it, not the setup every other test in this file already runs with."""
+        monkeypatch.setenv("FRAMECHECK_AUTH_MODE", "required")
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "1")
+        resp = client.get("/wallets")  # no session cookie, no bearer token
+        assert resp.status_code != 401
+
+    def test_sign_in_still_required_when_demo_mode_is_off(self, monkeypatch):
+        # Confirms the test above is actually exercising something: with
+        # public-demo mode off, forcing auth back to 'required' does gate
+        # a normally-public-in-this-file route, as auth_mode() alone says
+        # it should (tests/test_auth.py covers this path in full; this is
+        # just the contrast case for the test directly above it).
+        monkeypatch.setenv("FRAMECHECK_AUTH_MODE", "required")
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "0")
+        resp = client.get("/wallets")
+        assert resp.status_code == 401
+
+    @pytest.mark.parametrize("path", ["/health", "/wallets", "/clusters", "/alerts", "/stats/overview"])
+    def test_read_only_routes_unaffected(self, monkeypatch, path):
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "1")
+        assert client.get(path).status_code == 200
+
+    def test_is_mutating_path_matches_exactly_the_documented_prefixes(self):
+        # Direct check of the pure routing function itself -- the real
+        # authority on what's blocked, which the tests above exercise end
+        # to end but don't individually enumerate false-positive risks for.
+        mutating = ["/db/create", "/db/tables", "/jobs", "/jobs/5/cancel",
+                    "/ingest/start", "/internal/api-key", "/internal/db-settings"]
+        not_mutating = ["/wallets", "/clusters", "/health", "/auth/callback",
+                         "/auth/logout", "/dbfoo", "/jobsx", "/ingestx"]
+        for path in mutating:
+            assert api_main._is_mutating_path(path), path
+        for path in not_mutating:
+            assert not api_main._is_mutating_path(path), path

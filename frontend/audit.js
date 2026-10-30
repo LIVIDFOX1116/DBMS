@@ -447,6 +447,11 @@ function fcTrackJob(jobId) {
 }
 
 async function fcStartJob(jobType) {
+  if (typeof fcPublicDemo !== "undefined" && fcPublicDemo) {
+    document.getElementById("fcJobStatus").innerHTML =
+      fcErrorBlock("Read-only public demo: this action is disabled on the shared link.", "analysis");
+    return;
+  }
   fcSaveRunPrefs();
   const body = {
     job_type: jobType,
@@ -986,6 +991,7 @@ function fcInit() {
   document.getElementById("fcRunDetectors")?.addEventListener("click", () => fcStartJob("detectors"));
   document.getElementById("fcRunAudit")?.addEventListener("click", () => fcStartJob("audit"));
   document.getElementById("fcCancelJob")?.addEventListener("click", async () => {
+    if (typeof fcPublicDemo !== "undefined" && fcPublicDemo) return;
     const id = document.querySelector("#fcJobStatus .fc-job")?.dataset.jobId;
     try {
       await fetch(`${apiBase()}/jobs/${id || ""}/cancel`, { method: "POST", credentials: "include", headers: fcJsonHeaders() });

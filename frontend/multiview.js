@@ -45,7 +45,11 @@ function mvApiBase() {
     const prefs = JSON.parse(localStorage.getItem("framecheck_prefs") || "{}");
     if (prefs.apiBase) return String(prefs.apiBase).replace(/\/$/, "");
   } catch { /* private mode */ }
-  return "http://localhost:8000";
+  // Same reasoning as dashboard.html's DEFAULT_API_BASE: this page's own
+  // origin is right once api/main.py serves the frontend itself, except the
+  // old port-5500/file: cases, where it isn't a usable API address.
+  if (location.port === "5500" || location.protocol === "file:") return "http://localhost:8000";
+  return window.location.origin;
 }
 
 function mvSessionToken() {

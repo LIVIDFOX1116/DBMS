@@ -44,6 +44,14 @@ function fcRows(n, unavailable) {
 }
 
 async function fcDbPost(path, body) {
+  // Every database.js mutation goes through here, so this one check covers
+  // all of them (Database tab's Create/Schema/Adopt/Mode, import, ingest
+  // start/cancel). The server enforces the real 403 regardless (see
+  // api/main.py); this just skips the round trip for an error the caller's
+  // own catch block would otherwise have to render.
+  if (typeof fcPublicDemo !== "undefined" && fcPublicDemo) {
+    throw new Error("Read-only public demo: this action is disabled on the shared link.");
+  }
   const res = await fetch(apiBase() + path, {
     method: "POST", credentials: "include",
     headers: fcJsonHeaders(),
@@ -128,9 +136,16 @@ function fcRenderDbStatus(status) {
     : `<button class="btn ${canGoLive ? "primary" : ""}" id="fcDbMode" data-mode="live"
          ${canGoLive ? "" : "disabled title='needs a reachable database with the schema applied'"}>Use live data</button>`;
 
-  document.getElementById("fcDbStatus").innerHTML =
+  const box = document.getElementById("fcDbStatus");
+  box.innerHTML =
     `<div class="fc-db-grid">${rows.join("")}</div>
      <div class="fc-db-actions">${next}${modeBtn}</div>`;
+  // Every button this function ever renders (Create/Schema/Adopt/Mode) is a
+  // mutating action -- disabling every <button> here, rather than touching
+  // each of the 4 template strings above, can't drift out of sync with them.
+  if (typeof fcPublicDemo !== "undefined" && fcPublicDemo) {
+    box.querySelectorAll("button").forEach(b => { b.disabled = true; });
+  }
 
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener("click", fn); };
   bind("fcDbCreate", () => fcDbAction("/db/create", "Creating database…"));
@@ -374,7 +389,7 @@ function fcTrackIngestJob(jobId) {
         <div class="fc-db-row"><span>API calls used</span><b>${(r.calls_made ?? 0).toLocaleString()}${
           r.calls_remaining != null ? ` <span class="muted">(${r.calls_remaining.toLocaleString()} left in budget)</span>` : ""}</b></div>
       </div>
-      ${done ? "" : `<button class="btn" id="fcIngestCancel">Stop</button>`}`;
+      ${done ? "" : `<button class="btn" id="fcIngestCancel" ${fcPublicDemo ? "disabled" : ""}>Stop</button>`}`;
     if (!done) {
       document.getElementById("fcIngestCancel").addEventListener("click", async () => {
         await fcDbPost(`/jobs/${jobId}/cancel`).catch(err => toast(err.message, "error"));
@@ -428,7 +443,8 @@ async function fcRefreshDatasets() {
         ${m.vertex_count.toLocaleString()} wallets · ${m.edge_count.toLocaleString()} edges</b></div>
       <div class="fc-db-row"><span>File</span><b>${fcBytes(out.demo.bytes)}</b></div>
     </div>
-    <div class="fc-db-actions"><button class="btn primary" id="fcImportDemo">Import the demo dataset</button></div>`;
+    <div class="fc-db-actions"><button class="btn primary" id="fcImportDemo"
+      ${fcPublicDemo ? "disabled" : ""}>Import the demo dataset</button></div>`;
   document.getElementById("fcImportDemo").addEventListener("click", () => fcImportDataset("demo"));
 }
 

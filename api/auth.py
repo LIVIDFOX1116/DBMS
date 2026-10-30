@@ -53,6 +53,22 @@ def auth_mode() -> str:
     return "disabled" if os.getenv("FRAMECHECK_AUTH_MODE", "required").lower() == "disabled" else "required"
 
 
+def public_demo_mode() -> bool:
+    """Whether this process is serving a read-only public link (shared via
+    an ngrok/Cloudflare tunnel, for someone outside the team to click
+    around in live data with no login wall and no way to change anything).
+
+    Only the literal value '1' opts in -- same fail-closed shape as
+    auth_mode(), but inverted: here the *safe* default is doing nothing,
+    so an unset or misspelled var just means "not a public demo" rather
+    than "accidentally wide open". Implies auth_mode() == 'disabled' (no
+    sign-in wall for a link you're handing to someone with no account) --
+    api.main's middleware checks this directly rather than mutating
+    FRAMECHECK_AUTH_MODE, so the two env vars never fight over who set what.
+    """
+    return os.getenv("FRAMECHECK_PUBLIC_DEMO", "0").strip() == "1"
+
+
 def session_secret() -> str:
     secret = os.getenv("FRAMECHECK_SESSION_SECRET", "")
     if not secret:
@@ -166,7 +182,7 @@ def pg_user_fetch(conn, user_id: int) -> dict | None:
 
 __all__ = [
     "AuthError", "PUBLIC_PATHS", "SESSION_COOKIE", "SESSION_TTL_SECONDS",
-    "auth_mode", "google_client_id", "issue_session", "new_pkce_pair",
+    "auth_mode", "public_demo_mode", "google_client_id", "issue_session", "new_pkce_pair",
     "pg_user_fetch", "read_session", "session_secret", "upsert_user",
     "verify_google_id_token",
 ]

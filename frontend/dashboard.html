@@ -358,6 +358,7 @@ table.dtable a { color: var(--accent-glow); }
   </a>
   <div class="topbar-right">
     <span class="health-pill"><span class="health-dot pending" id="healthDot"></span><span id="healthText">Connecting…</span></span>
+    <span class="health-pill" id="publicDemoBadge" style="display:none;" title="Shared read-only link: live data, nothing can be changed">read-only demo</span>
     <button class="icon-btn" id="refreshBtn" title="Refresh data">↻</button>
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
   </div>
@@ -844,7 +845,18 @@ table.dtable a { color: var(--accent-glow); }
    PREFS + API LAYER
 ════════════════════════════════════════ */
 const PREF_KEY = "framecheck_prefs";
-const DEFAULT_API_BASE = "http://localhost:8000";
+// Defaults to this page's own origin -- the same URL that serves the
+// dashboard (including a public tunnel like ngrok/Cloudflare pointed at
+// port 8000, see README's "Sharing a public demo link") also answers the
+// API, since api/main.py now serves this frontend itself. Two exceptions
+// keep the old hardcoded default: port 5500, the old split-server setup
+// (`python -m http.server 5500 --directory frontend` with the API
+// separately on 8000, where location.origin would be the WRONG, unreachable
+// 5500); and file:, where location.origin is the opaque string "null", not
+// a usable URL base at all.
+const DEFAULT_API_BASE = (location.port === "5500" || location.protocol === "file:")
+  ? "http://localhost:8000"
+  : window.location.origin;
 const loadPref = () => { try { return JSON.parse(localStorage.getItem(PREF_KEY) || "{}"); } catch { return {}; } };
 const savePref = p => localStorage.setItem(PREF_KEY, JSON.stringify(p));
 
@@ -990,11 +1002,38 @@ function setHealth(state, text) {
   document.getElementById("healthText").textContent = text;
 }
 
+// Set once per page load from /health's `public_demo` field -- read by
+// database.js and audit.js too (they run after this file, same page), so
+// their POST helpers can skip the request instead of waiting on a 403.
+// The 403 is the real boundary (api/main.py enforces it server-side
+// regardless of this flag); this is purely "don't let someone click a
+// button whose only possible outcome is an error".
+let fcPublicDemo = false;
+
+// Every static button whose only job is a blocked mutating call (see
+// api/main.py's PUBLIC_DEMO_BLOCKED_PREFIXES) -- disabled outright rather
+// than left clickable-but-failing. Buttons created dynamically after this
+// runs (fcImportDemo, fcIngestCancel, the Database tab's Create/Schema/
+// Adopt/Mode actions) check the same fcPublicDemo flag at the moment
+// they're drawn -- see database.js.
+const FC_PUBLIC_DEMO_STATIC_BUTTON_IDS =
+  ["fcIngestStart", "fcImportFile", "fcRunDetectors", "fcRunAudit", "fcCancelJob"];
+
+function fcApplyPublicDemoMode() {
+  document.getElementById("publicDemoBadge").style.display = fcPublicDemo ? "" : "none";
+  FC_PUBLIC_DEMO_STATIC_BUTTON_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = fcPublicDemo;
+  });
+}
+
 async function loadAll() {
   setHealth("pending", "Connecting…");
   ["statWallets", "statClusters", "statAlerts", "statHighSev"].forEach(id => document.getElementById(id).textContent = "–");
   try {
     const health = await api("/health");
+    fcPublicDemo = !!health.public_demo;
+    fcApplyPublicDemoMode();
 
     [WALLETS, CLUSTERS, ALERTS, SNAPSHOTS, OVERVIEW_STATS] = await Promise.all([
       api("/wallets", { limit: 200 }),

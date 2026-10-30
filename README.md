@@ -449,6 +449,42 @@ beyond this section.** See `docs/API_CONTRACT.md` for every endpoint shape.
 Switch to `FRAMECHECK_API_MODE=live` once Postgres actually has real analysis
 results in it (Phase 3.5 in the bible).
 
+### Sharing a public demo link
+
+For showing FrameCheck to someone outside the team -- a reviewer, faculty,
+anyone without a login -- point a tunnel at the API and let it serve the
+frontend too, in one read-only mode:
+
+```bash
+# 1. api/main.py now serves frontend/ itself (no second server) --
+#    FRAMECHECK_PUBLIC_DEMO=1 disables sign-in and returns 403 on every
+#    mutating route (anything under /db, /jobs, /ingest, /internal).
+FRAMECHECK_API_MODE=live FRAMECHECK_PUBLIC_DEMO=1 uvicorn api.main:app --port 8000
+
+# 2a. ngrok
+ngrok http 8000
+
+# 2b. or Cloudflare Tunnel (no account needed for a one-off link)
+cloudflared tunnel --url http://localhost:8000
+```
+
+Either command prints a public `https://` URL -- send that, not a
+`localhost` one. Because the frontend is served from the same origin as the
+API (step 1), the dashboard's own API-base default resolves to that same
+tunnel URL automatically; nobody needs to open Settings and type an address.
+
+What the link can and can't do: every read-only view (wallets, clusters,
+flags, the audit trail, benchmarks) works exactly as it does for you,
+against the same live database. A small "read-only demo" badge appears next
+to the health indicator, and every button that would create, import, or
+change anything is disabled in the UI -- and refused by the server with a
+403 regardless, even if someone calls the API directly instead of clicking
+a button. Nothing in this mode writes to the database or changes a setting.
+
+Stop sharing by killing the tunnel and the `uvicorn` process -- the link
+stops working the moment either one does, and nothing persists server-side
+from having shared it.
+
 ### Running the packaged desktop app against real data
 
 The sidecar runs from the install directory, not the repo, so snapshot files
