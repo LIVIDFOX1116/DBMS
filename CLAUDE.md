@@ -56,6 +56,7 @@ dusting attacks, taint models, or counterfactual explanations in general.
 
 ```
 db/            schema.sql (PostgreSQL DDL) + init_db.py + migrations/ (FrameCheck additions, new)
+               + orm/ (SQLAlchemy 2.x models/engine/session: data access only, never DDL)
 ingestion/     Etherscan client + BFS subgraph crawler
 graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py, score_wallets.py,
                audit.py (FrameCheck audit engine, new), evidence.py (FrameCheck evidence collection, new)

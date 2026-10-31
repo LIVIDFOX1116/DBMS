@@ -721,6 +721,98 @@ being true; corrected 2026-10-11.
 
 ---
 
+## ORM coverage and permitted raw SQL
+
+**The split: DDL in SQL, data access through the ORM.** `db/schema.sql` plus
+`db/migrations/*.sql` create every table, trigger, function, index and CHECK, applied
+in order by `api/dbsetup.py` and recorded in `schema_migration`. The application's data
+access goes through **SQLAlchemy 2.x**: declarative models for all 26 tables in
+`db/orm/models.py`, one lazily built engine (`db/orm/engine.py`) and a `get_session()`
+context manager (`db/orm/session.py`). The ORM never creates, alters or drops anything:
+there is no `create_all()`/`drop_all()` anywhere (an AST scan in
+`tests/test_orm_models.py` enforces that) and no Alembic autogenerate.
+`tests/test_orm_models.py` compiles every model against the PostgreSQL dialect and fails
+if its columns, types, nullability, keys, defaults or SERIAL placement stop matching the DDL.
+
+Every remaining raw-SQL site is tagged in the code with one of:
+`# RAW SQL (allowed): <reason>`, `# RAW SQL (not yet converted): <reason>`, or, at module
+level for offline tools, `# RAW SQL (offline tooling): <reason>`.
+
+### Through the ORM
+
+| Path | How |
+|---|---|
+| `auth.upsert_user` (`POST /auth/callback`) | `postgresql.insert(AppUser).on_conflict_do_update(index_elements=[google_sub]).returning(...)` |
+| `auth.pg_user_fetch` (`GET /auth/session`) | `session.get(AppUser, user_id)` |
+| `GET /wallets`, `/wallets/{id}` | `select()` ordered `tx_count DESC NULLS LAST`; `session.get(Wallet, id)` |
+| `GET /clusters`, `/clusters/{id}` | `select()` joined through `Cluster.run`, run columns labelled `analysis_backend` / `library_version` |
+| `GET /clusters/{id}/members` | joined through `ClusterMember.wallet` |
+| `GET /alerts`, `/snapshots`, `/snapshots/{id}/edges`, `/runs/{id}/metrics` | `select()`; metrics joined through `VertexMetric.run` |
+| `GET /flags` (all filters) | `select()`; snapshot scoping via `latest_run_ids()` (`DISTINCT ON` with `postgresql.distinct_on`) and `run_id = ANY(:ids)` bound as one `BIGINT[]` |
+| `GET /flags/{id}/audit`, `/audit/verdicts`, `/audit/overview` | latest audit per flag as a `DISTINCT ON` subquery; `func.count().filter(...)`; `func.percentile_cont(0.5).within_group(...)` |
+| `GET /stats/overview` | `func.count()` and `FILTER`ed counts |
+| `GET /flags/{id}/evidence`, `/evidence-edges`, `/audit.csv` | signer joined through `Transaction.signer` (`transaction.from_wallet_id`); CSV's newest audit as a `LATERAL` subquery |
+| `graph.audit.persist_audit` | `insert(FlagAudit)` built from the model, run on the caller's connection (`db.orm.session.execute_on_connection`) so `commit=False` callers keep their transaction |
+
+Migration 009's audit trail is respected, not bypassed: `flag_audit.prev_hash`/`row_hash`
+are server-generated (`FetchedValue`, read back with `eager_defaults`), a `before_flush`
+guard refuses ORM updates/deletes of `flag_audit` and any ORM write to `flag_history` /
+`flag_audit_tombstone`, and a bulk `update()` is still refused by the trigger itself
+(`tests/test_orm_integration.py`, run against a live database).
+
+Converting changed no response: every endpoint above was captured against a live
+database before and after, and all 50 recorded responses (JSONB, NUMERIC, the median,
+the CSV, 404s and empty results) are byte-identical.
+
+### Raw SQL that stays, and why
+
+**Allowed** (stored procedures/functions, triggers, DDL, performance-critical work):
+
+| Site | Reason |
+|---|---|
+| `GET /audit/trail`, `/flags/{id}/versions`, `/flags/as-of` | call migration 009's PL/pgSQL functions `flag_audit_chain_verify()`, `flag_versions()`, `flag_as_of()` (bound parameters) |
+| `GET /clusters/top-flagged` (+ `resolve_cluster_run_id`, `resolve_snapshot_for_run`) | performance-critical: aggregates the `mv_cluster_flag_stats` materialized view (471 ms → 2 ms, migration 008) |
+| `api/dbsetup.py`: `create_database`, `apply_schema`, `_ensure_tracking_table`, `_record_migration`, `applied_migrations`, `schema_state`, `migration_is_present` | DDL and migration bookkeeping: the schema belongs to the SQL files, never the ORM |
+| `api/dbsetup.py`: `import_dataset`, `dataset_target_rows`, `_target_seed_names`, `reset_sequences` | performance-critical bulk COPY import (443,963 rows in ~9 s) and the sequence reset after it |
+| `GET /db/status`, `/db/tables`, `/db/tables/{table}[/count]` (`server_probe`, `table_inventory`, `exact_row_count`, `sample_table`) | catalogue introspection. Table names are whitelisted against the live catalogue, not the ORM's models, because the Database tab also inspects non-FrameCheck schemas, and are quoted with `psycopg2.sql.Identifier` |
+| `api/jobs.py: refresh_cluster_flag_stats` | `REFRESH MATERIALIZED VIEW CONCURRENTLY`, view maintenance |
+| `graph/evidence.py: fetch_evidence_chain`, `graph/audit.py: fetch_unsolicited_candidates` | the recursive CTE in `db/queries/evidence.sql` |
+| `persist_flags`, `persist_vertex_metric`, `persist_clusters`, `persist_evidence` | performance-critical bulk writes (`execute_values`) |
+| `_fetch_native_and_token_transfers` (`graph/detectors.py`, `graph/audit.py`) | performance-critical whole-history transfer fetch for the haircut replay (hundreds of thousands of rows) |
+| detector reads (`run_bfs_proximity`, `run_sybil_cluster`, `run_pagerank_threshold`, `run_engaged_proximity`, `fetch_bfs_scores`, `fetch_cluster_scores`) | performance-critical read of a whole run's results |
+| `db/init_db.py` | DDL: creates the database and applies the schema |
+
+**Not yet converted** — no rubric exemption; left because converting them means
+rewriting more tests that pin their psycopg2 form, or because they are batch/crawler
+bookkeeping outside the API:
+
+| Site | Why it is still raw |
+|---|---|
+| `GET /audit/summary` | pinned by three `TestAuditDedup` tests (SQL text, tuple params) |
+| `GET /clusters/{id}/subgraph` | pinned by `tests/test_multiview_api.py` |
+| `GET /cluster-membership` | pinned by `TestLiveModeQueryShapes.test_cluster_membership` |
+| `resolve_latest_run_ids` | serves the raw endpoints above and is pinned by its own test; the ORM endpoints use `latest_run_ids()` |
+| `api/jobs.py: _run_audit` | audit-target selection on the job's own connection; pinned by `tests/test_jobs.py` |
+| `graph/` lookups and bookkeeping (`fetch_flag`, `get_algorithm_id`, `start_run`, `finish_run`, `classify_clusters`, `persist_snapshot`, `persist_risk_scores`, `collect_evidence_for_run`, `resolve_latest_run_id`, CLI `main`s) | batch pipeline on a caller-supplied connection (often inside a transaction the caller rolls back) |
+| `ingestion/ingest_subgraph.py` upserts | crawler writes, one Etherscan record at a time |
+
+**Offline tooling** (`scripts/*.py`: the framing simulator, experiment and benchmark
+drivers, dataset export, data-quality report) is not part of the application's data
+access. It includes the one trigger-guarded delete path (`framecheck.allow_audit_delete`),
+used by `benchmark_audit.py` and `run_experiment.py` to remove rows they created.
+
+### SQL injection
+
+- ORM statements are parameterised by construction; values are never part of the SQL text
+  (`tests/test_orm_paths.py` checks a hostile `sub` stays a bound parameter).
+- Every remaining raw query binds values (`%s` / `%(name)s`); no remaining site interpolates
+  a value into SQL. The one interpolated fragment (`block_col` in `graph/detectors.py`) is
+  one of two constant strings chosen by a boolean.
+- Dynamic identifiers (`/db/tables/{table}`, `CREATE DATABASE`) are whitelisted, then
+  quoted with `psycopg2.sql.Identifier`.
+
+---
+
 ## Tauri commands (Rust, `src-tauri/src/commands.rs`)
 
 Registered in `src-tauri/src/lib.rs:77-87`

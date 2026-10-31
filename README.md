@@ -13,6 +13,34 @@ outcome resolved (funds returned), good bounded fan-out/consolidation
 structure for PageRank/Louvain/BFS to actually find something. Change it in
 `.env` (`CASE_STUDY_ADDRESS`), not in code.
 
+## Technology stack
+
+| Layer | Technology |
+|---|---|
+| Database | PostgreSQL 16+ (26 tables, PL/pgSQL triggers and functions, a materialized view) |
+| **ORM** | **SQLAlchemy 2.x** (`db/orm/`), over the psycopg2 driver |
+| Graph analytics | cuDF + cuGraph on the GPU (WSL2 / RAPIDS), pandas + NetworkX on the CPU |
+| API | FastAPI + Uvicorn |
+| Frontend | plain HTML/JS, no build step |
+| Desktop app | Tauri 2 (Rust) with a PyInstaller-frozen Python sidecar |
+
+**DDL in SQL, data access through the ORM.** The schema is defined only by
+`db/schema.sql` and `db/migrations/*.sql`, applied in order and tracked in
+`schema_migration` — the ORM never creates or alters a table, and
+`tests/test_orm_models.py` fails if a model drifts from that DDL. The application's
+CRUD and sign-in paths read and write through the SQLAlchemy models and sessions.
+Raw SQL remains only where it is the right tool — PL/pgSQL functions, DDL and catalogue
+introspection, bulk/performance-critical paths, the recursive evidence CTE — and each
+site is tagged in code and listed with its reason in
+[`docs/API_CONTRACT.md`](docs/API_CONTRACT.md#orm-coverage-and-permitted-raw-sql).
+
+**Schema documentation.** [`docs/ER_Diagram_TransactionGraphAnalyzer.svg`](docs/ER_Diagram_TransactionGraphAnalyzer.svg)
+(and `.png`) and [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) are generated from
+[`docs/schema_v2.dbml`](docs/schema_v2.dbml) by `scripts/render_er.ps1` / `render_er.sh`:
+**26 tables, 35 foreign keys (34 many-to-one, 1 one-to-one), 5 tables with no FK by design**
+(each says why on the diagram). `tests/test_er_coverage.py` fails if a table, column or
+foreign key in the DDL is missing from them.
+
 ## Setup: build it, then run it
 
 Three paths, shortest first. Pick one — they stack, so path 2 assumes path 1
@@ -744,6 +772,7 @@ capability, is what actually limits subgraph size on the GTX 1650.
 
 ```
 db/            schema.sql (PostgreSQL DDL) + init_db.py + migrations/ (FrameCheck additions)
+               + orm/ (SQLAlchemy models, engine, session -- data access only, never DDL)
 ingestion/     Etherscan client + BFS subgraph crawler (Phase 1)
 graph/         backend.py (GPU/CPU abstraction), export_snapshot.py, run_analysis.py, score_wallets.py (Phases 2-3),
                detectors.py, evidence.py, audit.py (FrameCheck)
@@ -754,7 +783,8 @@ scripts/       verify_gpu_env.py (Phase 0 exit criterion), run_pipeline.py (7-st
                backend_entrypoint.py + build_backend_sidecar.py (desktop app release packaging),
                simulate_framing.py, run_experiment.py, benchmark_audit.py (FrameCheck)
 tests/         offline unit tests -- run with `python -m pytest tests/ -v`
-docs/          ER diagram (SVG + DBML), API contract, benchmark_results.md, FRAMECHECK.md, and the full project bible
+docs/          ER diagram (DBML -> SVG/PNG), DATA_DICTIONARY.md, API contract, benchmark_results.md, FRAMECHECK.md,
+               and the full project bible
 src-tauri/     optional native desktop wrapper (Windows) around the frontend + API -- see "Desktop app" above
 ```
 
