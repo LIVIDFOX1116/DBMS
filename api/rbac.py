@@ -91,10 +91,20 @@ ROUTE_POLICY = {
     ("GET", "/audit/summary"): VIEWER,
     ("GET", "/jobs"): VIEWER,
     ("GET", "/jobs/{job_id}"): VIEWER,
+    ("GET", "/labels"): VIEWER,
+    ("GET", "/labels/{label_id}"): VIEWER,
+    ("GET", "/wallets/{wallet_id}/labels"): VIEWER,
 
     # --- analyst: run analyses
     ("POST", "/jobs"): ANALYST,
     ("POST", "/jobs/{job_id}/cancel"): ANALYST,
+    # --- analyst: manage labels and wallet tags, review alerts
+    ("POST", "/labels"): ANALYST,
+    ("PATCH", "/labels/{label_id}"): ANALYST,
+    ("DELETE", "/labels/{label_id}"): ANALYST,
+    ("POST", "/wallets/{wallet_id}/labels"): ANALYST,
+    ("DELETE", "/wallets/{wallet_id}/labels/{label_id}"): ANALYST,
+    ("PATCH", "/alerts/{alert_id}"): ANALYST,
 
     # --- admin: the database, ingestion, the desktop shell's internal hooks
     ("POST", "/internal/api-key"): ADMIN,

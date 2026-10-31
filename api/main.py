@@ -37,7 +37,22 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
 from pydantic import BaseModel, Field
-from sqlalchemy import BigInteger, String, Text, and_, any_, cast, func, literal, or_, select, text, true, type_coerce
+from sqlalchemy import (
+    BigInteger,
+    String,
+    Text,
+    and_,
+    any_,
+    cast,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    true,
+    type_coerce,
+)
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.dialects.postgresql import ARRAY, DOUBLE_PRECISION, aggregate_order_by, distinct_on
 from sqlalchemy.orm import aliased
@@ -58,10 +73,12 @@ from db.orm.models import (
     FlagEvidence,
     FlagLatestAudit,
     GraphSnapshot,
+    Label,
     SnapshotEdge,
     Transaction,
     VertexMetric,
     Wallet,
+    WalletLabel,
 )
 from db.orm.session import execute_on_cursor, get_session
 from ingestion import config
@@ -2034,6 +2051,202 @@ def admin_delete_user(user_id: int, request: Request):
     except sa_exc.DBAPIError as e:
         raise _procedure_error(e) from None
     return {"status": "deactivated", "user_id": user_id}
+
+
+# ── Labels, wallet tags, alert review ──────────────────────────────────────
+# All through ORM objects, one transaction per request (get_session commits on
+# the way out). 404 for unknown ids, 409 for conflicts, 422 for bad input.
+
+def _needs_live(what: str) -> None:
+    if using_mock():
+        raise HTTPException(status_code=409, detail=f"{what} needs live mode")
+
+
+def _current_user_id(request: Request) -> Optional[int]:
+    """Who to record as tagger/reviewer. The local admin of a sign-in-disabled
+    server has no app_user row, so these stay NULL there (both are nullable)."""
+    return getattr(request.state, "user", {}).get("user_id")
+
+
+LABEL_COLUMNS = (Label.label_id, Label.label_name, Label.category, Label.source, Label.is_sanctioned)
+
+
+def _label_dict(label: Label) -> dict:
+    return {c.key: getattr(label, c.key) for c in LABEL_COLUMNS}
+
+
+class LabelCreate(BaseModel):
+    label_name: str = Field(min_length=1, max_length=60)
+    category: Optional[str] = Field(None, max_length=30)
+    source: Optional[str] = Field(None, max_length=40)
+    is_sanctioned: bool = False
+
+
+class LabelUpdate(BaseModel):
+    label_name: Optional[str] = Field(None, min_length=1, max_length=60)
+    category: Optional[str] = Field(None, max_length=30)
+    source: Optional[str] = Field(None, max_length=40)
+    is_sanctioned: Optional[bool] = None
+
+
+@app.get("/labels")
+def list_labels(request: Request, response: Response, q: Optional[str] = Query(None, max_length=60),
+                category: Optional[str] = Query(None, max_length=30),
+                page: Optional[int] = None, page_size: Optional[int] = None):
+    if using_mock():
+        rows = [row for row in load_mock().get("labels", [])
+                if (not q or q.lower() in row["label_name"].lower())
+                and (not category or row.get("category") == category)]
+        return pagination.page_of_list(rows, request, response, page, page_size)
+    query = select(*LABEL_COLUMNS).order_by(Label.label_id)
+    if q:
+        query = query.where(Label.label_name.icontains(q, autoescape=True))
+    if category:
+        query = query.where(Label.category == category)
+    with get_session() as db:
+        return pagination.page_of_query(db, query, request, response, page, page_size)
+
+
+@app.get("/labels/{label_id}")
+def get_label(label_id: int):
+    if using_mock():
+        for row in load_mock().get("labels", []):
+            if row["label_id"] == label_id:
+                return row
+        raise HTTPException(404, "label not found")
+    with get_session() as db:
+        label = db.get(Label, label_id)
+        if label is None:
+            raise HTTPException(404, "label not found")
+        return _label_dict(label)
+
+
+def _duplicate_label(error: sa_exc.IntegrityError) -> HTTPException:
+    if getattr(error.orig, "pgcode", None) != "23505":
+        raise error
+    return HTTPException(status_code=409, detail="a label with that name already exists")
+
+
+@app.post("/labels", status_code=201)
+def create_label(body: LabelCreate):
+    _needs_live("creating a label")
+    try:
+        with get_session() as db:
+            label = Label(**body.model_dump())
+            db.add(label)
+            db.flush()
+            return _label_dict(label)
+    except sa_exc.IntegrityError as e:
+        raise _duplicate_label(e) from None
+
+
+@app.patch("/labels/{label_id}")
+def update_label(label_id: int, body: LabelUpdate):
+    _needs_live("changing a label")
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="nothing to change")
+    if changes.get("label_name", "") is None or ("is_sanctioned" in changes and changes["is_sanctioned"] is None):
+        raise HTTPException(status_code=422, detail="label_name and is_sanctioned cannot be null")
+    try:
+        with get_session() as db:
+            label = db.get(Label, label_id)
+            if label is None:
+                raise HTTPException(404, "label not found")
+            for field, value in changes.items():
+                setattr(label, field, value)
+            db.flush()
+            return _label_dict(label)
+    except sa_exc.IntegrityError as e:
+        raise _duplicate_label(e) from None
+
+
+@app.delete("/labels/{label_id}")
+def delete_label(label_id: int, force: bool = False):
+    """409 while the label is on any wallet, so a tag is never lost by
+    accident; ?force=true detaches it first, in the same transaction."""
+    _needs_live("deleting a label")
+    with get_session() as db:
+        label = db.get(Label, label_id)
+        if label is None:
+            raise HTTPException(404, "label not found")
+        attached = db.scalar(select(func.count()).select_from(WalletLabel).where(WalletLabel.label_id == label_id))
+        if attached and not force:
+            raise HTTPException(status_code=409, detail=f"this label is attached to {attached} wallet(s); "
+                                                        "pass force=true to detach it and delete")
+        if attached:
+            db.execute(delete(WalletLabel).where(WalletLabel.label_id == label_id))
+        db.delete(label)
+    return {"status": "deleted", "label_id": label_id, "detached": attached}
+
+
+class WalletTag(BaseModel):
+    label_id: int
+    confidence: Optional[float] = Field(None, ge=0, le=1)
+
+
+WALLET_TAG_COLUMNS = (WalletLabel.label_id, Label.label_name, Label.category, Label.is_sanctioned,
+                      WalletLabel.confidence, WalletLabel.tagged_by, WalletLabel.tagged_at)
+
+
+def _wallet_tags(wallet_id: int):
+    return (select(*WALLET_TAG_COLUMNS).select_from(WalletLabel).join(WalletLabel.label)
+            .where(WalletLabel.wallet_id == wallet_id).order_by(Label.label_name))
+
+
+@app.get("/wallets/{wallet_id}/labels")
+def wallet_labels(wallet_id: int):
+    """A wallet's labels. Its own endpoint because GET /wallets/{id} keeps its
+    body shape (the API contract is additive only)."""
+    if using_mock():
+        return []
+    with get_session() as db:
+        return orm_rows(db, _wallet_tags(wallet_id))
+
+
+@app.post("/wallets/{wallet_id}/labels", status_code=201)
+def tag_wallet(wallet_id: int, body: WalletTag, request: Request):
+    _needs_live("tagging a wallet")
+    with get_session() as db:
+        if db.get(Wallet, wallet_id) is None:
+            raise HTTPException(404, "wallet not found")
+        if db.get(Label, body.label_id) is None:
+            raise HTTPException(404, "label not found")
+        if db.get(WalletLabel, (wallet_id, body.label_id)) is not None:
+            raise HTTPException(status_code=409, detail="this wallet already has that label")
+        db.add(WalletLabel(wallet_id=wallet_id, label_id=body.label_id, confidence=body.confidence,
+                           tagged_by=_current_user_id(request)))
+        db.flush()
+        return orm_row(db, _wallet_tags(wallet_id).where(WalletLabel.label_id == body.label_id))
+
+
+@app.delete("/wallets/{wallet_id}/labels/{label_id}")
+def untag_wallet(wallet_id: int, label_id: int):
+    _needs_live("removing a wallet's label")
+    with get_session() as db:
+        tag = db.get(WalletLabel, (wallet_id, label_id))
+        if tag is None:
+            raise HTTPException(404, "this wallet does not have that label")
+        db.delete(tag)
+    return {"status": "removed", "wallet_id": wallet_id, "label_id": label_id}
+
+
+class AlertReview(BaseModel):
+    review_status: Literal["NEW", "IN_REVIEW", "CONFIRMED", "DISMISSED"]
+
+
+@app.patch("/alerts/{alert_id}")
+def review_alert(alert_id: int, body: AlertReview, request: Request):
+    """Sets the alert's status and records who reviewed it."""
+    _needs_live("reviewing an alert")
+    with get_session() as db:
+        alert = db.get(Alert, alert_id)
+        if alert is None:
+            raise HTTPException(404, "alert not found")
+        alert.review_status = body.review_status
+        alert.reviewed_by = _current_user_id(request)
+        db.flush()
+        return {**{c.key: getattr(alert, c.key) for c in ALERT_COLUMNS}, "reviewed_by": alert.reviewed_by}
 
 
 # ── Serving the frontend from this same process ────────────────────────────

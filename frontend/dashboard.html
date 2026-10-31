@@ -221,7 +221,8 @@ table.dtable a { color: var(--accent-glow); }
 .b-sev-medium { color: var(--med); background: rgba(232,166,61,.18); }
 .b-sev-low { color: var(--accent-glow); background: var(--accent-soft); }
 .b-status-new { color: var(--accent-glow); background: var(--accent-soft); }
-.b-status-reviewed { color: var(--low); background: rgba(47,217,168,.16); }
+.b-status-in_review { color: var(--med); background: rgba(245,180,70,.14); }
+.b-status-confirmed { color: var(--high); background: rgba(240,90,90,.14); }
 .b-status-dismissed { color: var(--text-3); background: var(--bg-sub); }
 .b-verdict-frameable { color: var(--high); background: rgba(229,103,90,.18); }
 .b-verdict-robust { color: var(--low); background: rgba(47,217,168,.16); }
@@ -441,6 +442,7 @@ table.dtable a { color: var(--accent-glow); }
   <button class="sidenav-item" data-page="analysis">Run analysis</button>
   <button class="sidenav-item" data-page="benchmarks">Benchmarks</button>
   <button class="sidenav-item" data-page="database">Database</button>
+  <button class="sidenav-item" data-page="labels">Labels</button>
   <button class="sidenav-item" data-page="users">Users</button>
 </nav>
 
@@ -455,6 +457,7 @@ table.dtable a { color: var(--accent-glow); }
     <button class="sidenav-item" data-page="analysis"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/></svg>Run analysis</button>
     <button class="sidenav-item" data-page="benchmarks"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><rect x="4" y="12" width="4" height="7" rx="1"/><rect x="10" y="7" width="4" height="12" rx="1"/><rect x="16" y="14" width="4" height="5" rx="1"/></svg>Benchmarks</button>
     <button class="sidenav-item" data-page="database"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>Database</button>
+    <button class="sidenav-item" data-page="labels"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1"/></svg>Labels</button>
     <button class="sidenav-item" data-page="users"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Users</button>
   </aside>
 
@@ -578,7 +581,8 @@ table.dtable a { color: var(--accent-glow); }
         <div class="seg" id="alertFilterBar">
           <button class="on" data-f="all">All</button>
           <button data-f="NEW">New</button>
-          <button data-f="REVIEWED">Reviewed</button>
+          <button data-f="IN_REVIEW">In review</button>
+          <button data-f="CONFIRMED">Confirmed</button>
           <button data-f="DISMISSED">Dismissed</button>
         </div>
       </div>
@@ -589,6 +593,33 @@ table.dtable a { color: var(--accent-glow); }
             <tbody id="alertRows"></tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <!-- LABELS -->
+    <section class="view" id="view-labels">
+      <div class="view-header"><div><h1>Labels</h1><p>Named tags that can be attached to wallets</p></div></div>
+      <div class="toolbar">
+        <div class="search"><input type="text" id="fcLabelSearch" placeholder="Search labels…" maxlength="60" /></div>
+        <input type="text" id="fcLabelFilter" placeholder="Filter by category" maxlength="30" />
+      </div>
+      <form class="fc-label-form" id="fcLabelForm" novalidate>
+        <input type="text" id="fcLabelName" placeholder="Name (required)" maxlength="60" data-min-role="analyst" />
+        <input type="text" id="fcLabelCategory" placeholder="Category" maxlength="30" data-min-role="analyst" />
+        <input type="text" id="fcLabelSource" placeholder="Source" maxlength="40" data-min-role="analyst" />
+        <label class="fc-check"><input type="checkbox" id="fcLabelSanctioned" data-min-role="analyst" /> Sanctioned</label>
+        <button class="btn primary" type="submit" id="fcLabelSave" data-min-role="analyst">Add label</button>
+        <button class="btn" type="button" id="fcLabelCancel" hidden>Cancel</button>
+        <span class="fc-warn" id="fcLabelMsg"></span>
+      </form>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="dtable">
+            <thead><tr><th>Name</th><th>Category</th><th>Source</th><th>Sanctioned</th><th></th></tr></thead>
+            <tbody id="fcLabelRows"></tbody>
+          </table>
+        </div>
+        <div id="fcLabelsPager"></div>
       </div>
     </section>
 
@@ -839,6 +870,7 @@ table.dtable a { color: var(--accent-glow); }
         <div class="stat-mini"><div class="sl">PageRank value</div><div class="sv" id="wmRankValue">–</div></div>
       </div>
       <div id="wmClusters"></div>
+      <div id="wmLabels" style="margin-top:12px;"></div>
     </div>
     <div class="modal-footer">
       <button class="btn primary" id="wmCopyBtn">Copy address</button>
@@ -994,6 +1026,7 @@ const PAGE_META = {
   analysis: { title: "Run analysis", sub: "Run the detectors and the framing audit without leaving the app" },
   benchmarks: { title: "Benchmarks", sub: "CPU (pandas + NetworkX) vs GPU (cudf + cuGraph) on this machine" },
   database: { title: "Database", sub: "Set up a local FrameCheck database, see what is in it, and pull live data" },
+  labels: { title: "Labels", sub: "Named tags that can be attached to wallets" },
   users: { title: "Users", sub: "Everyone who can sign in, and what their role lets them do" },
 };
 let currentPage = "overview";
@@ -1022,6 +1055,7 @@ function go(name) {
   if (name === "analysis") fcOpenAnalysisView();
   if (name === "database") fcOpenDatabaseView();
   if (name === "users") fcOpenUsersView();
+  if (name === "labels") fcOpenLabelsView();
 }
 window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
 document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));
@@ -1246,6 +1280,7 @@ function openWalletModal(id) {
       }).join("")
     : "";
   document.getElementById("wmCopyBtn").onclick = () => copyToClipboard(w.address);
+  fcLoadWalletLabels(id);
   openModal("walletModal");
 }
 
@@ -1328,6 +1363,9 @@ document.getElementById("cmFocusBtn").addEventListener("click", async () => {
    ALERTS
 ════════════════════════════════════════ */
 let alertFilter = "all";
+document.getElementById("alertRows").addEventListener("change", e => {
+  if (e.target.classList.contains("fc-alert-status")) fcReviewAlert(e.target);
+});
 document.getElementById("alertFilterBar").addEventListener("click", e => {
   const btn = e.target.closest("button"); if (!btn) return;
   alertFilter = btn.dataset.f;
@@ -1343,7 +1381,7 @@ function renderAlerts() {
     <tr>
       <td>${a.pattern_type}</td>
       <td><span class="badge ${severityBadgeClass(a.severity)}">${a.severity}</span></td>
-      <td><span class="badge ${statusBadgeClass(a.review_status)}">${a.review_status}</span></td>
+      <td>${fcAlertStatusCell(a)}</td>
       <td class="num">${(a.confidence * 100).toFixed(0)}%</td>
       <td class="num">#${a.run_id}</td>
       <td>${a.wallet_id ? `<a href="#" class="mono" onclick="event.preventDefault();openWalletModal(${a.wallet_id})">#${a.wallet_id}</a>` : "–"}</td>
@@ -2031,6 +2069,7 @@ document.addEventListener("keydown", e => {
   applyPrefs();
   fcInit();
   fcInitUsersView();
+  fcInitLabelsView();
   go(location.hash.slice(1) || "overview");
   // Gate before loading: with auth required, firing the full load first
   // would just produce a screenful of 401 error cards behind the sign-in
