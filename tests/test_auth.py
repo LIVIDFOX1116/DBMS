@@ -239,11 +239,17 @@ class TestCors:
 class TestUserIdentity:
     def test_user_is_keyed_on_google_sub_not_email(self):
         # A user who changes their Google email must stay the same row.
-        conn = mock.MagicMock()
-        cur = conn.cursor.return_value.__enter__.return_value
-        cur.fetchone.return_value = (1, "sub-1", "new@example.com", "N", None)
-        auth.upsert_user(conn, {"sub": "sub-1", "email": "new@example.com", "name": "N"})
-        sql = cur.execute.call_args.args[0]
+        # upsert_user goes through the ORM now, so the SQL is read off the
+        # statement it hands the session, compiled for PostgreSQL.
+        from types import SimpleNamespace
+
+        from sqlalchemy.dialects import postgresql
+
+        session = mock.MagicMock()
+        session.execute.return_value.one.return_value = SimpleNamespace(
+            user_id=1, google_sub="sub-1", email="new@example.com", display_name="N", picture_url=None)
+        auth.upsert_user(session, {"sub": "sub-1", "email": "new@example.com", "name": "N"})
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
         assert "ON CONFLICT (google_sub)" in sql
         assert "ON CONFLICT (email)" not in sql
 

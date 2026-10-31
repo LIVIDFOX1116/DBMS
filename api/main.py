@@ -42,6 +42,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api import auth, dbsetup, jobs
 from db.orm.engine import reset_engine
+from db.orm.session import get_session
 from ingestion import config
 from ingestion.etherscan_client import EtherscanClient
 
@@ -1451,8 +1452,8 @@ def auth_callback(body: GoogleCallback, response: Response):
         log.warning("Google ID token verification error: %s", e)
         raise HTTPException(status_code=401, detail="sign-in failed") from e
 
-    with get_conn() as conn:
-        user = auth.upsert_user(conn, claims)
+    with get_session() as db:
+        user = auth.upsert_user(db, claims)
     token = auth.issue_session(user)
     response.set_cookie(
         auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
@@ -1482,8 +1483,8 @@ def auth_session(request: Request):
         session = auth.read_session(token)
     except auth.AuthError:
         return {"authenticated": False, "auth_mode": "required", "user": None}
-    with get_conn() as conn:
-        user = auth.pg_user_fetch(conn, session["user_id"])
+    with get_session() as db:
+        user = auth.pg_user_fetch(db, session["user_id"])
     if user is None:
         return {"authenticated": False, "auth_mode": "required", "user": None}
     return {"authenticated": True, "auth_mode": "required",

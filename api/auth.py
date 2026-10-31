@@ -26,6 +26,11 @@ real run.
 import logging
 import os
 
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from db.orm.models import AppUser
+
 log = logging.getLogger("framecheck.auth")
 
 GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
@@ -99,28 +104,42 @@ def verify_google_id_token(id_token: str, client_id: str) -> dict:
     return claims
 
 
-def upsert_user(conn, claims: dict) -> dict:
+def _user_dict(user) -> dict:
+    return {"user_id": user.user_id, "google_sub": user.google_sub, "email": user.email,
+            "display_name": user.display_name, "picture_url": user.picture_url}
+
+
+def upsert_user(session, claims: dict) -> dict:
     """Creates or refreshes the signed-in user. Keyed on `sub`, so a user
     who changes their Google email keeps the same row rather than
-    silently becoming a second account."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO app_user (google_sub, email, display_name, picture_url, last_login_at)
-            VALUES (%s, %s, %s, %s, now())
-            ON CONFLICT (google_sub) DO UPDATE
-                SET email = EXCLUDED.email,
-                    display_name = EXCLUDED.display_name,
-                    picture_url = EXCLUDED.picture_url,
-                    last_login_at = now()
-            RETURNING user_id, google_sub, email, display_name, picture_url
-            """,
-            (claims["sub"], claims.get("email", ""), claims.get("name"), claims.get("picture")),
-        )
-        row = cur.fetchone()
-    conn.commit()
-    return {"user_id": row[0], "google_sub": row[1], "email": row[2],
-            "display_name": row[3], "picture_url": row[4]}
+    silently becoming a second account.
+
+    One statement through the ORM: PostgreSQL's INSERT ... ON CONFLICT
+    (google_sub) DO UPDATE ... RETURNING, built from the AppUser model, so
+    two concurrent first sign-ins by the same person cannot race into a
+    duplicate the way a get-then-insert would."""
+    insert = pg_insert(AppUser).values(
+        google_sub=claims["sub"],
+        email=claims.get("email", ""),
+        display_name=claims.get("name"),
+        picture_url=claims.get("picture"),
+        last_login_at=func.now(),
+    )
+    statement = insert.on_conflict_do_update(
+        index_elements=[AppUser.google_sub],
+        set_={
+            "email": insert.excluded.email,
+            "display_name": insert.excluded.display_name,
+            "picture_url": insert.excluded.picture_url,
+            "last_login_at": func.now(),
+        },
+    ).returning(AppUser.user_id, AppUser.google_sub, AppUser.email,
+                AppUser.display_name, AppUser.picture_url)
+    row = session.execute(statement).one()
+    # Committed here, before the caller issues a session token for this
+    # user -- the token must never name a row that could still roll back.
+    session.commit()
+    return _user_dict(row)
 
 
 def issue_session(user: dict, now: float | None = None) -> str:
@@ -167,17 +186,10 @@ def new_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def pg_user_fetch(conn, user_id: int) -> dict | None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT user_id, google_sub, email, display_name, picture_url FROM app_user WHERE user_id = %s",
-            (user_id,),
-        )
-        row = cur.fetchone()
-    if row is None:
-        return None
-    return {"user_id": row[0], "google_sub": row[1], "email": row[2],
-            "display_name": row[3], "picture_url": row[4]}
+def pg_user_fetch(session, user_id: int) -> dict | None:
+    """The signed-in user by primary key -- a plain identity-map lookup."""
+    user = session.get(AppUser, user_id)
+    return None if user is None else _user_dict(user)
 
 
 __all__ = [
