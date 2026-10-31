@@ -102,6 +102,12 @@ def main() -> None:
         # exe raises ImportError on first request without --collect-all here.
         "--collect-all", "uvicorn",
         "--collect-all", "starlette",
+        # SQLAlchemy resolves "postgresql+psycopg2://" to its dialect module by
+        # name at create_engine() time, which the static scan cannot see; a
+        # sidecar without it starts fine and then fails its first live-mode
+        # request with NoSuchModuleError.
+        "--hidden-import", "sqlalchemy.dialects.postgresql.psycopg2",
+        "--collect-submodules", "sqlalchemy.dialects.postgresql",
         str(REPO_ROOT / "scripts" / "backend_entrypoint.py"),
     ]
     # Keep PyInstaller's temporary files beside the repo instead of on the
