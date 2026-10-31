@@ -37,9 +37,9 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
-from sqlalchemy import BigInteger, Text, and_, any_, cast, func, literal, select, true
+from sqlalchemy import BigInteger, String, Text, and_, any_, cast, func, literal, select, true, type_coerce
 from sqlalchemy import exc as sa_exc
-from sqlalchemy.dialects.postgresql import ARRAY, distinct_on
+from sqlalchemy.dialects.postgresql import ARRAY, DOUBLE_PRECISION, aggregate_order_by, distinct_on
 from sqlalchemy.orm import aliased
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -60,7 +60,7 @@ from db.orm.models import (
     VertexMetric,
     Wallet,
 )
-from db.orm.session import get_session
+from db.orm.session import execute_on_cursor, get_session
 from ingestion import config
 from ingestion.etherscan_client import EtherscanClient
 
@@ -625,7 +625,9 @@ def select_connected_subgraph(ranked_wallet_ids: list, adjacency: dict, limit: i
     return chosen
 
 
-# RAW SQL (not yet converted): pinned by tests/test_multiview_api.py (TestSubgraphEndpoint drives a psycopg2 cursor)
+# RAW SQL (allowed): performance-critical -- hand-tuned against EXPLAIN (ANALYZE): the PageRank run is resolved
+# once instead of per member (489 ms of 545 ms), and addresses/verdicts are fetched only for the nodes kept
+# (1,038 ms before) -- see the comments inside
 @app.get("/clusters/{cluster_id}/subgraph")
 def cluster_subgraph(cluster_id: int, limit: int = 300):
     """One cluster's members and the edges between them, for a Multiview
@@ -779,7 +781,6 @@ def get_cluster(cluster_id: int):
         return row
 
 
-# RAW SQL (not yet converted): pinned by tests/test_api.py TestLiveModeQueryShapes.test_cluster_membership
 @app.get("/cluster-membership")
 def cluster_membership(cluster_ids: str):
     """wallet_id -> [cluster_id, ...] for the given clusters, in one round
@@ -800,14 +801,13 @@ def cluster_membership(cluster_ids: str):
             for m in c.get("members", []):
                 result.setdefault(m["wallet_id"], []).append(c["cluster_id"])
         return result
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT wallet_id, array_agg(cluster_id ORDER BY cluster_id)
-                   FROM cluster_member WHERE cluster_id = ANY(%s) GROUP BY wallet_id""",
-                (ids,),
-            )
-            return {wallet_id: member_cluster_ids for wallet_id, member_cluster_ids in cur.fetchall()}
+    with get_session() as db:
+        rows = db.execute(
+            select(ClusterMember.wallet_id,
+                   func.array_agg(aggregate_order_by(ClusterMember.cluster_id, ClusterMember.cluster_id)))
+            .where(any_of(ClusterMember.cluster_id, ids, BigInteger))
+            .group_by(ClusterMember.wallet_id))
+        return {wallet_id: member_cluster_ids for wallet_id, member_cluster_ids in rows}
 
 
 @app.get("/clusters/{cluster_id}/members")
@@ -888,49 +888,44 @@ def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
 FLAG_DETECTORS = ("bfs_proximity", "sybil_cluster", "pagerank_threshold", "impurity", "engaged_proximity")
 
 
-# RAW SQL (not yet converted): serves the raw endpoints and is pinned by test_resolve_latest_run_ids_query_shape_and_extraction; ORM endpoints use latest_run_ids()
-def resolve_latest_run_ids(cur, snapshot_id: int, detectors=FLAG_DETECTORS) -> list:
+def latest_run_ids_statement(snapshot_id: int, detectors=FLAG_DETECTORS):
     """Each flag detector can be re-run on the same snapshot (manual
     re-runs, re-detect after a correction, etc.), leaving older runs' flag
     rows sitting in the table alongside the newest run's. Counting all of
-    them together double-counts. Returns the run_id of the most recent
+    them together double-counts. This selects the run_id of the most recent
     DONE run per detector on this snapshot -- resolved from analysis_run
     directly (not by joining through flag), so a detector that is latest
     but flagged nobody (e.g. engaged_proximity with 0 flags) still
     contributes its own run_id rather than being silently skipped in
     favor of an older run that happened to produce flags."""
-    cur.execute(
-        """
-        SELECT DISTINCT ON (al.algorithm_name) ar.run_id
-        FROM analysis_run ar JOIN algorithm al ON al.algorithm_id = ar.algorithm_id
-        WHERE ar.snapshot_id = %s AND ar.status = 'DONE' AND al.algorithm_name = ANY(%s)
-        ORDER BY al.algorithm_name, ar.run_id DESC
-        """,
-        (snapshot_id, list(detectors)),
-    )
-    return [row[0] for row in cur.fetchall()]
+    return (select(AnalysisRun.run_id)
+            .join(AnalysisRun.algorithm)
+            .where(AnalysisRun.snapshot_id == snapshot_id,
+                   AnalysisRun.status == "DONE",
+                   Algorithm.algorithm_name == any_(literal(list(detectors), ARRAY(String))))
+            .ext(distinct_on(Algorithm.algorithm_name))
+            .order_by(Algorithm.algorithm_name, AnalysisRun.run_id.desc()))
 
 
 def latest_run_ids(session, snapshot_id: int, detectors=FLAG_DETECTORS) -> list:
-    """The ORM form of resolve_latest_run_ids(), for the endpoints that read
-    through a session: the most recent DONE run per detector on this
-    snapshot (see that function for why counting every run double-counts).
-    resolve_latest_run_ids stays for the raw-SQL endpoints until they move."""
-    return list(session.scalars(
-        select(AnalysisRun.run_id)
-        .join(AnalysisRun.algorithm)
-        .where(AnalysisRun.snapshot_id == snapshot_id,
-               AnalysisRun.status == "DONE",
-               Algorithm.algorithm_name.in_(list(detectors)))
-        .ext(distinct_on(Algorithm.algorithm_name))
-        .order_by(Algorithm.algorithm_name, AnalysisRun.run_id.desc())
-    ))
+    """latest_run_ids_statement() through a session."""
+    return list(session.scalars(latest_run_ids_statement(snapshot_id, detectors)))
+
+
+def resolve_latest_run_ids(cur, snapshot_id: int, detectors=FLAG_DETECTORS) -> list:
+    """The same statement on an open psycopg2 cursor, for
+    /clusters/top-flagged, whose materialized-view query stays raw."""
+    return [row[0] for row in execute_on_cursor(cur, latest_run_ids_statement(snapshot_id, detectors))]
+
+
+def any_of(column, values: list, element_type):
+    """`column = ANY(:values)` with the list bound as ONE array parameter, so
+    the statement text is the same however many values there are."""
+    return column == any_(literal(list(values), ARRAY(element_type)))
 
 
 def in_run_ids(column, run_ids: list):
-    """`column = ANY(:run_ids)` with the list bound as one BIGINT[] parameter,
-    so the statement text is the same however many runs there are."""
-    return column == any_(literal(list(run_ids), ARRAY(BigInteger)))
+    return any_of(column, run_ids, BigInteger)
 
 
 def latest_audit_per_flag(*columns):
@@ -1244,7 +1239,6 @@ def flags_as_of(at: str, limit: int = 50, detector: Optional[str] = None):
             return {"available": True, "as_of": at, "total": total, "flags": rows}
 
 
-# RAW SQL (not yet converted): pinned by three tests in tests/test_api.py TestAuditDedup (SQL text and tuple params)
 @app.get("/audit/summary")
 def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = None):
     """Per detector: how many flags have been audited, what share came
@@ -1257,34 +1251,28 @@ def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = Non
     older run alongside the newest one -- see resolve_latest_run_ids."""
     if using_mock():
         return load_mock().get("audit_summary", [])
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            query = """
-                SELECT f.detector,
-                       COUNT(*) AS total_audited,
-                       COUNT(*) FILTER (WHERE fa.verdict = 'frameable') AS frameable_count,
-                       MIN(fa.framing_cost_wei) FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_min_wei,
-                       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fa.framing_cost_wei)
-                           FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_median_wei,
-                       MAX(fa.framing_cost_wei) FILTER (WHERE fa.verdict = 'frameable') AS framing_cost_max_wei
-                FROM (SELECT DISTINCT ON (flag_id) * FROM flag_audit
-                      ORDER BY flag_id, created_at DESC, flag_audit_id DESC) fa
-                JOIN flag f ON f.flag_id = fa.flag_id
-            """
-            params = []
-            if run_id is not None:
-                query += " WHERE f.run_id = %s"
-                params.append(run_id)
-            elif snapshot_id is not None:
-                latest_run_ids = resolve_latest_run_ids(cur, snapshot_id)
-                query += " WHERE f.run_id = ANY(%s)"
-                params.append(latest_run_ids)
-            query += " GROUP BY f.detector ORDER BY f.detector"
-            cur.execute(query, params)
-            rows = rows_as_dicts(cur)
-            for row in rows:
-                row["frameable_share"] = row["frameable_count"] / row["total_audited"] if row["total_audited"] else 0.0
-            return rows
+    with get_session() as db:
+        la = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict, FlagAudit.framing_cost_wei)
+        frameable = la.c.verdict == "frameable"
+        query = (select(
+            Flag.detector,
+            func.count().label("total_audited"),
+            func.count().filter(frameable).label("frameable_count"),
+            func.min(la.c.framing_cost_wei).filter(frameable).label("framing_cost_min_wei"),
+            # percentile_cont returns double precision; type_coerce keeps it a
+            # float in Python (the column it orders by is NUMERIC).
+            type_coerce(func.percentile_cont(0.5).within_group(la.c.framing_cost_wei).filter(frameable),
+                        DOUBLE_PRECISION).label("framing_cost_median_wei"),
+            func.max(la.c.framing_cost_wei).filter(frameable).label("framing_cost_max_wei"),
+        ).select_from(la).join(Flag, Flag.flag_id == la.c.flag_id))
+        if run_id is not None:
+            query = query.where(Flag.run_id == run_id)
+        elif snapshot_id is not None:
+            query = query.where(in_run_ids(Flag.run_id, latest_run_ids(db, snapshot_id)))
+        rows = orm_rows(db, query.group_by(Flag.detector).order_by(Flag.detector))
+    for row in rows:
+        row["frameable_share"] = row["frameable_count"] / row["total_audited"] if row["total_audited"] else 0.0
+    return rows
 
 
 class JobRequest(BaseModel):

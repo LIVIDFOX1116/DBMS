@@ -336,19 +336,24 @@ class TestAuditDedup:
         calls = []
 
         class FakeCur:
+            description = [("run_id",)]
+
             def execute(self, query, params=None):
                 calls.append((" ".join(query.split()), params))
 
             def fetchall(self):
                 return [(29,), (30,)]  # real query SELECTs only ar.run_id -- one column
 
+        # The statement is built by the ORM (latest_run_ids_statement) and run
+        # on the cursor; the rule it encodes is what this pins.
         result = api_main.resolve_latest_run_ids(FakeCur(), 4, ("bfs_proximity", "sybil_cluster"))
         assert result == [29, 30]
         query, params = calls[0]
-        assert "DISTINCT ON" in query
-        assert "status = 'DONE'" in query
-        assert "ORDER BY al.algorithm_name, ar.run_id DESC" in query
-        assert params == (4, ["bfs_proximity", "sybil_cluster"])
+        assert "DISTINCT ON (algorithm.algorithm_name)" in query
+        assert "analysis_run.status = %(status_1)s" in query and params["status_1"] == "DONE"
+        assert "ORDER BY algorithm.algorithm_name, analysis_run.run_id DESC" in query
+        assert params["snapshot_id_1"] == 4
+        assert ["bfs_proximity", "sybil_cluster"] in params.values()
 
     def test_flags_with_snapshot_id_filters_by_resolved_run_ids(self, monkeypatch):
         # /flags reads through the ORM: its dedup helper is latest_run_ids
@@ -378,35 +383,38 @@ class TestAuditDedup:
         assert "flag.run_id = %(run_id_1)s" in query and "ANY" not in query
         assert 18 in params.values()
 
+    # /audit/summary reads through the ORM: the session and its dedup helper
+    # (latest_run_ids) are what these patch, and the SQL is read off the
+    # compiled statement.
     def test_audit_summary_with_snapshot_id_filters_by_resolved_run_ids(self, monkeypatch):
         sink = []
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
-        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
-        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda cur, snap, detectors=None: [29, 30, 31, 32, 33])
+        monkeypatch.setattr(api_main, "get_session", lambda: _FakeSessionCtx(sink))
+        monkeypatch.setattr(api_main, "latest_run_ids", lambda session, snap, detectors=None: [29, 30, 31, 32, 33])
 
         resp = client.get("/audit/summary", params={"snapshot_id": 4})
         assert resp.status_code == 200
         query, params = sink[-1]
         assert "run_id = ANY" in query
-        assert [29, 30, 31, 32, 33] in params
+        assert [29, 30, 31, 32, 33] in params.values()
 
     def test_audit_summary_counts_only_the_latest_audit_per_flag(self, monkeypatch):
         sink = []
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
-        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
+        monkeypatch.setattr(api_main, "get_session", lambda: _FakeSessionCtx(sink))
 
         resp = client.get("/audit/summary")
         assert resp.status_code == 200
         query, _params = sink[-1]
-        assert "DISTINCT ON (flag_id)" in query
-        assert "ORDER BY flag_id, created_at DESC, flag_audit_id DESC" in query
+        assert "DISTINCT ON (flag_audit.flag_id)" in query
+        assert "ORDER BY flag_audit.flag_id, flag_audit.created_at DESC, flag_audit.flag_audit_id DESC" in query
 
     def test_audit_summary_explicit_run_id_skips_snapshot_dedup(self, monkeypatch):
         sink = []
         called = []
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
-        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
-        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda *a, **k: called.append(1) or [])
+        monkeypatch.setattr(api_main, "get_session", lambda: _FakeSessionCtx(sink))
+        monkeypatch.setattr(api_main, "latest_run_ids", lambda *a, **k: called.append(1) or [])
 
         resp = client.get("/audit/summary", params={"snapshot_id": 4, "run_id": 18})
         assert resp.status_code == 200
@@ -565,7 +573,7 @@ class TestLiveModeQueryShapes:
         assert not missing, f"live /snapshots query is missing columns: {missing}"
 
     def test_cluster_membership(self, monkeypatch):
-        query = self._live_query(monkeypatch, "/cluster-membership?cluster_ids=1")
+        query = self._orm_query(monkeypatch, "/cluster-membership?cluster_ids=1")
         assert "cluster_member" in query
         assert "wallet_id" in query
         assert "cluster_id" in query

@@ -245,3 +245,33 @@ class TestPersistAudit:
         conn, _, _ = self._run(commit=False)
         conn.commit.assert_not_called()
         conn.rollback.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# /cluster-membership and the audit job's target query
+# ---------------------------------------------------------------------------
+
+class TestRemainingConversions:
+    def test_cluster_membership_aggregates_in_cluster_order(self, monkeypatch):
+        recorder = _Recorder(rows=[(5, [1, 2])])
+        body = _live(monkeypatch, recorder).get("/cluster-membership?cluster_ids=2,1").json()
+        assert body == {"5": [1, 2]}
+        sql = compiled(recorder.statements[0])
+        assert "array_agg(cluster_member.cluster_id ORDER BY cluster_member.cluster_id)" in sql
+        assert "cluster_member.cluster_id = ANY (%(param_1)s::BIGINT[])" in sql
+        assert sql.endswith("GROUP BY cluster_member.wallet_id")
+
+    def test_audit_job_targets_are_scoped_through_the_runs_snapshot(self):
+        from api import jobs
+
+        conn = mock.MagicMock()
+        conn.cursor.return_value.__enter__.return_value.fetchall.return_value = []
+        job = jobs.Job(job_id="t", job_type="audit", snapshot_id=4, seed_wallet_id=2, detector="bfs_proximity", limit=5)
+        jobs._run_audit(job, conn)
+        sql, params = conn.cursor.return_value.__enter__.return_value.execute.call_args.args
+        sql = " ".join(sql.split())
+        assert "FROM flag AS f JOIN analysis_run ON analysis_run.run_id = f.run_id" in sql
+        assert "analysis_run.snapshot_id = %(snapshot_id_1)s" in sql and params["snapshot_id_1"] == 4
+        assert "f.detector = %(detector_1)s" in sql and params["detector_1"] == "bfs_proximity"
+        assert sql.endswith("ORDER BY f.flag_id LIMIT %(param_1)s") and params["param_1"] == 5
+        assert job.result == {"verdicts": {}, "audited": 0}

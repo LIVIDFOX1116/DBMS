@@ -113,7 +113,7 @@ class TestSqlalchemyErrorsAre503:
 
         monkeypatch.setattr(api_main, "get_conn", _down)
         client = TestClient(api_main.app, raise_server_exceptions=False)
-        resp = client.get("/cluster-membership?cluster_ids=1", headers={"Origin": "http://localhost:5500"})
+        resp = client.get("/clusters/top-flagged", headers={"Origin": "http://localhost:5500"})
         assert resp.status_code == 503
         assert resp.json() == {"detail": "database unavailable"}
         assert resp.headers["access-control-allow-origin"] == "http://localhost:5500"

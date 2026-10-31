@@ -26,8 +26,12 @@ import uuid
 from dataclasses import dataclass, field
 
 import psycopg2
+from sqlalchemy import select
+from sqlalchemy.orm import aliased
 
 from api import dbsetup
+from db.orm.models import AnalysisRun, Flag
+from db.orm.session import execute_on_connection
 from graph import audit as audit_module
 from graph import detectors as detectors_module
 from ingestion import config, ingest_subgraph
@@ -299,25 +303,19 @@ def refresh_cluster_flag_stats(job: Job) -> None:
     job.result = {**job.result, "cluster_stats_refreshed": True}
 
 
-# RAW SQL (not yet converted): selects the job's audit targets on the job's own connection; pinned by tests/test_jobs.py
 def _run_audit(job: Job, conn) -> None:
-    with conn.cursor() as cur:
-        query = """
-            SELECT f.flag_id FROM flag f JOIN analysis_run ar ON ar.run_id = f.run_id
-            WHERE ar.snapshot_id = %s
-        """
-        params = [job.snapshot_id]
-        if job.detector and job.detector != "all":
-            query += " AND f.detector = %s"
-            params.append(job.detector)
-        # Same ordering as graph/audit.py's CLI, so a bounded run from the
-        # UI samples the same flags as the same bounded run from a terminal.
-        query += " ORDER BY f.flag_id"
-        if job.limit:
-            query += " LIMIT %s"
-            params.append(job.limit)
-        cur.execute(query, params)
-        flag_ids = [row[0] for row in cur.fetchall()]
+    # Built from the ORM models, run on the job's own connection (the worker
+    # thread opened it; audit_flag below writes on it too).
+    f = aliased(Flag, name="f")
+    query = select(f.flag_id).join(f.run).where(AnalysisRun.snapshot_id == job.snapshot_id)
+    if job.detector and job.detector != "all":
+        query = query.where(f.detector == job.detector)
+    # Same ordering as graph/audit.py's CLI, so a bounded run from the
+    # UI samples the same flags as the same bounded run from a terminal.
+    query = query.order_by(f.flag_id)
+    if job.limit:
+        query = query.limit(job.limit)
+    flag_ids = [row[0] for row in execute_on_connection(conn, query)]
 
     job.total = len(flag_ids)
     if not flag_ids:

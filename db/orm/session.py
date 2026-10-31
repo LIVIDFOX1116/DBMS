@@ -25,22 +25,30 @@ from db.orm.engine import get_engine
 _PSYCOPG2 = pg_psycopg2.dialect()
 
 
-def execute_on_connection(conn, statement):
+def execute_on_cursor(cur, statement) -> list:
+    """Runs an ORM-built statement on an open psycopg2 cursor and returns its
+    rows (empty for a statement with no result). Values stay bound
+    parameters; expanding IN-lists are rendered for the driver."""
+    compiled = statement.compile(dialect=_PSYCOPG2, compile_kwargs={"render_postcompile": True})
+    cur.execute(str(compiled), compiled.params)
+    return cur.fetchall() if cur.description else []
+
+
+def execute_on_connection(conn, statement) -> list:
     """Runs an ORM-built statement on a caller's existing psycopg2 connection,
     inside whatever transaction that connection is already in.
 
-    For graph/ persistence helpers that are handed a connection by their
-    caller rather than opening their own: scripts/benchmark_audit.py and
-    scripts/run_experiment.py write with commit=False and then roll back, so
-    a helper that opened a separate Session would commit behind their back.
-    The statement is still built from the models -- same columns, same
+    For code that is handed a connection by its caller rather than opening
+    its own: scripts/benchmark_audit.py and scripts/run_experiment.py write
+    with commit=False and then roll back, and an API job runs on the
+    connection its worker thread opened, so a helper that opened a separate
+    Session would commit behind them or hold a second connection. The
+    statement is still built from the models -- same columns, same
     server-generated hashes left out -- just executed where the caller's
-    transaction lives. Values are bound parameters, never interpolated."""
-    compiled = statement.compile(dialect=_PSYCOPG2)
+    transaction lives. An INSERT compiles with RETURNING <primary key>; its
+    row comes back like any other."""
     with conn.cursor() as cur:
-        cur.execute(str(compiled), compiled.params)
-        # An INSERT compiles with RETURNING <primary key>; hand that row back.
-        return cur.fetchone() if cur.description else None
+        return execute_on_cursor(cur, statement)
 
 
 @contextmanager
