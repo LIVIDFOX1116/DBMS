@@ -26,10 +26,10 @@ import re
 import secrets
 import threading
 from contextlib import asynccontextmanager, contextmanager
-from typing import Optional
+from typing import Literal, Optional
 
 import psycopg2
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -37,19 +37,20 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
 from pydantic import BaseModel, Field
-from sqlalchemy import BigInteger, String, Text, and_, any_, cast, func, literal, select, true, type_coerce
+from sqlalchemy import BigInteger, String, Text, and_, any_, cast, func, literal, or_, select, text, true, type_coerce
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.dialects.postgresql import ARRAY, DOUBLE_PRECISION, aggregate_order_by, distinct_on
 from sqlalchemy.orm import aliased
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import auth, dbsetup, jobs, rbac
+from api import auth, dbsetup, jobs, pagination, rbac
 from db.orm.engine import reset_engine
 from db.orm.models import (
     Alert,
     Algorithm,
     AnalysisRun,
+    AppUser,
     Cluster,
     ClusterMember,
     Flag,
@@ -245,8 +246,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost)$",
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
+    expose_headers=pagination.EXPOSED_HEADERS,
 )
 
 MOCK_PATH = pathlib.Path(__file__).parent / "mock_data.json"
@@ -356,9 +358,9 @@ def health():
 # launch and passes at spawn alongside the key -- /internal/api-key requires
 # it on every call, so no other local process can silently overwrite the key
 # this process is holding just because it can reach the loopback port. Not
-# added to CORSMiddleware's allow_methods (GET-only, above) on purpose: even
-# a compromised/malicious page loaded in the webview can't reach this route
-# via fetch() -- only Rust's direct HTTP calls (not subject to CORS) can.
+# passed to any page: only Rust knows the token, so a compromised or malicious
+# page loaded in the webview cannot call this route even though POST is an
+# allowed CORS method.
 _runtime_state = {
     "etherscan_api_key": os.getenv("FRAMECHECK_ETHERSCAN_API_KEY", ""),
     "internal_token": os.getenv("FRAMECHECK_INTERNAL_TOKEN", ""),
@@ -1936,6 +1938,102 @@ def ingest_start(body: IngestRequest):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     return _without_secrets(job.as_dict())
+
+
+# ── User management (admin) ────────────────────────────────────────────────
+
+USER_COLUMNS = (AppUser.user_id, AppUser.username, AppUser.email, AppUser.display_name, AppUser.role,
+                AppUser.is_active, AppUser.organisation, AppUser.created_at, AppUser.last_login_at)
+
+# What the procedures in migration 011 raise, as HTTP. Anything else is a real
+# fault and goes on to the generic handler.
+PROCEDURE_ERRORS = {
+    "42501": 403,       # actor is not an active admin
+    "22023": 422,       # invalid role
+    "P0002": 404,       # no such user
+    "23001": 409,       # would remove the last active admin
+    "23514": 409,       # app_user_can_sign_in: the account has no way to sign in
+}
+NO_WAY_TO_SIGN_IN = "this account has no way to sign in (no Google identity, no password), so it cannot be activated"
+
+
+def _procedure_error(error: sa_exc.DBAPIError) -> HTTPException:
+    code = getattr(error.orig, "pgcode", None)
+    if code not in PROCEDURE_ERRORS:
+        raise error
+    detail = NO_WAY_TO_SIGN_IN if code == "23514" else error.orig.diag.message_primary
+    return HTTPException(status_code=PROCEDURE_ERRORS[code], detail=detail)
+
+
+def _admin_actor(request: Request) -> int:
+    """The signed-in admin making a change. The procedures check their actor
+    against app_user, and the local admin of a sign-in-disabled server has no
+    row there -- so changing users needs a real signed-in account."""
+    if using_mock():
+        raise HTTPException(status_code=409, detail="user management needs live mode")
+    user_id = getattr(request.state, "user", {}).get("user_id")
+    if user_id is None:
+        raise HTTPException(status_code=409, detail="changing users needs a signed-in admin, and sign-in is "
+                                                    "disabled on this server (FRAMECHECK_AUTH_MODE=disabled)")
+    return user_id
+
+
+@app.get("/admin/users")
+def admin_list_users(request: Request, response: Response, q: Optional[str] = Query(None, max_length=120),
+                     page: Optional[int] = None, page_size: Optional[int] = None):
+    """Every account, paginated, optionally searched by email or username.
+    Never includes password hashes: USER_COLUMNS does not select them."""
+    if using_mock():
+        return pagination.page_of_list([], request, response, page, page_size)
+    query = select(*USER_COLUMNS).order_by(AppUser.user_id)
+    if q:
+        query = query.where(or_(AppUser.email.icontains(q, autoescape=True),
+                                AppUser.username.icontains(q, autoescape=True)))
+    with get_session() as db:
+        return pagination.page_of_query(db, query, request, response, page, page_size)
+
+
+class UserUpdate(BaseModel):
+    role: Optional[Literal["admin", "analyst", "viewer"]] = None
+    is_active: Optional[bool] = None
+
+
+@app.patch("/admin/users/{user_id}")
+def admin_update_user(user_id: int, body: UserUpdate, request: Request):
+    """Change a role and/or activation, through the stored procedures, which
+    hold the rules: the actor must be an active admin, and the last active
+    admin can be neither demoted nor deactivated."""
+    actor = _admin_actor(request)
+    if body.role is None and body.is_active is None:
+        raise HTTPException(status_code=422, detail="nothing to change: send role and/or is_active")
+    try:
+        with get_session() as db:
+            if body.role is not None:
+                # RAW SQL (allowed): stored procedure, bound parameters
+                db.execute(text("CALL sp_set_user_role(:actor, :target, :role)"),
+                           {"actor": actor, "target": user_id, "role": body.role})
+            if body.is_active is not None:
+                # RAW SQL (allowed): stored procedure, bound parameters
+                db.execute(text("CALL sp_set_user_active(:actor, :target, :active)"),
+                           {"actor": actor, "target": user_id, "active": body.is_active})
+            return orm_row(db, select(*USER_COLUMNS).where(AppUser.user_id == user_id))
+    except sa_exc.DBAPIError as e:
+        raise _procedure_error(e) from None
+
+
+@app.delete("/admin/users/{user_id}")
+def admin_delete_user(user_id: int, request: Request):
+    """A soft delete: users are referenced by analysis runs, tags and alert
+    reviews, so the row stays and is_active goes false."""
+    actor = _admin_actor(request)
+    try:
+        with get_session() as db:
+            # RAW SQL (allowed): stored procedure, bound parameters
+            db.execute(text("CALL sp_set_user_active(:actor, :target, FALSE)"),
+                       {"actor": actor, "target": user_id})
+    except sa_exc.DBAPIError as e:
+        raise _procedure_error(e) from None
+    return {"status": "deactivated", "user_id": user_id}
 
 
 # ── Serving the frontend from this same process ────────────────────────────

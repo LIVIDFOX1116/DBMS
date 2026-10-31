@@ -112,6 +112,9 @@ ROUTE_POLICY = {
     ("POST", "/db/mode"): ADMIN,
     ("GET", "/ingest/plan"): ADMIN,
     ("POST", "/ingest/start"): ADMIN,
+    ("GET", "/admin/users"): ADMIN,
+    ("PATCH", "/admin/users/{user_id}"): ADMIN,
+    ("DELETE", "/admin/users/{user_id}"): ADMIN,
 }
 
 

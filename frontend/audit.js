@@ -191,6 +191,7 @@ const FC_PAGE_MIN_ROLE = { analysis: "analyst", database: "admin", users: "admin
 // Until /auth/session answers: the desktop app and a sign-in-disabled
 // server are a local admin, exactly as before roles existed.
 let FC_ROLE = "admin";
+let FC_AUTH_MODE = null;     // "disabled" | "required" | "public_demo", from /auth/session
 
 function fcRoleAllows(minRole) {
   return (FC_ROLE_RANK[FC_ROLE] || 0) >= (FC_ROLE_RANK[minRole] || 1);
@@ -340,6 +341,7 @@ async function fcEnsureSignedIn() {
     const body = await res.json();
     if (body.authenticated) {
       fcHideSignIn();
+      FC_AUTH_MODE = body.auth_mode;
       fcApplyRole(body.role || "admin");
       go(currentPage);          // re-check the page now the role is known
       return true;

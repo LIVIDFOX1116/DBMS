@@ -16,6 +16,7 @@
 <script src="graph-webgl.js"></script>
 <script src="audit.js"></script>
 <script src="database.js"></script>
+<script src="crud.js"></script>
 <link rel="stylesheet" href="audit.css">
 <style>
 :root {
@@ -440,6 +441,7 @@ table.dtable a { color: var(--accent-glow); }
   <button class="sidenav-item" data-page="analysis">Run analysis</button>
   <button class="sidenav-item" data-page="benchmarks">Benchmarks</button>
   <button class="sidenav-item" data-page="database">Database</button>
+  <button class="sidenav-item" data-page="users">Users</button>
 </nav>
 
 <div class="shell">
@@ -453,6 +455,7 @@ table.dtable a { color: var(--accent-glow); }
     <button class="sidenav-item" data-page="analysis"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20 6 4"/></svg>Run analysis</button>
     <button class="sidenav-item" data-page="benchmarks"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><rect x="4" y="12" width="4" height="7" rx="1"/><rect x="10" y="7" width="4" height="12" rx="1"/><rect x="16" y="14" width="4" height="5" rx="1"/></svg>Benchmarks</button>
     <button class="sidenav-item" data-page="database"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>Database</button>
+    <button class="sidenav-item" data-page="users"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Users</button>
   </aside>
 
   <main class="main">
@@ -586,6 +589,24 @@ table.dtable a { color: var(--accent-glow); }
             <tbody id="alertRows"></tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <!-- USERS (admin) -->
+    <section class="view" id="view-users">
+      <div class="view-header"><div><h1>Users</h1><p>Everyone who can sign in, and what their role lets them do</p></div></div>
+      <div class="toolbar">
+        <div class="search"><input type="text" id="fcUserSearch" placeholder="Search email or username…" maxlength="120" /></div>
+      </div>
+      <p class="fc-note" id="fcUsersNote" hidden></p>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="dtable">
+            <thead><tr><th>Username</th><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead>
+            <tbody id="fcUserRows"></tbody>
+          </table>
+        </div>
+        <div id="fcUsersPager"></div>
       </div>
     </section>
 
@@ -973,6 +994,7 @@ const PAGE_META = {
   analysis: { title: "Run analysis", sub: "Run the detectors and the framing audit without leaving the app" },
   benchmarks: { title: "Benchmarks", sub: "CPU (pandas + NetworkX) vs GPU (cudf + cuGraph) on this machine" },
   database: { title: "Database", sub: "Set up a local FrameCheck database, see what is in it, and pull live data" },
+  users: { title: "Users", sub: "Everyone who can sign in, and what their role lets them do" },
 };
 let currentPage = "overview";
 
@@ -999,6 +1021,7 @@ function go(name) {
   if (name === "benchmarks") fcLoadBenchmarks();
   if (name === "analysis") fcOpenAnalysisView();
   if (name === "database") fcOpenDatabaseView();
+  if (name === "users") fcOpenUsersView();
 }
 window.addEventListener("hashchange", () => go(location.hash.slice(1) || "overview"));
 document.querySelectorAll("[data-page]").forEach(el => el.addEventListener("click", () => go(el.dataset.page)));
@@ -2007,6 +2030,7 @@ document.addEventListener("keydown", e => {
   await resolveTauriApiBase(); // must resolve before any api() call below
   applyPrefs();
   fcInit();
+  fcInitUsersView();
   go(location.hash.slice(1) || "overview");
   // Gate before loading: with auth required, firing the full load first
   // would just produce a screenful of 401 error cards behind the sign-in
