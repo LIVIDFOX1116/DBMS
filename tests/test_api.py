@@ -464,6 +464,44 @@ class _FakeConn:
         return False
 
 
+class _FakeOrmResult:
+    """What a fake session's execute() hands back: no rows for list
+    endpoints, and one empty row for single-item endpoints so they get past
+    their `if row is None: raise 404` check -- like _FakeCursor.fetchone()."""
+
+    def __iter__(self):
+        return iter([])
+
+    def first(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(_mapping={})
+
+
+class _FakeOrmSession:
+    """Stands in for api.main.get_session()'s session. Records each statement
+    compiled for PostgreSQL, so a test reads the SQL the ORM would send."""
+
+    def __init__(self, sink):
+        self._sink = sink
+
+    def execute(self, statement, params=None):
+        from sqlalchemy.dialects import postgresql
+        compiled = statement.compile(dialect=postgresql.dialect())
+        self._sink.append((" ".join(str(compiled).split()), compiled.params))
+        return _FakeOrmResult()
+
+
+class _FakeSessionCtx:
+    def __init__(self, sink):
+        self._session = _FakeOrmSession(sink)
+
+    def __enter__(self):
+        return self._session
+
+    def __exit__(self, *a):
+        return False
+
+
 class TestLiveModeQueryShapes:
     """We can't spin up a live Postgres in CI, but every live-mode SQL query
     should ask for the same columns mock mode returns for the same endpoint --
@@ -471,7 +509,10 @@ class TestLiveModeQueryShapes:
     for callers (see its module docstring). This is exactly the bug class that
     let /clusters silently drop modularity_score in live mode while mock kept
     it, undetected until the endpoint was actually exercised against real
-    Postgres data for the first time."""
+    Postgres data for the first time.
+
+    Endpoints on the ORM are checked through _orm_query (the SQL the compiled
+    statement would send); endpoints still on raw SQL through _live_query."""
 
     def _live_query(self, monkeypatch, path):
         queries = []
@@ -482,32 +523,41 @@ class TestLiveModeQueryShapes:
         assert queries, f"no query captured for {path}"
         return queries[0]
 
+    def _orm_query(self, monkeypatch, path):
+        statements = []
+        monkeypatch.setattr(api_main, "using_mock", lambda: False)
+        monkeypatch.setattr(api_main, "get_session", lambda: _FakeSessionCtx(statements))
+        resp = client.get(path)
+        assert resp.status_code == 200
+        assert statements, f"no ORM statement captured for {path}"
+        return statements[0][0]
+
     def test_clusters_by_run_id(self, monkeypatch):
-        query = self._live_query(monkeypatch, "/clusters?run_id=1")
+        query = self._orm_query(monkeypatch, "/clusters?run_id=1")
         mock_keys = set(load_mock()["clusters"][0].keys()) - {"members"}
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /clusters?run_id= query is missing columns: {missing}"
 
     def test_clusters_unfiltered(self, monkeypatch):
-        query = self._live_query(monkeypatch, "/clusters")
+        query = self._orm_query(monkeypatch, "/clusters")
         mock_keys = set(load_mock()["clusters"][0].keys()) - {"members"}
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /clusters query is missing columns: {missing}"
 
     def test_cluster_by_id(self, monkeypatch):
-        query = self._live_query(monkeypatch, "/clusters/1")
+        query = self._orm_query(monkeypatch, "/clusters/1")
         mock_keys = set(load_mock()["clusters"][0].keys()) - {"members"}
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /clusters/{{id}} query is missing columns: {missing}"
 
     def test_wallets(self, monkeypatch):
-        query = self._live_query(monkeypatch, "/wallets")
+        query = self._orm_query(monkeypatch, "/wallets")
         mock_keys = set(load_mock()["wallets"][0].keys())
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /wallets query is missing columns: {missing}"
 
     def test_snapshots(self, monkeypatch):
-        query = self._live_query(monkeypatch, "/snapshots")
+        query = self._orm_query(monkeypatch, "/snapshots")
         mock_keys = set(load_mock()["snapshots"][0].keys())
         missing = [k for k in mock_keys if k not in query]
         assert not missing, f"live /snapshots query is missing columns: {missing}"
@@ -586,8 +636,8 @@ class TestUnhandledErrors:
     def test_unexpected_exception_returns_generic_500_not_the_real_error(self, monkeypatch):
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
 
-        class _ExplodingConn:
-            def cursor(self):
+        class _ExplodingSession:
+            def execute(self, *a, **k):
                 raise RuntimeError("SELECT password_hash FROM analyst -- should never reach a caller")
 
             def __enter__(self):
@@ -596,7 +646,8 @@ class TestUnhandledErrors:
             def __exit__(self, *a):
                 return False
 
-        monkeypatch.setattr(api_main, "get_conn", lambda: _ExplodingConn())
+        # /wallets reads through the ORM, so the explosion comes from its session.
+        monkeypatch.setattr(api_main, "get_session", lambda: _ExplodingSession())
 
         # TestClient's default (raise_server_exceptions=True) re-raises an
         # unhandled exception for debugging rather than returning the
@@ -611,12 +662,16 @@ class TestUnhandledErrors:
         assert "RuntimeError" not in resp.text
 
     def test_database_unreachable_returns_503_not_500(self, monkeypatch):
+        from sqlalchemy import exc as sa_exc
+
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
 
         def _down():
-            raise api_main.OperationalError("connection refused: host=secret-host")
+            # What SQLAlchemy raises when the engine cannot connect: the driver's
+            # OperationalError wrapped in its own (not a psycopg2 subclass).
+            raise sa_exc.OperationalError(None, None, Exception("connection refused: host=secret-host"))
 
-        monkeypatch.setattr(api_main, "get_conn", _down)
+        monkeypatch.setattr(api_main, "get_session", _down)
         resp = TestClient(app, raise_server_exceptions=False).get("/wallets")
         assert resp.status_code == 503
         assert resp.json() == {"detail": "database unavailable"}

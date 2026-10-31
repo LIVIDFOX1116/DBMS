@@ -38,10 +38,21 @@ from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
 from sqlalchemy import exc as sa_exc
+from sqlalchemy import select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api import auth, dbsetup, jobs
 from db.orm.engine import reset_engine
+from db.orm.models import (
+    Alert,
+    AnalysisRun,
+    Cluster,
+    ClusterMember,
+    GraphSnapshot,
+    SnapshotEdge,
+    VertexMetric,
+    Wallet,
+)
 from db.orm.session import get_session
 from ingestion import config
 from ingestion.etherscan_client import EtherscanClient
@@ -264,6 +275,19 @@ def rows_as_dicts(cur) -> list:
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def orm_rows(session, statement) -> list:
+    """An ORM select's rows as dicts, keyed by the selected column names (or
+    their .label()s) in select order -- the same shape rows_as_dicts gives
+    the raw-SQL endpoints, so a response does not change when its endpoint
+    moves onto the ORM."""
+    return [dict(row._mapping) for row in session.execute(statement)]
+
+
+def orm_row(session, statement) -> dict | None:
+    row = session.execute(statement).first()
+    return dict(row._mapping) if row is not None else None
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "mode": "mock" if using_mock() else "live",
@@ -391,18 +415,19 @@ def stats_overview():
     }
 
 
+WALLET_COLUMNS = (Wallet.wallet_id, Wallet.address, Wallet.address_type, Wallet.risk_score, Wallet.tx_count)
+
+
 @app.get("/wallets")
 def list_wallets(limit: int = 50):
     if using_mock():
         return load_mock()["wallets"][:limit]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT wallet_id, address, address_type, risk_score, tx_count
-                   FROM wallet ORDER BY tx_count DESC NULLS LAST LIMIT %s""",
-                (limit,),
-            )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        # NULLS LAST matches idx_wallet_tx_count (migration 007), so the
+        # planner walks the index instead of sorting every wallet.
+        return orm_rows(db, select(*WALLET_COLUMNS)
+                        .order_by(Wallet.tx_count.desc().nulls_last())
+                        .limit(limit))
 
 
 @app.get("/wallets/{wallet_id}")
@@ -412,23 +437,25 @@ def get_wallet(wallet_id: int):
             if w["wallet_id"] == wallet_id:
                 return w
         raise HTTPException(404, "wallet not found")
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT wallet_id, address, address_type, risk_score, tx_count
-                   FROM wallet WHERE wallet_id = %s""",
-                (wallet_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(404, "wallet not found")
-            cols = [d[0] for d in cur.description]
-            return dict(zip(cols, row))
+    with get_session() as db:
+        wallet = db.get(Wallet, wallet_id)
+        if wallet is None:
+            raise HTTPException(404, "wallet not found")
+        return {col.key: getattr(wallet, col.key) for col in WALLET_COLUMNS}
 
 
-CLUSTER_COLUMNS = """c.cluster_id, c.run_id, c.community_label, c.member_count, c.cluster_type,
-                      c.risk_score, c.modularity_score,
-                      ar.gpu_device AS analysis_backend, ar.backend_library_version AS library_version"""
+# The analysis run's backend travels with each cluster, so the UI can say
+# whether a community came from cuGraph or NetworkX.
+CLUSTER_COLUMNS = (
+    Cluster.cluster_id, Cluster.run_id, Cluster.community_label, Cluster.member_count,
+    Cluster.cluster_type, Cluster.risk_score, Cluster.modularity_score,
+    AnalysisRun.gpu_device.label("analysis_backend"),
+    AnalysisRun.backend_library_version.label("library_version"),
+)
+
+
+def clusters_with_run():
+    return select(*CLUSTER_COLUMNS).select_from(Cluster).join(Cluster.run)
 
 
 @app.get("/clusters")
@@ -438,22 +465,10 @@ def list_clusters(run_id: Optional[int] = None):
         # Mock mode has no analysis_run to join against -- additive fields
         # default to null rather than a fabricated value.
         return [{**{k: v for k, v in c.items() if k != "members"}, "analysis_backend": None, "library_version": None} for c in clusters]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            if run_id is not None:
-                cur.execute(
-                    f"""SELECT {CLUSTER_COLUMNS}
-                        FROM cluster c JOIN analysis_run ar ON ar.run_id = c.run_id
-                        WHERE c.run_id = %s""",
-                    (run_id,),
-                )
-            else:
-                cur.execute(
-                    f"""SELECT {CLUSTER_COLUMNS}
-                        FROM cluster c JOIN analysis_run ar ON ar.run_id = c.run_id
-                        ORDER BY c.run_id DESC LIMIT 100"""
-                )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        if run_id is not None:
+            return orm_rows(db, clusters_with_run().where(Cluster.run_id == run_id))
+        return orm_rows(db, clusters_with_run().order_by(Cluster.run_id.desc()).limit(100))
 
 
 CLUSTER_ALGORITHM = "louvain"
@@ -756,19 +771,11 @@ def get_cluster(cluster_id: int):
             if c["cluster_id"] == cluster_id:
                 return {**{k: v for k, v in c.items() if k != "members"}, "analysis_backend": None, "library_version": None}
         raise HTTPException(404, "cluster not found")
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""SELECT {CLUSTER_COLUMNS}
-                    FROM cluster c JOIN analysis_run ar ON ar.run_id = c.run_id
-                    WHERE c.cluster_id = %s""",
-                (cluster_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(404, "cluster not found")
-            cols = [d[0] for d in cur.description]
-            return dict(zip(cols, row))
+    with get_session() as db:
+        row = orm_row(db, clusters_with_run().where(Cluster.cluster_id == cluster_id))
+        if row is None:
+            raise HTTPException(404, "cluster not found")
+        return row
 
 
 @app.get("/cluster-membership")
@@ -808,15 +815,15 @@ def cluster_members(cluster_id: int):
             if c["cluster_id"] == cluster_id:
                 return c.get("members", [])
         raise HTTPException(404, "cluster not found")
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT cm.wallet_id, w.address, cm.membership_score, cm.is_core_node
-                   FROM cluster_member cm JOIN wallet w ON w.wallet_id = cm.wallet_id
-                   WHERE cm.cluster_id = %s""",
-                (cluster_id,),
-            )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        return orm_rows(db, select(ClusterMember.wallet_id, Wallet.address,
+                                   ClusterMember.membership_score, ClusterMember.is_core_node)
+                        .select_from(ClusterMember).join(ClusterMember.wallet)
+                        .where(ClusterMember.cluster_id == cluster_id))
+
+
+ALERT_COLUMNS = (Alert.alert_id, Alert.run_id, Alert.cluster_id, Alert.wallet_id, Alert.pattern_type,
+                 Alert.severity, Alert.confidence, Alert.review_status)
 
 
 @app.get("/alerts")
@@ -824,33 +831,22 @@ def list_alerts(status: Optional[str] = None):
     if using_mock():
         alerts = load_mock()["alerts"]
         return [a for a in alerts if status is None or a["review_status"] == status]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            if status:
-                cur.execute(
-                    """SELECT alert_id, run_id, cluster_id, wallet_id, pattern_type, severity, confidence, review_status
-                       FROM alert WHERE review_status = %s""",
-                    (status,),
-                )
-            else:
-                cur.execute(
-                    """SELECT alert_id, run_id, cluster_id, wallet_id, pattern_type, severity, confidence, review_status
-                       FROM alert ORDER BY detected_at DESC LIMIT 100"""
-                )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        if status:
+            return orm_rows(db, select(*ALERT_COLUMNS).where(Alert.review_status == status))
+        return orm_rows(db, select(*ALERT_COLUMNS).order_by(Alert.detected_at.desc()).limit(100))
 
 
 @app.get("/snapshots")
 def list_snapshots():
     if using_mock():
         return load_mock()["snapshots"]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT snapshot_id, snapshot_name, start_block, end_block, vertex_count, edge_count, is_directed
-                   FROM graph_snapshot ORDER BY created_at DESC"""
-            )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        return orm_rows(db, select(GraphSnapshot.snapshot_id, GraphSnapshot.snapshot_name,
+                                   GraphSnapshot.start_block, GraphSnapshot.end_block,
+                                   GraphSnapshot.vertex_count, GraphSnapshot.edge_count,
+                                   GraphSnapshot.is_directed)
+                        .order_by(GraphSnapshot.created_at.desc()))
 
 
 @app.get("/snapshots/{snapshot_id}/edges")
@@ -858,14 +854,11 @@ def snapshot_edges(snapshot_id: int, limit: int = 500):
     if using_mock():
         edges = load_mock()["edges"].get(str(snapshot_id), [])
         return edges[:limit]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT src_wallet_id, dst_wallet_id, edge_weight, transfer_count
-                   FROM snapshot_edge WHERE snapshot_id = %s LIMIT %s""",
-                (snapshot_id, limit),
-            )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        return orm_rows(db, select(SnapshotEdge.src_wallet_id, SnapshotEdge.dst_wallet_id,
+                                   SnapshotEdge.edge_weight, SnapshotEdge.transfer_count)
+                        .where(SnapshotEdge.snapshot_id == snapshot_id)
+                        .limit(limit))
 
 
 @app.get("/runs/{run_id}/metrics")
@@ -875,16 +868,14 @@ def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
         # Mock mode has no analysis_run to join against -- additive fields
         # default to null rather than a fabricated value.
         return [{**row, "analysis_backend": None, "library_version": None} for row in run.get(metric_name, [])[:limit]]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT vm.wallet_id, vm.metric_value, vm.rank_position,
-                          ar.gpu_device AS analysis_backend, ar.backend_library_version AS library_version
-                   FROM vertex_metric vm JOIN analysis_run ar ON ar.run_id = vm.run_id
-                   WHERE vm.run_id = %s AND vm.metric_name = %s ORDER BY vm.rank_position LIMIT %s""",
-                (run_id, metric_name, limit),
-            )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        return orm_rows(db, select(VertexMetric.wallet_id, VertexMetric.metric_value, VertexMetric.rank_position,
+                                   AnalysisRun.gpu_device.label("analysis_backend"),
+                                   AnalysisRun.backend_library_version.label("library_version"))
+                        .select_from(VertexMetric).join(VertexMetric.run)
+                        .where(VertexMetric.run_id == run_id, VertexMetric.metric_name == metric_name)
+                        .order_by(VertexMetric.rank_position)
+                        .limit(limit))
 
 
 # ── FrameCheck (Phase 7) ────────────────────────────────────────────────────

@@ -104,6 +104,8 @@ class TestEngine:
 
 class TestSqlalchemyErrorsAre503:
     def test_sqlalchemy_operational_error_is_database_unavailable(self, monkeypatch):
+        # Through a raw-SQL endpoint's get_conn(), to show the 503 mapping is
+        # about the exception class, not about which data path raised it.
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
 
         def _down():
@@ -111,7 +113,7 @@ class TestSqlalchemyErrorsAre503:
 
         monkeypatch.setattr(api_main, "get_conn", _down)
         client = TestClient(api_main.app, raise_server_exceptions=False)
-        resp = client.get("/wallets", headers={"Origin": "http://localhost:5500"})
+        resp = client.get("/cluster-membership?cluster_ids=1", headers={"Origin": "http://localhost:5500"})
         assert resp.status_code == 503
         assert resp.json() == {"detail": "database unavailable"}
         assert resp.headers["access-control-allow-origin"] == "http://localhost:5500"

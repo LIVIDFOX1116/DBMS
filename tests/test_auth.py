@@ -215,12 +215,15 @@ class TestCors:
     def test_a_database_error_still_carries_cors_headers(self, monkeypatch):
         # Without this the browser reports "no Access-Control-Allow-Origin"
         # for a dead database, which sends you hunting for a CORS bug.
+        from sqlalchemy import exc as sa_exc
+
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
 
         def _down():
-            raise api_main.OperationalError("down")
+            raise sa_exc.OperationalError(None, None, Exception("down"))
 
-        monkeypatch.setattr(api_main, "get_conn", _down)
+        # /wallets reads through the ORM; its session is what fails to connect.
+        monkeypatch.setattr(api_main, "get_session", _down)
         client = TestClient(api_main.app, raise_server_exceptions=False)
         resp = client.get("/wallets", headers={"Origin": "http://localhost:5500"})
         assert resp.status_code == 503
