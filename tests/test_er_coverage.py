@@ -80,6 +80,13 @@ class TestErCoverage(unittest.TestCase):
         missing = [t for t in self.schema if f"<title>{t}</title>" not in svg]
         self.assertEqual(missing, [], f"tables missing from {SVG.name}: {missing}")
 
+    def test_views_and_routines_are_in_the_data_dictionary(self):
+        text = DATA_DICTIONARY.read_text(encoding="utf-8")
+        section = text.split("## Views and routines")[-1]
+        for name in ("v_flag_latest_audit", "mv_cluster_flag_stats", "sp_set_user_role", "sp_set_user_active",
+                     "flag_audit_chain_verify", "flag_as_of", "flag_versions", "flag_audit_append_only"):
+            self.assertIn(name, section, name)
+
     def test_every_table_is_in_the_data_dictionary(self):
         self.assertTrue(DATA_DICTIONARY.exists(), f"{DATA_DICTIONARY} has not been generated")
         text = DATA_DICTIONARY.read_text(encoding="utf-8")

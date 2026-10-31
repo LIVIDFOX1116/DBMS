@@ -249,7 +249,7 @@ A suspicious cluster or wallet raised for analyst review. (db/schema.sql)
 | `severity` | `varchar(10)` | NO |  |  |  |
 | `confidence` | `decimal(4,3)` | YES |  |  |  |
 | `detected_at` | `timestamp` | YES |  | `now()` |  |
-| `review_status` | `varchar(12)` | YES |  | `NEW` |  |
+| `review_status` | `varchar(12)` | YES |  | `NEW` | Migration 011. CHECK (review_status IN ('NEW', 'IN_REVIEW', 'CONFIRMED', 'DISMISSED')) |
 
 ### `visualization`
 
@@ -384,3 +384,19 @@ Which migration files have been applied to this database. Created by api/dbsetup
 |---|---|---|---|---|---|
 | `filename` | `varchar(200)` | NO | PK |  |  |
 | `applied_at` | `timestamp` | NO |  | `now()` |  |
+
+## Views and routines
+
+| Object | Kind | Created by | What it does |
+|---|---|---|---|
+| `v_flag_latest_audit` | view | migration 011 | The newest `flag_audit` row per flag (`DISTINCT ON`, `created_at` then `flag_audit_id`) with the flag's run, wallet and detector. Read by `/audit/verdicts`, `/audit/overview` and `/audit/summary`; read-only in the ORM. |
+| `mv_cluster_flag_stats` | materialized view | migration 008 | Precomputed cluster x flag join that `/clusters/top-flagged` aggregates (471 ms to 2 ms). Refreshed after detector jobs and imports. |
+| `sp_set_user_role(actor, target, role)` | procedure | migration 011 | Changes a user's role. The actor must be an active admin; refuses to demote the last active admin. |
+| `sp_set_user_active(actor, target, active)` | procedure | migration 011 | Activates or deactivates (soft-deletes) a user, with the same two rules. |
+| `flag_audit_chain_verify()` | function | migration 009 | Recomputes the audit hash chain and names the first row that does not fit. |
+| `flag_as_of(ts)` | function | migration 009 | The `flag` table as it stood at a given instant. |
+| `flag_versions(flag_id)` | function | migration 009 | One flag's full version history, oldest first. |
+| `flag_audit_payload(row)`, `flag_audit_chain_seed()` | functions | migration 009 | The canonical bytes a row's hash covers, and the chain's fixed seed. |
+| `flag_audit_chain` | trigger on `flag_audit` | migration 009 | BEFORE INSERT: links the row to the chain and computes `prev_hash` / `row_hash`. |
+| `flag_audit_append_only` | trigger on `flag_audit` | migration 009 | BEFORE UPDATE OR DELETE: refuses edits; refuses deletes unless `framecheck.allow_audit_delete = on`, and then tombstones them. |
+| `flag_versioning` | trigger on `flag` | migration 009 | AFTER UPDATE OR DELETE: writes the before-image to `flag_history`. |

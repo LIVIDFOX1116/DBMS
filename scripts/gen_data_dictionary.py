@@ -117,7 +117,13 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
-def render(tables: dict, groups: dict) -> str:
+def routines_note(dbml: str) -> str:
+    """The body of the standalone `Note views_and_routines` block."""
+    m = re.search(r"^Note views_and_routines \{\s*'''(.*?)'''\s*^\}", dbml, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def render(tables: dict, groups: dict, routines: str = "") -> str:
     fk_count = sum(1 for t in tables.values() for c in t["columns"] if c["ref"])
     one_to_one = sum(1 for t in tables.values() for c in t["columns"] if c["ref"].startswith("-"))
     referenced = {c["ref"][1:].strip().split(".")[0]
@@ -161,15 +167,18 @@ def render(tables: dict, groups: dict) -> str:
                 out.append(f"| `{c['name']}` | `{c['type']}` | {'NO' if c['not_null'] else 'YES'} | "
                            f"{_key(c)} | {default} | {_cell(c['note'])} |")
             out.append("")
+    if routines:
+        out += ["## Views and routines", "", routines, ""]
     return "\n".join(out)
 
 
 def main() -> None:
-    tables, groups = parse(DBML.read_text(encoding="utf-8"))
+    dbml = DBML.read_text(encoding="utf-8")
+    tables, groups = parse(dbml)
     grouped = {n for members in groups.values() for n in members}
     if grouped != set(tables):
         sys.exit(f"every table must be in exactly one TableGroup; ungrouped: {sorted(set(tables) - grouped)}")
-    OUT.write_text(render(tables, groups), encoding="utf-8", newline="\n")
+    OUT.write_text(render(tables, groups, routines_note(dbml)), encoding="utf-8", newline="\n")
     print(f"wrote {OUT.relative_to(REPO)} ({len(tables)} tables)")
 
 
