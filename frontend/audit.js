@@ -145,12 +145,78 @@ function fcShowSignIn(message) {
   el.innerHTML = `<div class="fc-signin-card">
     <div class="fc-signin-brand">Frame<em>Check</em></div>
     <h2>Sign in to continue</h2>
-    <p>This FrameCheck backend requires a Google account.</p>
+    <p>Use your Google account, or a local account an admin created for you.</p>
     <div class="fc-signin-msg" id="fcSignInMsg">${message ? fcEsc(message) : ""}</div>
     <button class="btn primary" id="fcSignInBtn">Sign in with Google</button>
+    <div class="fc-signin-or"><span>or</span></div>
+    <form class="fc-local-login" id="fcLocalLogin" novalidate>
+      <input type="text" id="fcLocalUser" placeholder="Username" autocomplete="username" maxlength="40">
+      <input type="password" id="fcLocalPass" placeholder="Password" autocomplete="current-password" maxlength="200">
+      <button class="btn" type="submit" id="fcLocalBtn">Sign in</button>
+    </form>
   </div>`;
   document.body.appendChild(el);
   document.getElementById("fcSignInBtn").addEventListener("click", fcStartSignIn);
+  document.getElementById("fcLocalLogin").addEventListener("submit", fcLocalSignIn);
+}
+
+async function fcLocalSignIn(event) {
+  event.preventDefault();
+  const username = document.getElementById("fcLocalUser").value.trim();
+  const password = document.getElementById("fcLocalPass").value;
+  // Client-side checks are a courtesy; the server validates again.
+  if (!username || !password) return fcSignInMessage("Enter your username and password.");
+  const btn = document.getElementById("fcLocalBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetch(apiBase() + "/auth/local/login", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || `sign-in failed (${res.status})`);
+    try { localStorage.setItem(FC_SESSION_KEY, body.session_token); } catch { /* private mode: the cookie still works */ }
+    location.reload();
+  } catch (err) {
+    fcSignInMessage(err.message || String(err));
+    btn.disabled = false;
+  }
+}
+
+/* ── Roles: what this user is offered. UX only -- the server is the gate,
+   and every hidden or disabled thing here is also refused by the API. ── */
+const FC_ROLE_RANK = { viewer: 1, analyst: 2, admin: 3 };
+const FC_PAGE_MIN_ROLE = { analysis: "analyst", database: "admin", users: "admin" };
+// Until /auth/session answers: the desktop app and a sign-in-disabled
+// server are a local admin, exactly as before roles existed.
+let FC_ROLE = "admin";
+
+function fcRoleAllows(minRole) {
+  return (FC_ROLE_RANK[FC_ROLE] || 0) >= (FC_ROLE_RANK[minRole] || 1);
+}
+
+function fcPageAllowed(name) {
+  return fcRoleAllows(FC_PAGE_MIN_ROLE[name] || "viewer");
+}
+
+function fcApplyRole(role) {
+  FC_ROLE = FC_ROLE_RANK[role] ? role : "viewer";
+  document.querySelectorAll("[data-page]").forEach(el =>
+    el.classList.toggle("fc-role-hidden", !fcPageAllowed(el.dataset.page)));
+  fcApplyRoleToControls(document);
+  const badge = document.getElementById("fcRoleBadge");
+  if (badge) { badge.textContent = FC_ROLE; badge.hidden = false; }
+}
+
+// Mutating controls carry data-min-role="analyst" (or "admin"); call again
+// after rendering new ones.
+function fcApplyRoleToControls(root) {
+  root.querySelectorAll("[data-min-role]").forEach(el => {
+    const ok = fcRoleAllows(el.dataset.minRole);
+    el.disabled = !ok;
+    if (!ok) el.title = `Needs the ${el.dataset.minRole} role (you are ${FC_ROLE})`;
+  });
 }
 
 function fcHideSignIn() {
@@ -262,15 +328,23 @@ async function fcEnsureSignedIn() {
   // Returns true when the app may load. Public endpoints still work when
   // this returns false, which is why the gate is a modal over the app
   // rather than a redirect away from it.
-  if (await fcCompleteSignIn()) return true;
+  const justSignedIn = await fcCompleteSignIn();
   try {
+    // Asked even straight after a Google redirect: that path knows who
+    // signed in, but only /auth/session says with which role.
     const bearer = fcStoredSessionToken();
     const res = await fetch(apiBase() + "/auth/session", {
       credentials: "include",
       headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
     });
     const body = await res.json();
-    if (body.authenticated) { fcHideSignIn(); return true; }
+    if (body.authenticated) {
+      fcHideSignIn();
+      fcApplyRole(body.role || "admin");
+      go(currentPage);          // re-check the page now the role is known
+      return true;
+    }
+    if (justSignedIn) return true;
     fcShowSignIn();
     return false;
   } catch {

@@ -159,3 +159,17 @@
 .fc-version .vlabel { font-family: ui-monospace, monospace; white-space: nowrap; opacity: 0.75; }
 .fc-version .vchange { opacity: 0.9; }
 .fc-version.current .vlabel { color: #22c55e; }
+
+/* ── Roles and local sign-in ── */
+.fc-role-hidden { display: none !important; }
+.fc-role-badge { text-transform: capitalize; }
+.fc-forbidden { max-width: 520px; margin: 48px auto; padding: 24px; text-align: center;
+  border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-raised, var(--bg)); }
+.fc-forbidden h2 { font-size: 16px; margin: 0 0 8px; }
+.fc-forbidden p { margin: 0 0 6px; color: var(--text-2); font-size: 13px; }
+.fc-signin-or { display: flex; align-items: center; gap: 10px; margin: 14px 0 10px; color: var(--text-3, var(--text-2)); font-size: 11.5px; }
+.fc-signin-or::before, .fc-signin-or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.fc-local-login { display: grid; gap: 8px; }
+.fc-local-login input { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-2, var(--bg)); color: var(--text); font: inherit; }
+.fc-local-login input:focus { outline: none; border-color: var(--accent-glow, var(--accent)); }

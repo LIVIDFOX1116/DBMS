@@ -358,6 +358,7 @@ table.dtable a { color: var(--accent-glow); }
   </a>
   <div class="topbar-right">
     <span class="health-pill"><span class="health-dot pending" id="healthDot"></span><span id="healthText">Connecting…</span></span>
+    <span class="health-pill fc-role-badge" id="fcRoleBadge" hidden title="Your role: what this account can see and do"></span>
     <span class="health-pill" id="publicDemoBadge" style="display:none;" title="Shared read-only link: live data, nothing can be changed">read-only demo</span>
     <button class="icon-btn" id="refreshBtn" title="Refresh data">↻</button>
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
@@ -457,6 +458,14 @@ table.dtable a { color: var(--accent-glow); }
   <main class="main">
 
     <!-- OVERVIEW -->
+    <section class="view" id="view-forbidden">
+      <div class="fc-forbidden">
+        <h2>Not available</h2>
+        <p id="fcForbiddenMsg">You don't have access to this page.</p>
+        <p class="muted">An admin can change your role in the Users view.</p>
+      </div>
+    </section>
+
     <section class="view active" id="view-overview">
       <div class="view-header"><div><h1>Overview</h1><p>Could an outsider have produced each flag? FrameCheck audits every flag for framing</p></div></div>
 
@@ -971,10 +980,19 @@ function go(name) {
   if (name === "audit") name = "flags";
   if (!PAGE_META[name]) name = "overview";
   currentPage = name;
-  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
+  // A page this role may not use (e.g. #database typed in by a viewer)
+  // shows an explanation instead -- the API would refuse its calls anyway.
+  const allowed = fcPageAllowed(name);
+  document.querySelectorAll(".view").forEach(v =>
+    v.classList.toggle("active", v.id === (allowed ? `view-${name}` : "view-forbidden")));
   document.querySelectorAll(".sidenav-item[data-page], .mobile-nav [data-page]").forEach(a => a.classList.toggle("active", a.dataset.page === name));
   history.replaceState(null, "", `#${name}`);
   window.scrollTo({ top: 0 });
+  if (!allowed) {
+    document.getElementById("fcForbiddenMsg").textContent =
+      `You don't have access to this page (role: ${FC_ROLE}).`;
+    return;
+  }
   if (name === "graph" && WALLETS.length) renderGraph();
   if (name === "flags") fcOpenFlagsView();
   if (name === "graph") fcPopulateGraphFlagSelect();
