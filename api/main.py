@@ -55,6 +55,7 @@ from db.orm.models import (
     Flag,
     FlagAudit,
     FlagEvidence,
+    FlagLatestAudit,
     GraphSnapshot,
     SnapshotEdge,
     Transaction,
@@ -968,16 +969,6 @@ def in_run_ids(column, run_ids: list):
     return any_of(column, run_ids, BigInteger)
 
 
-def latest_audit_per_flag(*columns):
-    """The newest flag_audit row per flag (DISTINCT ON), as a subquery. A
-    flag can be re-audited -- flag_audit is append-only, so a corrected
-    verdict is a new row -- and every headline number uses only the latest."""
-    return (select(*columns)
-            .ext(distinct_on(FlagAudit.flag_id))
-            .order_by(FlagAudit.flag_id, FlagAudit.created_at.desc(), FlagAudit.flag_audit_id.desc())
-            .subquery("la"))
-
-
 FLAG_COLUMNS = (Flag.flag_id, Flag.run_id, Flag.wallet_id, Flag.detector, Flag.score, Flag.threshold, Flag.created_at)
 
 
@@ -1076,14 +1067,13 @@ def audit_verdicts(snapshot_id: Optional[int] = None):
             for a in load_mock().get("flag_audit", {}).values()
         ]
     with get_session() as db:
-        la = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict, FlagAudit.framing_cost_wei,
-                                   FlagAudit.method, FlagAudit.minimal_tx_set)
-        query = (select(la.c.flag_id, la.c.verdict, cast(la.c.framing_cost_wei, Text).label("framing_cost_wei"),
-                        la.c.method, la.c.minimal_tx_set)
-                 .select_from(Flag).join(la, la.c.flag_id == Flag.flag_id))
+        # v_flag_latest_audit (migration 011): the newest audit per flag.
+        la = FlagLatestAudit
+        query = select(la.flag_id, la.verdict, cast(la.framing_cost_wei, Text).label("framing_cost_wei"),
+                       la.method, la.minimal_tx_set)
         if snapshot_id is not None:
-            query = query.where(in_run_ids(Flag.run_id, latest_run_ids(db, snapshot_id)))
-        return orm_rows(db, query.order_by(la.c.flag_id))
+            query = query.where(in_run_ids(la.run_id, latest_run_ids(db, snapshot_id)))
+        return orm_rows(db, query.order_by(la.flag_id))
 
 
 @app.get("/audit/overview")
@@ -1096,22 +1086,23 @@ def audit_overview(snapshot_id: Optional[int] = None):
     if using_mock():
         return load_mock().get("audit_overview", {})
     with get_session() as db:
-        scope = [in_run_ids(Flag.run_id, latest_run_ids(db, snapshot_id))] if snapshot_id is not None else []
+        run_ids = latest_run_ids(db, snapshot_id) if snapshot_id is not None else None
+        la = FlagLatestAudit            # v_flag_latest_audit (migration 011)
 
-        la = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict)
+        # From flag, LEFT JOIN the latest audit: unaudited flags still count.
         per_detector = orm_rows(db, select(
             Flag.detector,
             func.count().label("flag_count"),
-            func.count(la.c.flag_id).label("audited_count"),
-            func.count().filter(la.c.verdict == "frameable").label("frameable_count"),
-        ).select_from(Flag).outerjoin(la, la.c.flag_id == Flag.flag_id)
-            .where(*scope).group_by(Flag.detector).order_by(Flag.detector))
+            func.count(la.flag_id).label("audited_count"),
+            func.count().filter(la.verdict == "frameable").label("frameable_count"),
+        ).select_from(Flag).outerjoin(la, la.flag_id == Flag.flag_id)
+            .where(*([in_run_ids(Flag.run_id, run_ids)] if run_ids is not None else []))
+            .group_by(Flag.detector).order_by(Flag.detector))
 
-        costs = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict, FlagAudit.framing_cost_wei)
         median = db.scalar(
-            select(func.percentile_cont(0.5).within_group(costs.c.framing_cost_wei))
-            .select_from(Flag).join(costs, costs.c.flag_id == Flag.flag_id)
-            .where(*scope, costs.c.verdict == "frameable", costs.c.framing_cost_wei.is_not(None)))
+            select(func.percentile_cont(0.5).within_group(la.framing_cost_wei))
+            .where(*([in_run_ids(la.run_id, run_ids)] if run_ids is not None else []),
+                   la.verdict == "frameable", la.framing_cost_wei.is_not(None)))
     flags = sum(r["flag_count"] for r in per_detector)
     audited = sum(r["audited_count"] for r in per_detector)
     frameable = sum(r["frameable_count"] for r in per_detector)
@@ -1292,24 +1283,24 @@ def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = Non
     if using_mock():
         return load_mock().get("audit_summary", [])
     with get_session() as db:
-        la = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict, FlagAudit.framing_cost_wei)
-        frameable = la.c.verdict == "frameable"
-        query = (select(
-            Flag.detector,
+        la = FlagLatestAudit            # v_flag_latest_audit (migration 011)
+        frameable = la.verdict == "frameable"
+        query = select(
+            la.detector,
             func.count().label("total_audited"),
             func.count().filter(frameable).label("frameable_count"),
-            func.min(la.c.framing_cost_wei).filter(frameable).label("framing_cost_min_wei"),
+            func.min(la.framing_cost_wei).filter(frameable).label("framing_cost_min_wei"),
             # percentile_cont returns double precision; type_coerce keeps it a
             # float in Python (the column it orders by is NUMERIC).
-            type_coerce(func.percentile_cont(0.5).within_group(la.c.framing_cost_wei).filter(frameable),
+            type_coerce(func.percentile_cont(0.5).within_group(la.framing_cost_wei).filter(frameable),
                         DOUBLE_PRECISION).label("framing_cost_median_wei"),
-            func.max(la.c.framing_cost_wei).filter(frameable).label("framing_cost_max_wei"),
-        ).select_from(la).join(Flag, Flag.flag_id == la.c.flag_id))
+            func.max(la.framing_cost_wei).filter(frameable).label("framing_cost_max_wei"),
+        )
         if run_id is not None:
-            query = query.where(Flag.run_id == run_id)
+            query = query.where(la.run_id == run_id)
         elif snapshot_id is not None:
-            query = query.where(in_run_ids(Flag.run_id, latest_run_ids(db, snapshot_id)))
-        rows = orm_rows(db, query.group_by(Flag.detector).order_by(Flag.detector))
+            query = query.where(in_run_ids(la.run_id, latest_run_ids(db, snapshot_id)))
+        rows = orm_rows(db, query.group_by(la.detector).order_by(la.detector))
     for row in rows:
         row["frameable_share"] = row["frameable_count"] / row["total_audited"] if row["total_audited"] else 0.0
     return rows

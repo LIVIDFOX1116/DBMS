@@ -406,8 +406,11 @@ class TestAuditDedup:
         resp = client.get("/audit/summary")
         assert resp.status_code == 200
         query, _params = sink[-1]
-        assert "DISTINCT ON (flag_audit.flag_id)" in query
-        assert "ORDER BY flag_audit.flag_id, flag_audit.created_at DESC, flag_audit.flag_audit_id DESC" in query
+        # "Latest audit per flag" now lives in the v_flag_latest_audit view
+        # (migration 011); the view's own DISTINCT ON and ordering are pinned
+        # by tests/test_orm_paths.py's TestLatestAuditView.
+        assert "FROM v_flag_latest_audit" in query
+        assert "flag_audit" not in query.replace("v_flag_latest_audit", "")
 
     def test_audit_summary_explicit_run_id_skips_snapshot_dedup(self, monkeypatch):
         sink = []

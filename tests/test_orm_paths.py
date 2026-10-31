@@ -82,6 +82,7 @@ class TestAuthViaOrm:
 # ---------------------------------------------------------------------------
 
 import os  # noqa: E402
+import pathlib  # noqa: E402
 import re  # noqa: E402
 
 os.environ.setdefault("FRAMECHECK_AUTH_MODE", "disabled")
@@ -152,13 +153,28 @@ class TestLatestRunIds:
         assert " ".join(str(clause.compile(dialect=PG)).split()) == "flag.run_id = ANY (%(param_1)s::BIGINT[])"
         assert clause.compile(dialect=PG).params == {"param_1": [29, 30]}
 
-    def test_latest_audit_is_newest_first_with_id_as_tiebreak(self):
-        from sqlalchemy import select
+class TestLatestAuditView:
+    """The rule the three audit endpoints rely on, now in the database:
+    v_flag_latest_audit (migration 011)."""
+    sql = " ".join((pathlib.Path(__file__).resolve().parent.parent / "db" / "migrations"
+                    / "011_view_procedures_alert_status.sql").read_text(encoding="utf-8").split())
 
-        from db.orm.models import FlagAudit
-        sql = compiled(select(api_main.latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict)))
-        assert "SELECT DISTINCT ON (flag_audit.flag_id)" in sql
-        assert "ORDER BY flag_audit.flag_id, flag_audit.created_at DESC, flag_audit.flag_audit_id DESC" in sql
+    def test_newest_audit_per_flag_with_id_as_tiebreak(self):
+        view = self.sql[self.sql.index("CREATE OR REPLACE VIEW v_flag_latest_audit"):]
+        view = view[:view.index(";")]
+        assert "SELECT DISTINCT ON (fa.flag_id)" in view
+        assert view.endswith("ORDER BY fa.flag_id, fa.created_at DESC, fa.flag_audit_id DESC")
+
+    def test_view_model_columns_match_the_view(self):
+        from db.orm.models import FlagLatestAudit
+        view = self.sql[self.sql.index("CREATE OR REPLACE VIEW v_flag_latest_audit"):]
+        select_list = view[view.index("DISTINCT ON (fa.flag_id)") + len("DISTINCT ON (fa.flag_id)"):view.index(" FROM ")]
+        view_columns = [c.strip().split(".")[-1] for c in select_list.split(",")]
+        assert [c.name for c in FlagLatestAudit.__table__.columns] == view_columns
+
+    def test_the_view_is_not_in_the_table_metadata(self):
+        from db.orm.models import Base
+        assert "v_flag_latest_audit" not in Base.metadata.tables
 
 
 class TestAggregates:
@@ -167,19 +183,19 @@ class TestAggregates:
         body = _live(monkeypatch, recorder).get("/audit/overview").json()
         assert body["framing_cost_median_wei"] is None and body["total_flags"] == 0
         per_detector, median = (compiled(s) for s in recorder.statements)
-        assert re.search(r"count\(\*\) FILTER \(WHERE la\.verdict = %\(verdict_1\)s(::VARCHAR)?\) AS frameable_count",
-                         per_detector)
-        assert "LEFT OUTER JOIN" in per_detector, "unaudited flags still count as flags"
-        assert re.search(r"percentile_cont\(%\(percentile_cont_\d\)s\) WITHIN GROUP \(ORDER BY la\.framing_cost_wei\)",
-                         median)
-        assert "la.framing_cost_wei IS NOT NULL" in median
+        assert re.search(r"count\(\*\) FILTER \(WHERE v_flag_latest_audit\.verdict = %\(verdict_1\)s(::VARCHAR)?\) "
+                         r"AS frameable_count", per_detector)
+        assert "FROM flag LEFT OUTER JOIN v_flag_latest_audit" in per_detector, "unaudited flags still count as flags"
+        assert re.search(r"percentile_cont\(%\(percentile_cont_\d\)s\) WITHIN GROUP "
+                         r"\(ORDER BY v_flag_latest_audit\.framing_cost_wei\)", median)
+        assert "v_flag_latest_audit.framing_cost_wei IS NOT NULL" in median
 
     def test_audit_overview_with_snapshot_scopes_both_queries(self, monkeypatch):
         recorder = _Recorder(scalar=None, rows=[])
         _live(monkeypatch, recorder).get("/audit/overview", params={"snapshot_id": 1})
         dedup, per_detector, median = (compiled(s) for s in recorder.statements)
         assert "DISTINCT ON (algorithm.algorithm_name)" in dedup
-        assert "flag.run_id = ANY" in per_detector and "flag.run_id = ANY" in median
+        assert "flag.run_id = ANY" in per_detector and "v_flag_latest_audit.run_id = ANY" in median
 
     def test_stats_overview_risk_tiers_use_filtered_counts(self, monkeypatch):
         from types import SimpleNamespace

@@ -474,14 +474,47 @@ class SchemaMigration(Base):
 
 
 # ---------------------------------------------------------------------------
+# Views (migration 011) -- read-only, in their own metadata
+# ---------------------------------------------------------------------------
+# A separate DeclarativeBase so Base.metadata stays exactly the 25 tables the
+# DDL creates (tests/test_orm_models.py compares the two), and so nothing
+# could ever emit DDL for a view as if it were a table.
+
+class ViewBase(DeclarativeBase):
+    pass
+
+
+class FlagLatestAudit(ViewBase):
+    """v_flag_latest_audit: the newest audit row per flag, with the flag's
+    run, wallet and detector. One row per audited flag, so flag_id is the
+    key."""
+    __tablename__ = "v_flag_latest_audit"
+
+    flag_audit_id: Mapped[int] = mapped_column(BigInteger)
+    flag_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    verdict: Mapped[str] = mapped_column(String(12))
+    framing_cost_wei: Mapped[Decimal | None] = mapped_column(WEI)
+    framing_gas: Mapped[int | None] = mapped_column(BigInteger)
+    minimal_tx_set: Mapped[Any | None] = mapped_column(JSONB)
+    method: Mapped[str] = mapped_column(String(20))
+    backend: Mapped[str | None] = mapped_column(String(40))
+    runtime_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(TS)
+    run_id: Mapped[int] = mapped_column(BigInteger)
+    wallet_id: Mapped[int] = mapped_column(BigInteger)
+    detector: Mapped[str] = mapped_column(String(30))
+
+
+# ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
 
-READ_ONLY_MODELS = (FlagHistory, FlagAuditTombstone)
+READ_ONLY_MODELS = (FlagHistory, FlagAuditTombstone, FlagLatestAudit)
 
 
 class ReadOnlyTableError(RuntimeError):
-    """An ORM write to a table that only the database's triggers may write."""
+    """An ORM write to a table that only the database's triggers may write,
+    or to a view."""
 
 
 @event.listens_for(Session, "before_flush")
@@ -492,8 +525,8 @@ def _guard_trigger_owned_tables(session, flush_context, instances):
     for obj in session.new | session.dirty | session.deleted:
         if isinstance(obj, READ_ONLY_MODELS):
             raise ReadOnlyTableError(
-                f"{type(obj).__tablename__} is written only by database triggers; "
-                "the ORM maps it for reading")
+                f"{type(obj).__tablename__} is read-only for the ORM "
+                "(a view, or a table only database triggers write)")
     for obj in session.deleted:
         if isinstance(obj, FlagAudit):
             raise ReadOnlyTableError(
