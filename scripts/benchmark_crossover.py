@@ -14,6 +14,7 @@ synthetic graphs, so the degree distribution stays realistic.
 Needs RAPIDS importable and FRAMECHECK_USE_GPU_GRAPH=1, like every other GPU
 path in this repo -- it exits early and says so otherwise.
 """
+# RAW SQL (offline tooling): benchmark harness. Not part of the application's data access
 import argparse
 import statistics
 import sys

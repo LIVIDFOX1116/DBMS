@@ -11,6 +11,7 @@ range among them.
     python scripts/run_experiment.py --cleanup <scenario_id>
     python scripts/run_experiment.py --drop-db
 """
+# RAW SQL (offline tooling): research experiment driver, incl. the trigger-guarded flag_audit delete path (framecheck.allow_audit_delete). Not part of the application's data access
 import argparse
 import os
 import re

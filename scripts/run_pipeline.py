@@ -16,6 +16,7 @@ README.md / CLAUDE.md -- this only removes the manual hand-off between
 them. Ingestion is upsert-based and safe to re-run; export always creates
 a new, uniquely-named snapshot rather than overwriting one.
 """
+# RAW SQL (offline tooling): pipeline driver. Not part of the application's data access
 import argparse
 import re
 import subprocess

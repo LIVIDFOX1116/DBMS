@@ -12,6 +12,7 @@ Zenbook. Runs on both the "control" connection (to CREATE DATABASE, which
 can't happen inside a transaction) and the target database (to run schema.sql
 and db/migrations/*.sql).
 """
+# RAW SQL (allowed): DDL -- creates the database and applies db/schema.sql + migrations
 import os
 import pathlib
 import sys

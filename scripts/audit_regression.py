@@ -18,6 +18,7 @@ libraries resolve dangling vertices differently), so a capture taken under
 one backend and compared against the other would report a difference that
 has nothing to do with the database.
 """
+# RAW SQL (offline tooling): regression guard. Not part of the application's data access
 import argparse
 import hashlib
 import json

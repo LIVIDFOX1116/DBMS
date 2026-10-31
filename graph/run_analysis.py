@@ -41,6 +41,7 @@ def selected_algorithms(only) -> set:
     return set(only) if only else set(ALGORITHMS)
 
 
+# RAW SQL (not yet converted): batch-pipeline lookup on the caller's connection
 def get_algorithm_id(conn, name: str) -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT algorithm_id FROM algorithm WHERE algorithm_name = %s", (name,))
@@ -50,6 +51,7 @@ def get_algorithm_id(conn, name: str) -> int:
         return row[0]
 
 
+# RAW SQL (not yet converted): batch-pipeline run bookkeeping (benchmark.py stages it in a rolled-back transaction) on the caller's connection
 def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int = 1, parameters: dict = None,
               commit: bool = True) -> int:
     algorithm_id = get_algorithm_id(conn, algorithm_name)
@@ -69,6 +71,7 @@ def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int = 1, 
     return run_id
 
 
+# RAW SQL (not yet converted): batch-pipeline run bookkeeping on the caller's connection
 def finish_run(conn, run_id: int, runtime_ms: int, backend_name: str, library_version: str = None,
                status: str = "DONE", commit: bool = True) -> None:
     with conn.cursor() as cur:
@@ -82,6 +85,7 @@ def finish_run(conn, run_id: int, runtime_ms: int, backend_name: str, library_ve
         conn.commit()
 
 
+# RAW SQL (allowed): performance-critical bulk write (execute_values)
 def persist_vertex_metric(conn, run_id: int, df: pd.DataFrame, metric_name: str, value_col: str,
                            commit: bool = True) -> None:
     """Bulk via execute_values instead of one INSERT per row -- real crawls
@@ -111,6 +115,7 @@ def persist_vertex_metric(conn, run_id: int, df: pd.DataFrame, metric_name: str,
         conn.commit()
 
 
+# RAW SQL (allowed): performance-critical bulk write (execute_values)
 def persist_clusters(conn, run_id: int, df: pd.DataFrame, modularity: float, internal_edges: dict = None,
                       commit: bool = True) -> None:
     """Bulk via execute_values for both the cluster and cluster_member
@@ -173,6 +178,7 @@ def compute_internal_edges(cluster_df: pd.DataFrame, edges_df: pd.DataFrame) -> 
     return counts
 
 
+# RAW SQL (not yet converted): batch-pipeline cluster classification write on the caller's connection
 def classify_clusters(conn, run_id: int) -> int:
     """Phase 4 in the project bible: a first, deliberately simple heuristic
     for flagging plausible Sybil clusters -- not a general fraud classifier.
@@ -257,6 +263,7 @@ def run_bfs(conn, backend: GraphBackend, G, snapshot_id: int, seed_wallet_id: in
     return df
 
 
+# RAW SQL (not yet converted): batch-pipeline CLI lookup on the caller's connection
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot-id", type=int, required=True)

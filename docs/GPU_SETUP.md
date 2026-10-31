@@ -32,7 +32,7 @@ sudo apt-get install -y python3-venv python3-pip
 python3 -m venv ~/rapids-venv
 ~/rapids-venv/bin/pip install --upgrade pip wheel
 ~/rapids-venv/bin/pip install --extra-index-url=https://pypi.nvidia.com \
-    cudf-cu12 cugraph-cu12 pandas pyarrow psycopg2-binary networkx scipy python-dotenv
+    cudf-cu12 cugraph-cu12 pandas pyarrow psycopg2-binary networkx scipy python-dotenv "sqlalchemy>=2.1"
 ```
 
 Notes that save time:

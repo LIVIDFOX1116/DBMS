@@ -22,6 +22,7 @@ work here since audit_flag() commits its own persist_audit() call
 internally -- deleting by captured id range is the equivalent guarantee
 for a function that commits, not one that can be handed commit=False.
 """
+# RAW SQL (offline tooling): audit benchmark; removes the rows it created via the trigger-guarded delete path. Not part of the application's data access
 import argparse
 import statistics
 import sys

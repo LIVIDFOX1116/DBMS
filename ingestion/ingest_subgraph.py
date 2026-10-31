@@ -43,6 +43,7 @@ def norm(addr: str) -> str:
     return addr.lower() if addr else None
 
 
+# RAW SQL (not yet converted): ingestion crawler statistics refresh on the crawl's connection, one Etherscan record at a time
 def update_wallet_stats(conn) -> int:
     """Backfills wallet.tx_count/first_seen_block/last_seen_block from the
     transaction table. Deliberately does NOT touch balance_wei/total_sent_wei/
@@ -79,6 +80,7 @@ def update_wallet_stats(conn) -> int:
     return updated
 
 
+# RAW SQL (not yet converted): ingestion crawler address reclassification on the crawl's connection, one Etherscan record at a time
 def reclassify_address_types(conn, client: EtherscanClient, limit: int = 100) -> int:
     """Corrects wallet.address_type using eth_getCode -- the one reliable
     contract-vs-EOA signal (see EtherscanClient.get_code). ingest_subgraph
@@ -119,6 +121,7 @@ def reclassify_address_types(conn, client: EtherscanClient, limit: int = 100) ->
 
 # ---------------------------------------------------------------- DB helpers
 
+# RAW SQL (not yet converted): ingestion crawler upsert on the crawl's connection, one Etherscan record at a time
 def upsert_wallet(cur, address: str, address_type: str = "EOA") -> int:
     cur.execute(
         """
@@ -132,6 +135,7 @@ def upsert_wallet(cur, address: str, address_type: str = "EOA") -> int:
     return cur.fetchone()[0]
 
 
+# RAW SQL (not yet converted): ingestion crawler upsert on the crawl's connection, one Etherscan record at a time
 def upsert_block(cur, block_number: int, block_hash: str, timestamp: int) -> None:
     cur.execute(
         """
@@ -143,6 +147,7 @@ def upsert_block(cur, block_number: int, block_hash: str, timestamp: int) -> Non
     )
 
 
+# RAW SQL (not yet converted): ingestion crawler insert on the crawl's connection, one Etherscan record at a time
 def insert_transaction(cur, tx: dict, from_wallet_id: int, to_wallet_id: int) -> None:
     cur.execute(
         """
@@ -161,6 +166,7 @@ def insert_transaction(cur, tx: dict, from_wallet_id: int, to_wallet_id: int) ->
     )
 
 
+# RAW SQL (not yet converted): ingestion crawler upsert on the crawl's connection, one Etherscan record at a time
 def upsert_token(cur, contract_wallet_id: int, contract_address: str, symbol: str, name: str, decimals: int) -> int:
     cur.execute(
         """
@@ -174,6 +180,7 @@ def upsert_token(cur, contract_wallet_id: int, contract_address: str, symbol: st
     return cur.fetchone()[0]
 
 
+# RAW SQL (not yet converted): ingestion crawler insert on the crawl's connection, one Etherscan record at a time
 def insert_token_transfer(cur, tt: dict, token_id: int, from_wallet_id: int, to_wallet_id: int) -> None:
     cur.execute(
         """
@@ -240,6 +247,7 @@ def process_address(cur, client: EtherscanClient, address: str) -> set:
     return discovered - {ZERO_ADDRESS}
 
 
+# RAW SQL (not yet converted): ingestion crawler lookup on the crawl's connection, one Etherscan record at a time
 def _transaction_exists(cur, tx_hash: str) -> bool:
     cur.execute("SELECT 1 FROM transaction WHERE tx_hash = %s", (tx_hash,))
     return cur.fetchone() is not None

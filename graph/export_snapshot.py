@@ -62,6 +62,7 @@ def portable_path(out_path: pathlib.Path) -> str:
     return out_path.as_posix()
 
 
+# RAW SQL (not yet converted): batch-pipeline snapshot export on the caller's connection
 def persist_snapshot(conn, snapshot_name, out_path, start_block, end_block, edge_df, checksum) -> int:
     vertex_count = len(set(edge_df.src_wallet_id) | set(edge_df.dst_wallet_id))
     with conn.cursor() as cur:

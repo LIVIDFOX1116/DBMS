@@ -12,6 +12,7 @@ stored as a float.
 
 Exit code is 1 if any check fails, so this can gate a pipeline run.
 """
+# RAW SQL (offline tooling): read-only data-quality report. Not part of the application's data access
 import argparse
 import sys
 from pathlib import Path

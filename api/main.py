@@ -252,6 +252,7 @@ def _get_pool() -> pg_pool.ThreadedConnectionPool:
     return _pool
 
 
+# RAW SQL (allowed): the psycopg2 pool kept for the raw-SQL endpoints tagged below; the ORM path is db/orm (docs/API_CONTRACT.md, "ORM coverage and permitted raw SQL")
 @contextmanager
 def get_conn():
     """Checks out a pooled connection. ThreadedConnectionPool, not
@@ -470,6 +471,7 @@ def list_clusters(run_id: Optional[int] = None):
 CLUSTER_ALGORITHM = "louvain"
 
 
+# RAW SQL (allowed): part of /clusters/top-flagged's performance-critical path (below)
 def resolve_cluster_run_id(cur, snapshot_id: int):
     """The newest Louvain run on this snapshot. Cluster rows and flag rows
     live under DIFFERENT analysis_run ids -- one is a Louvain run, the
@@ -489,6 +491,7 @@ def resolve_cluster_run_id(cur, snapshot_id: int):
     return row[0] if row else None
 
 
+# RAW SQL (allowed): part of /clusters/top-flagged's performance-critical path (below)
 def resolve_snapshot_for_run(cur, run_id: int):
     cur.execute("SELECT snapshot_id FROM analysis_run WHERE run_id = %s", (run_id,))
     row = cur.fetchone()
@@ -498,6 +501,7 @@ def resolve_snapshot_for_run(cur, run_id: int):
 # Registered BEFORE /clusters/{cluster_id}: FastAPI matches in declaration
 # order, so the typed-int route would otherwise capture "top-flagged" and
 # reject it as a 422 before this handler is ever reached.
+# RAW SQL (allowed): performance-critical -- aggregates the mv_cluster_flag_stats materialized view (migration 008: 471 ms -> 2 ms); also pinned by tests/test_multiview_api.py
 @app.get("/clusters/top-flagged")
 def clusters_top_flagged(run_id: Optional[int] = None, snapshot_id: Optional[int] = None, limit: int = 8):
     """Clusters holding the most distinct flagged wallets, for Multiview's
@@ -621,6 +625,7 @@ def select_connected_subgraph(ranked_wallet_ids: list, adjacency: dict, limit: i
     return chosen
 
 
+# RAW SQL (not yet converted): pinned by tests/test_multiview_api.py (TestSubgraphEndpoint drives a psycopg2 cursor)
 @app.get("/clusters/{cluster_id}/subgraph")
 def cluster_subgraph(cluster_id: int, limit: int = 300):
     """One cluster's members and the edges between them, for a Multiview
@@ -774,6 +779,7 @@ def get_cluster(cluster_id: int):
         return row
 
 
+# RAW SQL (not yet converted): pinned by tests/test_api.py TestLiveModeQueryShapes.test_cluster_membership
 @app.get("/cluster-membership")
 def cluster_membership(cluster_ids: str):
     """wallet_id -> [cluster_id, ...] for the given clusters, in one round
@@ -882,6 +888,7 @@ def run_metrics(run_id: int, metric_name: str = "pagerank", limit: int = 50):
 FLAG_DETECTORS = ("bfs_proximity", "sybil_cluster", "pagerank_threshold", "impurity", "engaged_proximity")
 
 
+# RAW SQL (not yet converted): serves the raw endpoints and is pinned by test_resolve_latest_run_ids_query_shape_and_extraction; ORM endpoints use latest_run_ids()
 def resolve_latest_run_ids(cur, snapshot_id: int, detectors=FLAG_DETECTORS) -> list:
     """Each flag detector can be re-run on the same snapshot (manual
     re-runs, re-detect after a correction, etc.), leaving older runs' flag
@@ -1083,6 +1090,7 @@ def audit_overview(snapshot_id: Optional[int] = None):
     }
 
 
+# RAW SQL (allowed): calls the PL/pgSQL function flag_audit_chain_verify() (migration 009) with bound parameters
 @app.get("/audit/trail")
 def audit_trail():
     """Whether the audit chain still verifies, and what has been removed from it.
@@ -1130,12 +1138,14 @@ def audit_trail():
                     "tombstone_count": tombstone_count, "tombstones": tombstones}
 
 
+# RAW SQL (allowed): catalogue probe for migration 009's PL/pgSQL function
 def audit_trail_installed(cur) -> bool:
     """Whether migration 009's functions exist in this database."""
     cur.execute("SELECT to_regprocedure('flag_audit_chain_verify()') IS NOT NULL")
     return bool(cur.fetchone()[0])
 
 
+# RAW SQL (allowed): calls the PL/pgSQL function flag_versions() (migration 009) with bound parameters
 @app.get("/flags/{flag_id}/versions")
 def flag_versions(flag_id: int):
     """Every version this flag row has had, oldest first.
@@ -1188,6 +1198,7 @@ def normalize_timestamp_arg(at: str) -> str:
     return f"{split.group(1)}+{split.group(2)}" if split else at
 
 
+# RAW SQL (allowed): calls the PL/pgSQL function flag_as_of() (migration 009) with bound parameters
 @app.get("/flags/as-of")
 def flags_as_of(at: str, limit: int = 50, detector: Optional[str] = None):
     """The flag table as it stood at an instant, straight out of flag_as_of().
@@ -1233,6 +1244,7 @@ def flags_as_of(at: str, limit: int = 50, detector: Optional[str] = None):
             return {"available": True, "as_of": at, "total": total, "flags": rows}
 
 
+# RAW SQL (not yet converted): pinned by three tests in tests/test_api.py TestAuditDedup (SQL text and tuple params)
 @app.get("/audit/summary")
 def audit_summary(run_id: Optional[int] = None, snapshot_id: Optional[int] = None):
     """Per detector: how many flags have been audited, what share came

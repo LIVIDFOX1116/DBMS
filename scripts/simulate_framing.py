@@ -18,6 +18,7 @@ run), 0.001 ETH dust each, gas = 21000 * 20 gwei -- a documented constant
 for cost estimation, NOT a live gas-price oracle lookup; real gas prices
 vary continuously and this is a simplification.
 """
+# RAW SQL (offline tooling): framing simulator; inserts and --cleanup-deletes synthetic is_simulated rows. Not part of the application's data access
 import argparse
 import hashlib
 import sys

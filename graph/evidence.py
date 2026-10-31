@@ -21,6 +21,7 @@ QUERY_PATH = pathlib.Path(__file__).parent.parent / "db" / "queries" / "evidence
 DEFAULT_MAX_HOPS = 10  # cycle/runaway guard for the recursive back-toward-the-seed walk
 
 
+# RAW SQL (allowed): recursive CTE (db/queries/evidence.sql)
 def fetch_evidence_chain(conn, snapshot_id: int, wallet_id: int, seed_wallet_id: int,
                           max_hops: int = DEFAULT_MAX_HOPS) -> list:
     """Returns [(tx_hash, hop, block_number, role), ...], block-ordered."""
@@ -33,6 +34,7 @@ def fetch_evidence_chain(conn, snapshot_id: int, wallet_id: int, seed_wallet_id:
         return cur.fetchall()
 
 
+# RAW SQL (allowed): performance-critical bulk write (execute_values)
 def persist_evidence(conn, flag_id: int, chain: list, commit: bool = True) -> int:
     """chain: [(tx_hash, hop, block_number, role), ...]. ON CONFLICT DO
     NOTHING on the (flag_id, tx_hash) primary key makes re-collecting
@@ -60,6 +62,7 @@ def collect_evidence_for_flag(conn, flag_id: int, snapshot_id: int, wallet_id: i
     return persist_evidence(conn, flag_id, chain)
 
 
+# RAW SQL (not yet converted): batch-pipeline target selection on the caller's connection
 def collect_evidence_for_run(conn, snapshot_id: int, seed_wallet_id: int, run_id: int = None,
                               max_hops: int = DEFAULT_MAX_HOPS) -> int:
     """Collects evidence for every flag row under `run_id` (or, if omitted,

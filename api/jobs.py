@@ -267,6 +267,7 @@ def _run_detectors(job: Job, conn) -> None:
     refresh_cluster_flag_stats(job)
 
 
+# RAW SQL (allowed): REFRESH MATERIALIZED VIEW CONCURRENTLY -- view maintenance, not data access
 def refresh_cluster_flag_stats(job: Job) -> None:
     """Rebuilds mv_cluster_flag_stats (migration 008) after new flags land.
 
@@ -298,6 +299,7 @@ def refresh_cluster_flag_stats(job: Job) -> None:
     job.result = {**job.result, "cluster_stats_refreshed": True}
 
 
+# RAW SQL (not yet converted): selects the job's audit targets on the job's own connection; pinned by tests/test_jobs.py
 def _run_audit(job: Job, conn) -> None:
     with conn.cursor() as cur:
         query = """

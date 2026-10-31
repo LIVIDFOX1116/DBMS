@@ -54,6 +54,7 @@ PERIPHERAL_MEMBER_WEIGHT = 0.7  # discount for non-core cluster members
 MAX_RISK_SCORE = 95.0          # never claim certainty -- same cap classify_clusters() uses
 
 
+# RAW SQL (not yet converted): batch-pipeline lookup on the caller's connection
 def resolve_latest_run_id(conn, snapshot_id: int, algorithm_name: str) -> int:
     with conn.cursor() as cur:
         cur.execute(
@@ -74,6 +75,7 @@ def resolve_latest_run_id(conn, snapshot_id: int, algorithm_name: str) -> int:
         return row[0]
 
 
+# RAW SQL (allowed): performance-critical read of a whole run's results into the detector
 def fetch_bfs_scores(conn, bfs_run_id: int) -> dict:
     """wallet_id -> bfs_component, for every wallet the BFS run actually reached
     (metric_name is 'bfs_distance_from_<seed>' -- LIKE match since the exact
@@ -93,6 +95,7 @@ def fetch_bfs_scores(conn, bfs_run_id: int) -> dict:
     }
 
 
+# RAW SQL (allowed): performance-critical read of a whole run's results into the detector
 def fetch_cluster_scores(conn, louvain_run_id: int) -> dict:
     """wallet_id -> cluster_component, for every member of a SYBIL-flagged
     cluster from this louvain run. Core nodes inherit the cluster's full
@@ -127,6 +130,7 @@ def compute_risk_scores(bfs_scores: dict, cluster_scores: dict) -> dict:
     }
 
 
+# RAW SQL (not yet converted): batch-pipeline risk-score write on the caller's connection
 def persist_risk_scores(conn, scores: dict) -> int:
     with conn.cursor() as cur:
         for wallet_id, score in scores.items():

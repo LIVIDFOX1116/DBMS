@@ -28,6 +28,7 @@ Read-only: SELECTs the snapshot row, reads its Parquet file, writes nothing
 back. Needs a RAPIDS machine to fill in the GPU column; without one it still
 runs the CPU side and says the GPU column needs a GPU, rather than failing.
 """
+# RAW SQL (offline tooling): CPU/GPU agreement check. Not part of the application's data access
 import argparse
 import json
 import sys

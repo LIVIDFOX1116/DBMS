@@ -25,6 +25,7 @@ would have been simpler to parse and several times larger and slower.
 
 Read-only: SELECTs and COPY TO only, nothing is written to the database.
 """
+# RAW SQL (offline tooling): bulk COPY export of a snapshot dataset. Not part of the application's data access
 import argparse
 import gzip
 import io

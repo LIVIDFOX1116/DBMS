@@ -44,6 +44,7 @@ dependencies:
   - pandas
   - pyarrow
   - psycopg2
+  - sqlalchemy>=2.1  # the ORM layer (db/orm/); graph/audit.py's persist_audit uses its models
   - python-dotenv
   - requests
   - networkx>=3.0    # CPU graph fallback -- see graph/backend.py; also lets

@@ -16,10 +16,31 @@ mode first and only open a session in live mode, and tests replace
 """
 from contextlib import contextmanager
 
+from sqlalchemy.dialects.postgresql import psycopg2 as pg_psycopg2
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.orm import Session
 
 from db.orm.engine import get_engine
+
+_PSYCOPG2 = pg_psycopg2.dialect()
+
+
+def execute_on_connection(conn, statement):
+    """Runs an ORM-built statement on a caller's existing psycopg2 connection,
+    inside whatever transaction that connection is already in.
+
+    For graph/ persistence helpers that are handed a connection by their
+    caller rather than opening their own: scripts/benchmark_audit.py and
+    scripts/run_experiment.py write with commit=False and then roll back, so
+    a helper that opened a separate Session would commit behind their back.
+    The statement is still built from the models -- same columns, same
+    server-generated hashes left out -- just executed where the caller's
+    transaction lives. Values are bound parameters, never interpolated."""
+    compiled = statement.compile(dialect=_PSYCOPG2)
+    with conn.cursor() as cur:
+        cur.execute(str(compiled), compiled.params)
+        # An INSERT compiles with RETURNING <primary key>; hand that row back.
+        return cur.fetchone() if cur.description else None
 
 
 @contextmanager

@@ -31,6 +31,7 @@ counted as a SKIP (never silently dropped -- the final report states the
 skip count per detector), the aborted transaction is rolled back, and the
 pass moves on to the next flag.
 """
+# RAW SQL (offline tooling): batch audit driver. Not part of the application's data access
 import argparse
 import sys
 import time

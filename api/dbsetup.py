@@ -268,6 +268,7 @@ def connect_order(host) -> list:
     return [name]
 
 
+# RAW SQL (allowed): catalogue introspection for the Database view; names are checked against the live catalogue and quoted with sql.Identifier
 def server_probe(dsn: dict) -> dict:
     """Can we reach this server at all, and does the named database exist?
     Connects to the maintenance database ("postgres"), so it answers even
@@ -294,6 +295,7 @@ def server_probe(dsn: dict) -> dict:
         conn.close()
 
 
+# RAW SQL (allowed): DDL -- CREATE DATABASE; the name is checked by is_safe_identifier and quoted as an identifier
 def create_database(dsn: dict) -> dict:
     """Creates the configured database if it is missing. Never drops or
     recreates an existing one -- an existing database is reported as such and
@@ -313,6 +315,7 @@ def create_database(dsn: dict) -> dict:
     return {"created": True, "detail": f"database {dsn['dbname']!r} created"}
 
 
+# RAW SQL (allowed): DDL / migration bookkeeping -- db/schema.sql + migrations own the schema, never the ORM
 def applied_migrations(conn) -> set:
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%s) IS NOT NULL", (MIGRATION_TRACKING_TABLE,))
@@ -322,6 +325,7 @@ def applied_migrations(conn) -> set:
         return {row[0] for row in cur.fetchall()}
 
 
+# RAW SQL (allowed): DDL / migration bookkeeping -- db/schema.sql + migrations own the schema, never the ORM
 def schema_state(conn) -> dict:
     """Three distinguishable states, because conflating them is how a setup
     step silently does the wrong thing:
@@ -363,6 +367,7 @@ def schema_state(conn) -> dict:
     }
 
 
+# RAW SQL (allowed): DDL / migration bookkeeping -- db/schema.sql + migrations own the schema, never the ORM
 def _record_migration(conn, filename: str) -> None:
     with conn.cursor() as cur:
         cur.execute(sql.SQL(
@@ -370,6 +375,7 @@ def _record_migration(conn, filename: str) -> None:
         ).format(sql.Identifier(MIGRATION_TRACKING_TABLE)), (filename,))
 
 
+# RAW SQL (allowed): DDL / migration bookkeeping -- db/schema.sql + migrations own the schema, never the ORM
 def _ensure_tracking_table(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(sql.SQL("""
@@ -379,6 +385,7 @@ def _ensure_tracking_table(conn) -> None:
             )""").format(sql.Identifier(MIGRATION_TRACKING_TABLE)))
 
 
+# RAW SQL (allowed): DDL / migration bookkeeping -- db/schema.sql + migrations own the schema, never the ORM
 def apply_schema(conn, include_migrations: bool = True) -> dict:
     """Applies schema.sql (only when the schema is absent) and then every
     unapplied migration, each in its own transaction so a failure half way
@@ -440,6 +447,7 @@ def migration_probe(path) -> str:
     return match.group(1).strip() if match else None
 
 
+# RAW SQL (allowed): DDL / migration bookkeeping -- db/schema.sql + migrations own the schema, never the ORM
 def migration_is_present(conn, path) -> bool:
     """Whether a migration's objects are actually in this database.
 
@@ -559,6 +567,7 @@ def parse_copy_header(line: str):
     return table, columns
 
 
+# RAW SQL (allowed): part of the bulk dataset import (COPY)
 def dataset_target_rows(conn, tables) -> dict:
     """How many rows the target tables already hold. Importing on top of
     existing rows is refused rather than resolved by deleting them."""
@@ -577,6 +586,7 @@ def dataset_target_rows(conn, tables) -> dict:
     return counts
 
 
+# RAW SQL (allowed): sequence maintenance (setval) after a bulk COPY import
 def reset_sequences(conn, tables) -> list:
     """After a COPY the serial sequences still sit at 1, so the next INSERT
     would collide with an imported id. Realigns every sequence owned by a
@@ -640,6 +650,7 @@ def _seed_id_map(dataset_rows, columns, seed_table, target_by_name) -> dict:
     return mapping
 
 
+# RAW SQL (allowed): part of the bulk dataset import (COPY)
 def _target_seed_names(conn, seed_table) -> dict:
     id_col, name_col = SEED_KEY[seed_table]
     with conn.cursor() as cur:
@@ -684,6 +695,7 @@ def _remap_lines(lines, columns, remaps) -> tuple:
 SEED_ID_MAPS: dict = {}
 
 
+# RAW SQL (allowed): performance-critical bulk import via COPY (443,963 rows in ~9 s)
 def import_dataset(conn, path, progress=None) -> dict:
     """Loads a dataset file produced by scripts/export_dataset.py.
 
@@ -794,6 +806,7 @@ def import_dataset(conn, path, progress=None) -> dict:
             "sequences_reset": len(sequences), "views_refreshed": refreshed}
 
 
+# RAW SQL (allowed): catalogue introspection for the Database view; names are checked against the live catalogue and quoted with sql.Identifier
 def table_inventory(conn) -> list:
     """Every table in `public` with an ESTIMATED row count and its on-disk
     size, in one query.
@@ -833,6 +846,7 @@ def table_inventory(conn) -> list:
     return out
 
 
+# RAW SQL (allowed): catalogue introspection for the Database view; names are checked against the live catalogue and quoted with sql.Identifier
 def exact_row_count(conn, table: str) -> dict:
     """`count(*)` for one table, for when the estimate is not good enough.
     Same catalogue check and identifier quoting as sample_table -- the name
@@ -850,6 +864,7 @@ def exact_row_count(conn, table: str) -> dict:
     return {"table": table, "rows": int(count), "rows_are_estimates": False}
 
 
+# RAW SQL (allowed): catalogue introspection for the Database view; names are checked against the live catalogue and quoted with sql.Identifier
 def sample_table(conn, table: str, limit: int = 50) -> dict:
     """Read-only peek at one table. The name is checked against the live
     catalogue and then quoted as an identifier -- never interpolated -- so a

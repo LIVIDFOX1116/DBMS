@@ -23,6 +23,7 @@ run_analysis.py's real INSERT paths, to time them -- but always inside one
 transaction that gets rolled back, never committed, so this script still
 never leaves a real row behind.
 """
+# RAW SQL (offline tooling): benchmark harness (persistence timed inside a rolled-back transaction). Not part of the application's data access
 import argparse
 import json
 import statistics

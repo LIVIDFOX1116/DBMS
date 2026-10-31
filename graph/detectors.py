@@ -300,6 +300,7 @@ def select_engaged_proximity_flags(bfs_distances: dict, outflow_ratios: dict, se
 
 # --- DB-I/O wrappers ---------------------------------------------------------
 
+# RAW SQL (not yet converted): batch-pipeline lookup on the caller's connection
 def resolve_latest_run_id(conn, snapshot_id: int, algorithm_name: str) -> int:
     with conn.cursor() as cur:
         cur.execute(
@@ -320,6 +321,7 @@ def resolve_latest_run_id(conn, snapshot_id: int, algorithm_name: str) -> int:
         return row[0]
 
 
+# RAW SQL (allowed): performance-critical bulk write (execute_values)
 def persist_flags(conn, run_id: int, rows: list, commit: bool = True) -> int:
     """rows: [(wallet_id, detector, score, threshold), ...] (bfs_proximity,
     sybil_cluster, pagerank_threshold -- no currency dimension) or
@@ -346,6 +348,7 @@ def persist_flags(conn, run_id: int, rows: list, commit: bool = True) -> int:
     return len(rows)
 
 
+# RAW SQL (allowed): performance-critical read of a whole run's results into the detector
 def run_bfs_proximity(conn, snapshot_id: int, seed_wallet_id: int,
                        threshold: float = DEFAULT_BFS_PROXIMITY_THRESHOLD, bfs_run_id: int = None) -> int:
     bfs_run_id = bfs_run_id or resolve_latest_run_id(conn, snapshot_id, "bfs")
@@ -367,6 +370,7 @@ def run_bfs_proximity(conn, snapshot_id: int, seed_wallet_id: int,
     return count
 
 
+# RAW SQL (allowed): performance-critical read of a whole run's results into the detector
 def run_sybil_cluster(conn, snapshot_id: int, seed_wallet_id: int, louvain_run_id: int = None) -> int:
     louvain_run_id = louvain_run_id or resolve_latest_run_id(conn, snapshot_id, "louvain")
     run_id = start_run(
@@ -391,6 +395,7 @@ def run_sybil_cluster(conn, snapshot_id: int, seed_wallet_id: int, louvain_run_i
     return count
 
 
+# RAW SQL (allowed): performance-critical read of a whole run's results into the detector
 def run_pagerank_threshold(conn, snapshot_id: int, seed_wallet_id: int,
                             percentile: float = DEFAULT_PAGERANK_PERCENTILE, pagerank_run_id: int = None) -> int:
     pagerank_run_id = pagerank_run_id or resolve_latest_run_id(conn, snapshot_id, "pagerank")
@@ -412,6 +417,7 @@ def run_pagerank_threshold(conn, snapshot_id: int, seed_wallet_id: int,
     return count
 
 
+# RAW SQL (allowed): performance-critical whole-history transfer fetch for the haircut replay (hundreds of thousands of rows)
 def _fetch_native_and_token_transfers(cur, snapshot_id: int, with_block: bool) -> list:
     """Native ETH + ERC-20 token transfers whose parent transaction is
     part of this snapshot, tagged with `currency` (None for native ETH,
@@ -482,6 +488,7 @@ def run_impurity(conn, snapshot_id: int, seed_wallet_id: int, threshold: float =
     return count
 
 
+# RAW SQL (allowed): performance-critical read of a whole run's results into the detector
 def run_engaged_proximity(conn, snapshot_id: int, seed_wallet_id: int,
                            bfs_threshold: float = DEFAULT_BFS_PROXIMITY_THRESHOLD,
                            outflow_threshold: float = DEFAULT_ENGAGED_OUTFLOW_THRESHOLD,

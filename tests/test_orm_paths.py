@@ -208,3 +208,40 @@ class TestFlagDetailStatements:
 
     def test_unaudited_flag_is_404_not_an_empty_200(self, monkeypatch):
         assert _live(monkeypatch, _Recorder()).get("/flags/11/audit").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# graph/audit.py persist_audit
+# ---------------------------------------------------------------------------
+
+class TestPersistAudit:
+    def _run(self, **kwargs):
+        from graph.audit import persist_audit
+        conn = mock.MagicMock()
+        persist_audit(conn, 7, "frameable", framing_cost_wei=10**18, framing_gas=21000,
+                      minimal_tx_set=["0xab"], method="exact", backend="cpu", runtime_ms=5, **kwargs)
+        sql, params = conn.cursor.return_value.__enter__.return_value.execute.call_args.args
+        return conn, " ".join(sql.split()), params
+
+    def test_insert_is_built_from_the_model_and_never_names_the_hashes(self):
+        _, sql, _ = self._run()
+        assert sql.startswith("INSERT INTO flag_audit (flag_id, verdict, framing_cost_wei, framing_gas, "
+                              "minimal_tx_set, method, backend, runtime_ms) VALUES")
+        assert "prev_hash" not in sql and "row_hash" not in sql, "the chain trigger computes these"
+        assert "UPDATE" not in sql
+
+    def test_values_are_bound_and_json_serialised(self):
+        _, sql, params = self._run()
+        assert "%(flag_id)s" in sql and "0xab" not in sql
+        assert params["minimal_tx_set"] == '["0xab"]'
+        assert params["framing_cost_wei"] == 10**18
+
+    def test_commit_true_commits(self):
+        conn, _, _ = self._run()
+        conn.commit.assert_called_once()
+
+    def test_commit_false_leaves_the_transaction_to_the_caller(self):
+        # benchmark_audit.py / run_experiment.py roll back what they wrote.
+        conn, _, _ = self._run(commit=False)
+        conn.commit.assert_not_called()
+        conn.rollback.assert_not_called()

@@ -232,6 +232,7 @@ def _smallest_prefix_reaching_threshold(ordered: list, score_fn, threshold: floa
 
 # --- DB-I/O: shared fetchers -------------------------------------------------
 
+# RAW SQL (not yet converted): batch-pipeline lookup on the caller's connection
 def fetch_flag(conn, flag_id: int) -> dict:
     with conn.cursor() as cur:
         cur.execute(
@@ -250,6 +251,7 @@ def fetch_flag(conn, flag_id: int) -> dict:
         return dict(zip(cols, row))
 
 
+# RAW SQL (allowed): recursive CTE (db/queries/evidence.sql)
 def fetch_unsolicited_candidates(conn, flag_id: int, wallet_id: int, snapshot_id: int, seed_wallet_id: int) -> list:
     """Ensures evidence exists for this flag (collecting it lazily if not
     -- see graph/audit.py's module docstring on why bulk-precomputing
@@ -277,24 +279,32 @@ def fetch_unsolicited_candidates(conn, flag_id: int, wallet_id: int, snapshot_id
 def persist_audit(conn, flag_id: int, verdict: str, framing_cost_wei=None, framing_gas=None,
                    minimal_tx_set=None, method: str = "yes_no", backend: str = None,
                    runtime_ms: int = 0, commit: bool = True) -> None:
+    """Appends one flag_audit row through the ORM model. Insert-only, as
+    migration 009 requires: prev_hash/row_hash are left to the
+    flag_audit_chain trigger (FlagAudit marks them server-generated), and a
+    corrected verdict is always a new row. Runs on the caller's connection
+    so commit=False callers keep control of the transaction."""
     import json
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO flag_audit (flag_id, verdict, framing_cost_wei, framing_gas, minimal_tx_set,
-                                     method, backend, runtime_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (flag_id, verdict, framing_cost_wei, framing_gas,
-             json.dumps(minimal_tx_set) if minimal_tx_set is not None else None,
-             method, backend, runtime_ms),
-        )
+
+    from sqlalchemy import insert
+
+    from db.orm.models import FlagAudit
+    from db.orm.session import execute_on_connection
+
+    execute_on_connection(conn, insert(FlagAudit).values(
+        flag_id=flag_id, verdict=verdict, framing_cost_wei=framing_cost_wei, framing_gas=framing_gas,
+        # Serialised here because the statement runs on a raw psycopg2
+        # connection, where SQLAlchemy's JSONB bind processing does not apply.
+        minimal_tx_set=json.dumps(minimal_tx_set) if minimal_tx_set is not None else None,
+        method=method, backend=backend, runtime_ms=runtime_ms,
+    ))
     if commit:
         conn.commit()
 
 
 # --- Per-detector audits -----------------------------------------------------
 
+# RAW SQL (not yet converted): batch-pipeline snapshot-path lookup on the caller's connection
 def audit_bfs_proximity(conn, flag_id: int, snapshot_id: int, wallet_id: int, seed_wallet_id: int,
                          threshold: float, bfs_run_id: int) -> dict:
     t0 = time.time()
@@ -338,6 +348,7 @@ def audit_bfs_proximity(conn, flag_id: int, snapshot_id: int, wallet_id: int, se
     }
 
 
+# RAW SQL (allowed): performance-critical whole-history transfer fetch for the haircut replay (hundreds of thousands of rows)
 def _fetch_native_and_token_transfers_for_audit(cur, snapshot_id: int) -> list:
     """Same shared fetch as graph/detectors.py's _fetch_native_and_token_
     transfers, duplicated here (not imported) because the audit engine
@@ -463,6 +474,7 @@ def audit_engaged_proximity(conn, flag_id: int, snapshot_id: int, wallet_id: int
                                     compute_engaged_outflow_ratios, {"window_blocks": window_blocks}, tuple_arity=5)
 
 
+# RAW SQL (not yet converted): batch-pipeline snapshot-path lookup on the caller's connection
 def audit_pagerank_threshold(conn, flag_id: int, snapshot_id: int, wallet_id: int, seed_wallet_id: int,
                               threshold_value: float) -> dict:
     t0 = time.time()
@@ -521,6 +533,7 @@ def audit_pagerank_threshold(conn, flag_id: int, snapshot_id: int, wallet_id: in
     }
 
 
+# RAW SQL (not yet converted): batch-pipeline snapshot-path lookup on the caller's connection
 def audit_sybil_cluster(conn, snapshot_id: int, wallet_id: int, louvain_run_id: int) -> dict:
     """yes_no only: re-run Louvain (fixed seed=42, see graph/backend.py)
     on the graph with W's signed edges removed; frameable if W still
@@ -595,6 +608,7 @@ def audit_flag(conn, flag_id: int, seed_wallet_id: int) -> dict:
     return result
 
 
+# RAW SQL (not yet converted): batch-pipeline CLI target selection on the caller's connection
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--snapshot-id", type=int, required=True)
