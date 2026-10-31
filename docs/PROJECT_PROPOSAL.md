@@ -82,7 +82,7 @@ A flag is **frameable** if it still holds with every transaction signed by the w
 | Backup and restore | [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md), `scripts/backup_db.*`, `scripts/restore_db.*` |
 | Container image | [`Dockerfile`](../Dockerfile), [`docker-compose.yml`](../docker-compose.yml) |
 | Desktop app | [`src-tauri/`](../src-tauri/) (Windows installer) |
-| Live URL | `<added once deployed>` |
+| Live URL | <https://framecheck-awlf.onrender.com> (sign-in required) |
 
 ## Gantt chart
 
