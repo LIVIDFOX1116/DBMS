@@ -175,9 +175,15 @@ TABLES = [
         SELECT fe.* FROM flag_evidence fe JOIN flag f ON f.flag_id = fe.flag_id
           JOIN analysis_run r ON r.run_id = f.run_id
          WHERE r.snapshot_id = %(snapshot_id)s AND fe.tx_hash IN ({TX_SCOPE})"""),
+    # In flag_audit_id order, always. The import's COPY fires migration 009's
+    # chain trigger, which links each inserted row to the current
+    # highest-id row: written in join order (it came out 11, 12, 13, 1, ...),
+    # rows 1-12 all linked to row 13 and the imported chain failed
+    # flag_audit_chain_verify() at its first row.
     ("flag_audit", """
         SELECT fa.* FROM flag_audit fa JOIN flag f ON f.flag_id = fa.flag_id
-          JOIN analysis_run r ON r.run_id = f.run_id WHERE r.snapshot_id = %(snapshot_id)s"""),
+          JOIN analysis_run r ON r.run_id = f.run_id WHERE r.snapshot_id = %(snapshot_id)s
+         ORDER BY fa.flag_audit_id"""),
 ]
 
 # Deliberately NOT exported:
