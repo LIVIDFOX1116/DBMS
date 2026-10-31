@@ -106,8 +106,39 @@ def verify_google_id_token(id_token: str, client_id: str) -> dict:
 
 
 def _user_dict(user) -> dict:
+    # role/username/is_active arrived with migration 010; every real row has
+    # them, the defaults only cover a caller handing over a partial row.
     return {"user_id": user.user_id, "google_sub": user.google_sub, "email": user.email,
-            "display_name": user.display_name, "picture_url": user.picture_url}
+            "display_name": user.display_name, "picture_url": user.picture_url,
+            "role": getattr(user, "role", None), "username": getattr(user, "username", None),
+            "is_active": getattr(user, "is_active", True)}
+
+
+def _email_list(var: str) -> list[str]:
+    return [e.strip().lower() for e in os.getenv(var, "").split(",") if e.strip()]
+
+
+def email_allowed(email: str) -> bool:
+    """FRAMECHECK_ALLOWED_EMAILS: unset means anyone with a verified Google
+    account may sign in; set, only the listed addresses and `*@domain`
+    entries. A deployed instance sets it (team + faculty)."""
+    allowed = _email_list("FRAMECHECK_ALLOWED_EMAILS")
+    if not allowed:
+        return True
+    email = (email or "").strip().lower()
+    domain = email.rpartition("@")[2]
+    return any(entry == email or (entry.startswith("*@") and entry[2:] == domain) for entry in allowed)
+
+
+def first_login_role(email: str) -> str:
+    """The role a Google account gets the FIRST time it signs in:
+    admin if listed in FRAMECHECK_ADMIN_EMAILS, otherwise
+    FRAMECHECK_DEFAULT_ROLE (viewer unless set). Later sign-ins never change
+    a role -- that is an admin's decision, made in the Users view."""
+    if (email or "").strip().lower() in _email_list("FRAMECHECK_ADMIN_EMAILS"):
+        return "admin"
+    default = os.getenv("FRAMECHECK_DEFAULT_ROLE", "viewer").strip().lower()
+    return default if default in ("viewer", "analyst", "admin") else "viewer"
 
 
 def upsert_user(session, claims: dict) -> dict:
@@ -125,6 +156,9 @@ def upsert_user(session, claims: dict) -> dict:
         display_name=claims.get("name"),
         picture_url=claims.get("picture"),
         last_login_at=func.now(),
+        # Only ever used by the INSERT: the conflict branch below does not
+        # touch role, so an existing user keeps whatever role an admin gave.
+        role=first_login_role(claims.get("email", "")),
     )
     statement = insert.on_conflict_do_update(
         index_elements=[AppUser.google_sub],
@@ -135,7 +169,8 @@ def upsert_user(session, claims: dict) -> dict:
             "last_login_at": func.now(),
         },
     ).returning(AppUser.user_id, AppUser.google_sub, AppUser.email,
-                AppUser.display_name, AppUser.picture_url)
+                AppUser.display_name, AppUser.picture_url,
+                AppUser.role, AppUser.username, AppUser.is_active)
     row = session.execute(statement).one()
     # Committed here, before the caller issues a session token for this
     # user -- the token must never name a row that could still roll back.

@@ -41,9 +41,10 @@ from sqlalchemy import BigInteger, String, Text, and_, any_, cast, func, literal
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.dialects.postgresql import ARRAY, DOUBLE_PRECISION, aggregate_order_by, distinct_on
 from sqlalchemy.orm import aliased
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api import auth, dbsetup, jobs
+from api import auth, dbsetup, jobs, rbac
 from db.orm.engine import reset_engine
 from db.orm.models import (
     Alert,
@@ -143,9 +144,24 @@ async def require_session(request: Request, call_next):
     if auth.public_demo_mode() and request.method == "POST" and _is_mutating_path(request.url.path):
         return JSONResponse(status_code=403, content={
             "detail": "read-only public demo: this action is disabled on the shared link"})
-    if auth.auth_mode() == "disabled" or auth.public_demo_mode() or request.method == "OPTIONS":
+    if request.method == "OPTIONS":
         return await _call(request, call_next)
-    if request.url.path in auth.PUBLIC_PATHS:
+    # The minimum role for this route (api/rbac.py's central table).
+    needed = rbac.required_role(app, request.scope)
+    if needed == rbac.PUBLIC or request.url.path in auth.PUBLIC_PATHS:
+        return await _call(request, call_next)
+    # Public demo FIRST: a shared demo link usually also runs with sign-in
+    # disabled, and an anonymous visitor on it must be a viewer, never the
+    # local admin below.
+    if auth.public_demo_mode():
+        request.state.user = rbac.DEMO_VIEWER
+        if not rbac.allows(rbac.VIEWER, needed):
+            return _forbidden(rbac.VIEWER, needed)
+        return await _call(request, call_next)
+    if auth.auth_mode() == "disabled":
+        # Desktop sidecar / local development: a local admin, exactly as
+        # before roles existed.
+        request.state.user = rbac.LOCAL_ADMIN
         return await _call(request, call_next)
 
     token = request.cookies.get(auth.SESSION_COOKIE)
@@ -161,7 +177,31 @@ async def require_session(request: Request, call_next):
         # the log, not to the caller.
         log.info("Rejected session on %s: %s", request.url.path, e)
         return JSONResponse(status_code=401, content={"detail": "sign-in required"})
+
+    # The role comes from the database on every request, never from the
+    # token, so a role change or deactivation applies immediately. Mock mode
+    # has no users table: a signed-in caller there is a viewer, which is
+    # every read (and mock mode refuses every write anyway).
+    if using_mock():
+        user = {**rbac.DEMO_VIEWER, "user_id": request.state.session["user_id"]}
+    else:
+        try:
+            user = await run_in_threadpool(rbac.load_user, request.state.session["user_id"])
+        except DB_UNAVAILABLE:
+            log.exception("Database unavailable checking the session on %s", request.url.path)
+            return JSONResponse(status_code=503, content={"detail": "database unavailable"})
+        if user is None or not user["is_active"]:
+            return JSONResponse(status_code=401, content={"detail": "sign-in required"})
+    request.state.user = user
+    if not rbac.allows(user["role"], needed):
+        return _forbidden(user["role"], needed)
     return await _call(request, call_next)
+
+
+def _forbidden(role: str, needed: str) -> JSONResponse:
+    return JSONResponse(status_code=403, content={
+        "detail": f"forbidden: this needs the {needed} role (you are {role})",
+        "role": role, "required_role": needed})
 
 
 async def _call(request: Request, call_next):
@@ -1429,8 +1469,15 @@ def auth_callback(body: GoogleCallback, response: Response):
         log.warning("Google ID token verification error: %s", e)
         raise HTTPException(status_code=401, detail="sign-in failed") from e
 
+    # Allowlist before any row is written: someone refused here leaves no
+    # account behind.
+    if not auth.email_allowed(claims.get("email", "")):
+        log.info("Refused sign-in for an address not on FRAMECHECK_ALLOWED_EMAILS")
+        raise HTTPException(status_code=403, detail="this account is not allowed to sign in here")
     with get_session() as db:
         user = auth.upsert_user(db, claims)
+    if not user["is_active"]:
+        raise HTTPException(status_code=403, detail="this account has been deactivated")
     return _signed_in(response, user)
 
 
@@ -1507,8 +1554,14 @@ def auth_local_password(body: PasswordChange, request: Request):
 def auth_session(request: Request):
     """Who am I? Public so the UI can ask before it has a session and get
     a plain answer instead of a 401 it has to special-case."""
+    # `role` and `username` (additive) tell the UI which menus, pages and
+    # buttons to offer. They are UX only: the middleware is the real gate.
+    if auth.public_demo_mode():                 # before "disabled": see the gate
+        return {"authenticated": True, "auth_mode": "public_demo", "user": None,
+                "role": rbac.DEMO_VIEWER["role"], "username": None}
     if auth.auth_mode() == "disabled":
-        return {"authenticated": True, "auth_mode": "disabled", "user": None}
+        return {"authenticated": True, "auth_mode": "disabled", "user": None,
+                "role": rbac.LOCAL_ADMIN["role"], "username": None}
     token = request.cookies.get(auth.SESSION_COOKIE)
     header = request.headers.get("authorization", "")
     if not token and header.lower().startswith("bearer "):
@@ -1519,12 +1572,17 @@ def auth_session(request: Request):
         session = auth.read_session(token)
     except auth.AuthError:
         return {"authenticated": False, "auth_mode": "required", "user": None}
+    if using_mock():
+        # No users table to read: a valid session is a viewer, as in the gate.
+        return {"authenticated": True, "auth_mode": "required", "user": None,
+                "role": rbac.VIEWER, "username": None}
     with get_session() as db:
         user = auth.pg_user_fetch(db, session["user_id"])
-    if user is None:
+    if user is None or not user["is_active"]:
         return {"authenticated": False, "auth_mode": "required", "user": None}
     return {"authenticated": True, "auth_mode": "required",
-            "user": {k: user[k] for k in ("user_id", "email", "display_name", "picture_url")}}
+            "user": {k: user[k] for k in ("user_id", "email", "display_name", "picture_url")},
+            "role": user["role"], "username": user["username"]}
 
 
 @app.post("/auth/logout")

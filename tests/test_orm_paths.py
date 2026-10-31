@@ -22,13 +22,16 @@ def compiled(statement) -> str:
 class TestAuthViaOrm:
     def _session_returning(self, **row):
         session = mock.MagicMock()
+        row = {"role": "viewer", "username": None, "is_active": True, **row}
         session.execute.return_value.one.return_value = SimpleNamespace(**row)
         return session
 
-    def test_upsert_returns_the_same_dict_as_before(self):
+    def test_upsert_returns_the_user_with_role_and_status(self):
         session = self._session_returning(user_id=7, google_sub="s", email="e@x", display_name="D", picture_url="p")
         user = auth.upsert_user(session, {"sub": "s", "email": "e@x", "name": "D", "picture": "p"})
-        assert user == {"user_id": 7, "google_sub": "s", "email": "e@x", "display_name": "D", "picture_url": "p"}
+        assert user == {"user_id": 7, "google_sub": "s", "email": "e@x", "display_name": "D", "picture_url": "p",
+                        "role": "viewer", "username": None, "is_active": True}
+        assert "password_hash" not in user
 
     def test_upsert_commits_before_returning(self):
         # The caller issues a session token for this row straight after.
@@ -45,7 +48,11 @@ class TestAuthViaOrm:
         assert "last_login_at = now()" in sql
         assert "created_at" not in sql, "created_at belongs to the first sign-in; the DDL default sets it"
         assert sql.endswith("RETURNING app_user.user_id, app_user.google_sub, app_user.email, "
-                            "app_user.display_name, app_user.picture_url")
+                            "app_user.display_name, app_user.picture_url, "
+                            "app_user.role, app_user.username, app_user.is_active")
+        # The role is set on INSERT only: a later sign-in never overwrites
+        # a role an admin changed.
+        assert "role = excluded.role" not in sql and "role" not in sql.split("DO UPDATE SET")[1].split("RETURNING")[0]
 
     def test_upsert_binds_values_rather_than_interpolating_them(self):
         session = self._session_returning(user_id=1, google_sub="x", email="", display_name=None, picture_url=None)
@@ -57,9 +64,11 @@ class TestAuthViaOrm:
 
     def test_fetch_is_a_primary_key_lookup(self):
         session = mock.MagicMock()
-        session.get.return_value = AppUser(user_id=3, google_sub="s", email="e", display_name=None, picture_url=None)
+        session.get.return_value = AppUser(user_id=3, google_sub="s", email="e", display_name=None, picture_url=None,
+                                           role="analyst", username="u", is_active=True, password_hash="$2b$12$x")
         assert auth.pg_user_fetch(session, 3) == {
-            "user_id": 3, "google_sub": "s", "email": "e", "display_name": None, "picture_url": None}
+            "user_id": 3, "google_sub": "s", "email": "e", "display_name": None, "picture_url": None,
+            "role": "analyst", "username": "u", "is_active": True}
         session.get.assert_called_once_with(AppUser, 3)
 
     def test_fetch_of_a_missing_user_is_none(self):
