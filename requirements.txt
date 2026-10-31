@@ -2,6 +2,7 @@
 # Install: pip install -r requirements.txt
 requests>=2.34.2
 psycopg2-binary>=2.9
+sqlalchemy>=2.0,<3     # ORM for app data access (db/orm/); DDL stays in db/schema.sql + migrations
 python-dotenv>=1.2.4
 pandas>=2.0
 pyarrow>=26.0.0        # parquet read/write
