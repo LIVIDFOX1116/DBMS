@@ -37,9 +37,11 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
+from sqlalchemy import exc as sa_exc
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api import auth, dbsetup, jobs
+from db.orm.engine import reset_engine
 from ingestion import config
 from ingestion.etherscan_client import EtherscanClient
 
@@ -60,6 +62,13 @@ log = logging.getLogger("api.main")
 _pool: "pg_pool.ThreadedConnectionPool | None" = None
 _pool_lock = threading.Lock()
 
+# What "the database is unreachable" looks like from either data path: the
+# raw psycopg2 pool raises psycopg2's classes, while SQLAlchemy wraps the
+# same driver errors in its own, which are NOT subclasses of psycopg2's --
+# without the second pair, a dead database behind an ORM endpoint would
+# surface as a 500 instead of a 503.
+DB_UNAVAILABLE = (OperationalError, InterfaceError, sa_exc.OperationalError, sa_exc.InterfaceError)
+
 
 def close_pool() -> None:
     """Drops the pool so the next request builds a fresh one. Called on
@@ -72,6 +81,8 @@ def close_pool() -> None:
             _pool.closeall()
             log.info("Postgres connection pool closed")
             _pool = None
+    # The ORM's engine pools connections too, against the same settings.
+    reset_engine()
 
 
 @asynccontextmanager
@@ -142,7 +153,7 @@ async def _call(request: Request, call_next):
     sent me looking for a CORS bug when Postgres had simply gone away."""
     try:
         return await call_next(request)
-    except (OperationalError, InterfaceError):
+    except DB_UNAVAILABLE:
         log.exception("Database unavailable handling %s %s", request.method, request.url.path)
         return JSONResponse(status_code=503, content={"detail": "database unavailable"})
 
@@ -158,7 +169,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, StarletteHTTPException):
         return await http_exception_handler(request, exc)
     log.exception("Unhandled error handling %s %s", request.method, request.url.path)
-    if isinstance(exc, (OperationalError, InterfaceError)):
+    if isinstance(exc, DB_UNAVAILABLE):
         return JSONResponse(status_code=503, content={"detail": "database unavailable"})
     return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
