@@ -721,6 +721,37 @@ being true; corrected 2026-10-11.
 
 ---
 
+## Users, labels, tags, alert review, pagination (additive)
+
+Minimum roles are in `api/rbac.py`. Mutations in mock mode answer `409 {"detail": "… needs live mode"}`; a read-only
+public demo answers 403 to every `PUT`/`PATCH`/`DELETE` and to these `POST`s. 404 for unknown ids, 409 for conflicts,
+422 for bad input.
+
+| Endpoint | Role | Notes |
+|---|---|---|
+| `POST /auth/local/login` | public | `{username, password}`; same session as Google. Generic 401; 429 after 5 attempts a minute per address and username |
+| `POST /auth/local/password` | viewer | `{current_password, new_password}`; at least 12 characters, at most 72 bytes |
+| `GET /admin/users?q=&page=&page_size=` | admin | never includes password hashes |
+| `PATCH /admin/users/{id}` | admin | `{role?, is_active?}`, through `sp_set_user_role` / `sp_set_user_active`; the last active admin cannot be removed (409). Needs a signed-in admin (409 when sign-in is disabled) |
+| `DELETE /admin/users/{id}` | admin | soft delete: `is_active = false` |
+| `GET /labels?q=&category=&page=&page_size=`, `GET /labels/{id}` | viewer | |
+| `POST /labels`, `PATCH /labels/{id}` | analyst | duplicate name: 409 |
+| `DELETE /labels/{id}?force=` | analyst | 409 while attached to wallets unless `force=true`, which detaches in the same transaction |
+| `GET /wallets/{id}/labels` | viewer | its own endpoint: `GET /wallets/{id}` keeps its body |
+| `POST /wallets/{id}/labels` | analyst | `{label_id, confidence?}`; records `tagged_by` |
+| `DELETE /wallets/{id}/labels/{label_id}` | analyst | |
+| `PATCH /alerts/{id}` | analyst | `{review_status}`: `NEW`, `IN_REVIEW`, `CONFIRMED`, `DISMISSED`; records `reviewed_by` |
+
+**Pagination.** `/wallets`, `/flags`, `/alerts`, `/labels` and `/admin/users` take optional `page` (1-based) and
+`page_size` (default 50, max 500). Bodies stay arrays; `X-Total-Count`, `X-Page`, `X-Page-Size` and an RFC 8288 `Link`
+header carry the rest, exposed through CORS. Without those parameters the legacy `limit` behaviour is unchanged.
+`/wallets` also takes `q`, `address_type`, `min_risk` and `sort` (`tx`, `risk`, `address`) when paging.
+
+`/auth/session` adds `role` and `username` to its signed-in, disabled and demo answers. `/alerts?status=` values
+follow the review statuses above (`REVIEWED` was normalised to `IN_REVIEW` by migration 011).
+
+---
+
 ## ORM coverage and permitted raw SQL
 
 **The split: DDL in SQL, data access through the ORM.** `db/schema.sql` plus
@@ -744,6 +775,9 @@ level for offline tools, `# RAW SQL (offline tooling): <reason>`.
 |---|---|
 | `auth.upsert_user` (`POST /auth/callback`) | `postgresql.insert(AppUser).on_conflict_do_update(index_elements=[google_sub]).returning(...)` |
 | `auth.pg_user_fetch` (`GET /auth/session`) | `session.get(AppUser, user_id)` |
+| `auth.local_login`, `auth.change_password`, `rbac.load_user` | `AppUser` objects through a session |
+| `/labels*`, `/wallets/{id}/labels*`, `PATCH /alerts/{id}`, `GET /admin/users` | ORM objects and `select()`, one transaction per request |
+| `/audit/verdicts`, `/audit/overview`, `/audit/summary` | read the `v_flag_latest_audit` view through its read-only `FlagLatestAudit` model |
 | `GET /wallets`, `/wallets/{id}` | `select()` ordered `tx_count DESC NULLS LAST`; `session.get(Wallet, id)` |
 | `GET /clusters`, `/clusters/{id}` | `select()` joined through `Cluster.run`, run columns labelled `analysis_backend` / `library_version` |
 | `GET /clusters/{id}/members` | joined through `ClusterMember.wallet` |
@@ -774,6 +808,7 @@ the CSV, 404s and empty results) are byte-identical.
 
 | Site | Reason |
 |---|---|
+| `PATCH`/`DELETE /admin/users/{id}` | `CALL sp_set_user_role(...)` / `sp_set_user_active(...)` stored procedures (migration 011), through `text()` with bound parameters |
 | `GET /audit/trail`, `/flags/{id}/versions`, `/flags/as-of` | call migration 009's PL/pgSQL functions `flag_audit_chain_verify()`, `flag_versions()`, `flag_as_of()` (bound parameters) |
 | `GET /clusters/top-flagged` (+ `resolve_cluster_run_id`, `resolve_snapshot_for_run`) | performance-critical: aggregates the `mv_cluster_flag_stats` materialized view (471 ms → 2 ms, migration 008) |
 | `GET /clusters/{id}/subgraph` | performance-critical: hand-tuned against `EXPLAIN (ANALYZE)` — the PageRank run resolved once instead of per member (489 of 545 ms), addresses and verdicts fetched only for the nodes kept (1,038 ms before) |

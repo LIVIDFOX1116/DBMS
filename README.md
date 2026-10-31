@@ -13,16 +13,32 @@ outcome resolved (funds returned), good bounded fan-out/consolidation
 structure for PageRank/Louvain/BFS to actually find something. Change it in
 `.env` (`CASE_STUDY_ADDRESS`), not in code.
 
+## Roles
+
+| Role | Can |
+|---|---|
+| `viewer` | every read-only view and GET endpoint, CSV export |
+| `analyst` | viewer + run analysis jobs, manage labels and wallet tags, review alerts |
+| `admin` | analyst + Database view (`/db/*`), Etherscan ingest (`/ingest/*`), user management (`/admin/users*`) |
+
+Roles live in the single Users table, `app_user` (migration 010), and are read on every request, so a change or a
+deactivation applies at once. `api/rbac.py` holds one table of every route's minimum role; a route missing from it is
+admin-only, and a test fails if one is missing. `FRAMECHECK_AUTH_MODE=disabled` (the desktop app) acts as a local
+admin, `FRAMECHECK_PUBLIC_DEMO=1` as an anonymous viewer. After migrating an existing database, run
+`python db/init_db.py` (back up first: migration 010 drops the emptied `analyst` table).
+
 ## Technology stack
 
 | Layer | Technology |
 |---|---|
-| Database | PostgreSQL 16+ (25 tables, PL/pgSQL triggers and functions, a materialized view) |
+| Database | PostgreSQL 16+ (25 tables, PL/pgSQL triggers, functions and procedures, a view, a materialized view) |
 | **ORM** | **SQLAlchemy 2.x** (`db/orm/`), over the psycopg2 driver |
 | Graph analytics | cuDF + cuGraph on the GPU (WSL2 / RAPIDS), pandas + NetworkX on the CPU |
 | API | FastAPI + Uvicorn |
 | Frontend | plain HTML/JS, no build step |
 | Desktop app | Tauri 2 (Rust) with a PyInstaller-frozen Python sidecar |
+| Sign-in | Google OAuth 2.0 and bcrypt local accounts; admin / analyst / viewer roles |
+| Deployment | Docker, docker compose, Docker Hub (private), GitHub Actions, Render, Neon |
 
 **DDL in SQL, data access through the ORM.** The schema is defined only by
 `db/schema.sql` and `db/migrations/*.sql`, applied in order and tracked in
@@ -40,6 +56,69 @@ site is tagged in code and listed with its reason in
 **25 tables, 35 foreign keys (34 many-to-one, 1 one-to-one), 4 tables with no FK by design**
 (each says why on the diagram). `tests/test_er_coverage.py` fails if a table, column or
 foreign key in the DDL is missing from them.
+
+## Docker
+
+```bash
+# .env needs POSTGRES_PASSWORD and FRAMECHECK_SESSION_SECRET (see .env.example)
+docker compose up --build        # http://localhost:8000/dashboard.html
+```
+
+The image is CPU only (no RAPIDS) and about 1.08 GB. On each start it applies pending migrations; with
+`FRAMECHECK_IMPORT_DEMO=1` (the compose default) it imports the demo dataset into an empty database:
+443,954 rows, 133 MB restored. Create a first admin inside the container:
+
+```bash
+docker compose exec api python scripts/create_admin.py --username <name> --email <email>
+```
+
+Audit jobs replay snapshot Parquet files: put them in `./snapshots`, mounted at `/data/snapshots`
+(`FRAMECHECK_DATA_DIR=/data`). Without the file, `POST /jobs` for an audit answers a clear 409.
+Backups inside compose: [`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md).
+
+## Deployment
+
+**Private by design until the provisional patent application is filed:** a private Docker Hub repository,
+sign-in required with an email allowlist, no `FRAMECHECK_PUBLIC_DEMO`, `FRAMECHECK_HIDE_LANDING=1`, and the
+GitHub repository stays private. Secrets go only in the dashboards named below, never in code or chat.
+
+**1. Docker Hub.** hub.docker.com → Repositories → Create repository → name `framecheck`, visibility **Private**
+(check docker.com/pricing for the free private-repository allowance). Then Account settings → Personal access
+tokens → Generate new token, Read & Write. In GitHub: repository → Settings → Secrets and variables → Actions →
+add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. Pushing to `main` or a `v*` tag publishes
+`<user>/framecheck:latest` and `:<git-sha>`.
+
+**2. Neon (database).** neon.tech → New project, PostgreSQL 16. Copy the connection string from Connect; it ends
+in `?sslmode=require`. The free tier's 0.5 GB holds the 133 MB demo dataset, and idle compute wakes by itself on
+the next connection. Load data by setting `FRAMECHECK_IMPORT_DEMO=1` for the first deploy, or by restoring a dump
+with `pg_restore --no-owner -d "<connection string>" backups/<file>.dump`.
+
+**3. Render (app).** render.com → New → Web Service → Existing image → `docker.io/<user>/framecheck:latest`, and add
+Docker Hub credentials so it can pull a private image. Instance type Free (spins down after 15 idle minutes, about a
+minute to wake). Environment:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | the Neon connection string |
+| `FRAMECHECK_API_MODE` | `live` |
+| `FRAMECHECK_AUTH_MODE` | `required` |
+| `FRAMECHECK_SESSION_SECRET` | output of `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `FRAMECHECK_HIDE_LANDING` | `1` |
+| `FRAMECHECK_ADMIN_EMAILS` | your Google address |
+| `FRAMECHECK_ALLOWED_EMAILS` | team and faculty addresses, comma separated (`*@domain` also works) |
+| `FRAMECHECK_IMPORT_DEMO` | `1` for the first deploy |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | from step 4 |
+
+**4. Google sign-in.** console.cloud.google.com → APIs & Services → Credentials → your OAuth client → add
+`https://<app>.onrender.com/auth/callback` to Authorized redirect URIs, and add a custom domain's URL too if you
+use one.
+
+**5. Custom domain (bonus).** Render needs a CNAME to `<app>.onrender.com` for a subdomain, and accepts an A record
+to `216.24.57.1` only as the fallback for apex domains. DuckDNS offers only A records, so try
+`framecheck.duckdns.org` → `216.24.57.1`, add it under Render → Settings → Custom Domains, and see whether it
+verifies and issues TLS. If it does not, use a domain that supports CNAME.
+
+**Live URL:** not deployed yet: steps 1 to 4 need the project's own accounts.
 
 ## Setup: build it, then run it
 

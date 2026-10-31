@@ -3,7 +3,7 @@
 ## What this project is
 
 **FrameCheck** is a GPU-accelerated Ethereum transaction-graph analyzer and framing audit:
-Etherscan ingestion -> PostgreSQL (18-table schema) -> Parquet snapshots -> PageRank/Louvain/BFS
+Etherscan ingestion -> PostgreSQL (25-table schema) -> Parquet snapshots -> PageRank/Louvain/BFS
 via cuGraph with a pandas/NetworkX CPU fallback -> five flag detectors -> an audit layer -> FastAPI
 -> a dashboard + Tauri desktop app. Full rationale for the original analyzer lives in
 `docs/Project_Bible_TransactionGraphAnalyzer.docx`; this file is about how to work in the repo, not
