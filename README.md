@@ -525,9 +525,23 @@ FRAMECHECK_DATA_DIR=E:\DBMS      # the directory containing snapshots/
 Without it, audits started from the app fail with a message naming the file
 and this variable. Detectors are unaffected (they read from Postgres).
 
-### Sign-in (Google)
+### Sign-in: Google, or a local account
 
-**`uvicorn api.main:app` requires a Google sign-in by default.** `/health`
+**Why two methods.** Google sign-in is the primary one: no password is stored
+here at all, and identity is Google's verified `sub`. Local accounts exist for
+what Google cannot cover — the first admin on a fresh deployment before any
+OAuth client is configured, a reviewer without an allowlisted Google account,
+an offline demo machine. They are username + password, hashed with **bcrypt
+(cost 12)** in `app_user.password_hash`, which no endpoint ever returns;
+`POST /auth/local/login` returns the same session as Google sign-in, with one
+generic error for every failure and at most 5 attempts a minute per address
+and per username. Create or reset one with
+`python scripts/create_admin.py --username <name> --email <email>` — it
+prompts for the password with `getpass`, so it never appears as an argument or
+in shell history. Change your own with `POST /auth/local/password` (current
+password required, new one at least 12 characters).
+
+**`uvicorn api.main:app` requires a sign-in by default.** `/health`
 and `/benchmarks` stay public; everything else answers
 `401 {"detail": "sign-in required"}` without a session. **The desktop app
 does not** — it passes `FRAMECHECK_AUTH_MODE=disabled` to its own sidecar,

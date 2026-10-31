@@ -36,7 +36,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import BigInteger, String, Text, and_, any_, cast, func, literal, select, true, type_coerce
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.dialects.postgresql import ARRAY, DOUBLE_PRECISION, aggregate_order_by, distinct_on
@@ -1431,6 +1431,12 @@ def auth_callback(body: GoogleCallback, response: Response):
 
     with get_session() as db:
         user = auth.upsert_user(db, claims)
+    return _signed_in(response, user)
+
+
+def _signed_in(response: Response, user: dict) -> dict:
+    """Issues our session for a verified user -- the same cookie and body
+    whether they signed in with Google or a local password."""
     token = auth.issue_session(user)
     response.set_cookie(
         auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
@@ -1442,6 +1448,59 @@ def auth_callback(body: GoogleCallback, response: Response):
     )
     return {"user": {k: user[k] for k in ("user_id", "email", "display_name", "picture_url")},
             "session_token": token}
+
+
+class LocalLogin(BaseModel):
+    username: str = Field(min_length=1, max_length=40)
+    password: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/auth/local/login")
+def auth_local_login(body: LocalLogin, request: Request, response: Response):
+    """Username + password sign-in for local accounts (bcrypt). Returns the
+    same session as Google sign-in. One generic 401 for every failure, and at
+    most 5 attempts a minute per client address and per username."""
+    if using_mock():
+        raise HTTPException(status_code=409, detail="local sign-in needs live mode")
+    client = request.client.host if request.client else "unknown"
+    if not auth.login_limiter.allow(f"ip:{client}", f"user:{body.username.lower()}"):
+        raise HTTPException(status_code=429, detail="too many sign-in attempts -- wait a minute and try again",
+                            headers={"Retry-After": "60"})
+    try:
+        with get_session() as db:
+            user = auth.local_login(db, body.username, body.password)
+    except auth.AuthError:
+        raise HTTPException(status_code=401, detail=auth.LOGIN_FAILED) from None
+    return _signed_in(response, user)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=1, max_length=200)
+
+
+@app.post("/auth/local/password")
+def auth_local_password(body: PasswordChange, request: Request):
+    """Change your own password: needs the current one; the new one must be
+    at least 12 characters (and at most 72 bytes, bcrypt's limit)."""
+    if using_mock():
+        raise HTTPException(status_code=409, detail="changing a password needs live mode")
+    signed_in = getattr(request.state, "session", None)
+    if signed_in is None:
+        raise HTTPException(status_code=409, detail="no signed-in user -- sign-in is disabled on this server")
+    try:
+        auth.validate_new_password(body.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    if not auth.login_limiter.allow(f"pw:{signed_in['user_id']}"):
+        raise HTTPException(status_code=429, detail="too many attempts -- wait a minute and try again",
+                            headers={"Retry-After": "60"})
+    try:
+        with get_session() as db:
+            auth.change_password(db, signed_in["user_id"], body.current_password, body.new_password)
+    except auth.AuthError:
+        raise HTTPException(status_code=403, detail="current password is incorrect") from None
+    return {"status": "password changed"}
 
 
 @app.get("/auth/session")

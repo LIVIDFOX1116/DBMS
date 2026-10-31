@@ -13,4 +13,5 @@ uvicorn[standard]>=0.54.0
 pytest>=9.1.1
 httpx>=0.28.1        # required by fastapi.testclient.TestClient
 itsdangerous>=2.2        # signs api/auth.py's session tokens
+bcrypt>=4        # local-account password hashing (api/auth.py), cost 12
 google-auth>=2.62.0        # verifies Google ID tokens (api/auth.py)

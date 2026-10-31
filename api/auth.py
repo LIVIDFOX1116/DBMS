@@ -39,7 +39,8 @@ GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 # desktop shell polls before the user has signed in (and what tells them
 # the backend is up at all); /benchmarks serves machine timings from a
 # checked-in file, not wallet data.
-PUBLIC_PATHS = frozenset({"/health", "/benchmarks", "/auth/login", "/auth/callback", "/auth/session", "/docs", "/openapi.json", "/redoc"})
+PUBLIC_PATHS = frozenset({"/health", "/benchmarks", "/auth/login", "/auth/callback", "/auth/session",
+                          "/auth/local/login", "/docs", "/openapi.json", "/redoc"})
 
 SESSION_COOKIE = "framecheck_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
@@ -142,6 +143,114 @@ def upsert_user(session, claims: dict) -> dict:
     return _user_dict(row)
 
 
+# --------------------------------------------------------------- local accounts
+# Google sign-in stays the primary method. Local accounts exist for the
+# people and places Google cannot serve: a reviewer without an allowlisted
+# Google account, an offline demo machine, the admin bootstrapped by
+# scripts/create_admin.py before any OAuth client is configured.
+
+BCRYPT_COST = 12
+MIN_PASSWORD_LENGTH = 12
+# bcrypt only reads the first 72 bytes. Longer passwords are refused rather
+# than silently truncated, which would make two different passwords equal.
+MAX_PASSWORD_BYTES = 72
+LOGIN_FAILED = "invalid username or password"
+# Compared against when the username does not exist, so an unknown name
+# costs the same bcrypt work as a wrong password and response time does not
+# reveal which usernames exist.
+_DUMMY_HASH = b"$2b$12$C6UzMDM.H6dfI/f/IKcEeO5c0pYVQf.1VDJlGJ5RQeiC5oQJmP1pi"
+
+
+def validate_new_password(password: str) -> None:
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError(f"password must be at most {MAX_PASSWORD_BYTES} bytes")
+
+
+def hash_password(password: str) -> str:
+    import bcrypt
+
+    validate_new_password(password)
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=BCRYPT_COST)).decode("ascii")
+
+
+def verify_password(password: str, password_hash: str | None) -> bool:
+    import bcrypt
+
+    encoded = password.encode("utf-8")
+    if len(encoded) > MAX_PASSWORD_BYTES:
+        return False
+    target = password_hash.encode("ascii") if password_hash else _DUMMY_HASH
+    try:
+        ok = bcrypt.checkpw(encoded, target)
+    except ValueError:            # a malformed stored hash fails closed
+        return False
+    return ok and password_hash is not None
+
+
+class RateLimiter:
+    """At most `limit` attempts per `window` seconds per key, in memory.
+    One process serves this API, so in-memory is the whole state; it resets
+    on restart, which for a login throttle is the acceptable direction."""
+
+    def __init__(self, limit: int = 5, window: float = 60.0):
+        import threading
+
+        self.limit, self.window = limit, window
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, *keys: str, now: float | None = None) -> bool:
+        """Records one attempt against every key; False if any key is over."""
+        import time
+
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            allowed = True
+            for key in keys:
+                recent = [t for t in self._hits.get(key, []) if now - t < self.window]
+                if len(recent) >= self.limit:
+                    allowed = False
+                recent.append(now)
+                self._hits[key] = recent
+            return allowed
+
+    def reset(self) -> None:
+        with self._lock:
+            self._hits.clear()
+
+
+login_limiter = RateLimiter()
+
+
+def local_login(session, username: str, password: str) -> dict:
+    """The user dict for a correct username + password on an active account;
+    AuthError(LOGIN_FAILED) for anything else -- unknown user, wrong
+    password, no password set, deactivated -- so the response never says
+    which."""
+    from sqlalchemy import select
+
+    user = session.scalars(select(AppUser).where(AppUser.username == username)).one_or_none()
+    ok = verify_password(password, user.password_hash if user is not None else None)
+    if user is None or not ok or not user.is_active:
+        raise AuthError(LOGIN_FAILED)
+    user.last_login_at = func.now()
+    session.commit()
+    return _user_dict(user)
+
+
+def change_password(session, user_id: int, current: str, new: str) -> None:
+    """Requires the current password; the new one must meet
+    validate_new_password. ValueError for a bad new password, AuthError for
+    a wrong current one."""
+    user = session.get(AppUser, user_id)
+    if user is None or not user.is_active or not verify_password(current, user.password_hash):
+        raise AuthError("current password is incorrect")
+    user.password_hash = hash_password(new)
+    session.commit()
+
+
 def issue_session(user: dict, now: float | None = None) -> str:
     """A signed, expiring session token. itsdangerous gives tamper
     detection with a server-side secret; there is no revocation list
@@ -150,7 +259,8 @@ def issue_session(user: dict, now: float | None = None) -> str:
     from itsdangerous import TimestampSigner
 
     signer = TimestampSigner(session_secret())
-    payload = f"{user['user_id']}:{user['google_sub']}"
+    # A local account has no Google subject; the token carries "" for it.
+    payload = f"{user['user_id']}:{user.get('google_sub') or ''}"
     return signer.sign(payload).decode()
 
 
