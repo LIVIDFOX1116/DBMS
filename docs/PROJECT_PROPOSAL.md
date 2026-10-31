@@ -52,7 +52,7 @@ A flag is **frameable** if it still holds with every transaction signed by the w
 | Member | Register number | Responsibilities |
 |---|---|---|
 | Vishal Muthukrishnan | 24BCE2802 | `<responsibilities>` |
-| `<Partner full name>` (GitHub: shalom17san-Storm) | `<Partner register number>` | `<responsibilities>` |
+| Shalom Santosh | 24BCE2731 | `<responsibilities>` |
 
 ## Technology stack (as built)
 

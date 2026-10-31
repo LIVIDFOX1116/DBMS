@@ -88,10 +88,15 @@ tokens → Generate new token, Read & Write. In GitHub: repository → Settings 
 add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. Pushing to `main` or a `v*` tag publishes
 `<user>/framecheck:latest` and `:<git-sha>`.
 
-**2. Neon (database).** neon.tech → New project, PostgreSQL 16. Copy the connection string from Connect; it ends
-in `?sslmode=require`. The free tier's 0.5 GB holds the 133 MB demo dataset, and idle compute wakes by itself on
-the next connection. Load data by setting `FRAMECHECK_IMPORT_DEMO=1` for the first deploy, or by restoring a dump
-with `pg_restore --no-owner -d "<connection string>" backups/<file>.dump`.
+Without a push to `main` or a tag, publish from your own machine: `docker login`, then
+`docker build -t <user>/framecheck:latest .` and `docker push <user>/framecheck:latest`.
+
+**2. Neon (database).** neon.tech → New project, PostgreSQL 17 (matching the local server that makes the dumps).
+Copy the connection string from Connect; it ends in `?sslmode=require`. The free tier's 0.5 GB holds the data, about
+131 MB restored, and idle compute wakes by itself on the next connection. Load data one of two ways: restore a dump
+with `pg_restore --no-owner --no-privileges -d "<connection string>" backups/<file>.dump` and leave
+`FRAMECHECK_IMPORT_DEMO` unset, or set `FRAMECHECK_IMPORT_DEMO=1` for the first deploy to import the demo dataset
+into the empty database.
 
 **3. Render (app).** render.com → New → Web Service → Existing image → `docker.io/<user>/framecheck:latest`, and add
 Docker Hub credentials so it can pull a private image. Instance type Free (spins down after 15 idle minutes, about a
@@ -106,7 +111,7 @@ minute to wake). Environment:
 | `FRAMECHECK_HIDE_LANDING` | `1` |
 | `FRAMECHECK_ADMIN_EMAILS` | your Google address |
 | `FRAMECHECK_ALLOWED_EMAILS` | team and faculty addresses, comma separated (`*@domain` also works) |
-| `FRAMECHECK_IMPORT_DEMO` | `1` for the first deploy |
+| `FRAMECHECK_IMPORT_DEMO` | `1` only if you did not restore a dump in step 2 |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | from step 4 |
 
 **4. Google sign-in.** console.cloud.google.com → APIs & Services → Credentials → your OAuth client → add
