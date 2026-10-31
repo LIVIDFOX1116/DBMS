@@ -553,6 +553,7 @@ table.dtable a { color: var(--accent-glow); }
             <tbody id="walletRows"></tbody>
           </table>
         </div>
+        <div id="walletPager"></div>
       </div>
     </section>
 
@@ -593,6 +594,7 @@ table.dtable a { color: var(--accent-glow); }
             <tbody id="alertRows"></tbody>
           </table>
         </div>
+        <div id="alertPager"></div>
       </div>
     </section>
 
@@ -848,6 +850,7 @@ table.dtable a { color: var(--accent-glow); }
             <table class="dtable">
               <thead><tr><th>Detector</th><th>Wallet</th><th class="num">Score</th><th>Verdict</th></tr></thead>
               <tbody id="auditFlagRows"></tbody>
+              <tfoot><tr><td colspan="4" style="padding:0;"><div id="fcFlagsPager"></div></td></tr></tfoot>
             </table>
           </div>
         </div>
@@ -1223,27 +1226,38 @@ function renderLatestAlerts() {
    WALLETS
 ════════════════════════════════════════ */
 let walletSearchQ = "", walletSort = "risk", walletFilter = "all";
+// Search, filter and sort run on the server, so they cover every wallet
+// rather than one capped page.
+const WALLET_PAGE = { page: 1, pageSize: 50, rows: [] };
 
-document.getElementById("walletSearch").addEventListener("input", debounce(e => { walletSearchQ = e.target.value.toLowerCase(); renderWallets(); }, 150));
-document.getElementById("walletSort").addEventListener("change", e => { walletSort = e.target.value; renderWallets(); });
+document.getElementById("walletSearch").addEventListener("input", debounce(e => { walletSearchQ = e.target.value.trim(); WALLET_PAGE.page = 1; renderWallets(); }, 250));
+document.getElementById("walletSort").addEventListener("change", e => { walletSort = e.target.value; WALLET_PAGE.page = 1; renderWallets(); });
 document.getElementById("walletFilterBar").addEventListener("click", e => {
   const btn = e.target.closest("button"); if (!btn) return;
   walletFilter = btn.dataset.f;
+  WALLET_PAGE.page = 1;
   document.querySelectorAll("#walletFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
   renderWallets();
 });
 
-function renderWallets() {
+async function renderWallets() {
   const tbody = document.getElementById("walletRows");
-  let list = WALLETS.filter(w => {
-    if (walletFilter === "high-risk" && riskTier(w.risk_score) !== "high") return false;
-    if (walletFilter !== "all" && walletFilter !== "high-risk" && w.address_type !== walletFilter) return false;
-    if (walletSearchQ && !w.address.toLowerCase().includes(walletSearchQ)) return false;
-    return true;
-  });
-  if (walletSort === "risk") list.sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0));
-  else if (walletSort === "tx") list.sort((a, b) => (b.tx_count || 0) - (a.tx_count || 0));
-  else if (walletSort === "address") list.sort((a, b) => a.address.localeCompare(b.address));
+  let list;
+  try {
+    const { data, headers } = await fcRequest("GET", "/wallets", { params: {
+      page: WALLET_PAGE.page, page_size: WALLET_PAGE.pageSize, q: walletSearchQ, sort: walletSort,
+      address_type: ["EOA", "CONTRACT"].includes(walletFilter) ? walletFilter : null,
+      min_risk: walletFilter === "high-risk" ? 67 : null,
+    } });
+    list = WALLET_PAGE.rows = data;
+    fcRenderPager("walletPager", fcPageFromHeaders(headers, data.length), (page, pageSize) => {
+      Object.assign(WALLET_PAGE, { page, pageSize });
+      renderWallets();
+    });
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">${fcEsc(err.message || String(err))}</div></td></tr>`;
+    return;
+  }
 
   if (!list.length) { tbody.innerHTML = `<tr><td colspan="5"><div class="empty-hint">No matching wallets.</div></td></tr>`; return; }
 
@@ -1261,7 +1275,7 @@ function renderWallets() {
 }
 
 function openWalletModal(id) {
-  const w = WALLETS.find(x => x.wallet_id === id);
+  const w = WALLETS.find(x => x.wallet_id === id) || WALLET_PAGE.rows.find(x => x.wallet_id === id);
   if (!w) return;
   document.getElementById("wmAddress").textContent = w.address;
   document.getElementById("wmBadges").innerHTML =
@@ -1363,19 +1377,34 @@ document.getElementById("cmFocusBtn").addEventListener("click", async () => {
    ALERTS
 ════════════════════════════════════════ */
 let alertFilter = "all";
+const ALERT_PAGE = { page: 1, pageSize: 50 };
 document.getElementById("alertRows").addEventListener("change", e => {
   if (e.target.classList.contains("fc-alert-status")) fcReviewAlert(e.target);
 });
 document.getElementById("alertFilterBar").addEventListener("click", e => {
   const btn = e.target.closest("button"); if (!btn) return;
   alertFilter = btn.dataset.f;
+  ALERT_PAGE.page = 1;
   document.querySelectorAll("#alertFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
   renderAlerts();
 });
 
-function renderAlerts() {
+async function renderAlerts() {
   const tbody = document.getElementById("alertRows");
-  const list = ALERTS.filter(a => alertFilter === "all" || a.review_status === alertFilter);
+  let list;
+  try {
+    const { data, headers } = await fcRequest("GET", "/alerts", { params: {
+      page: ALERT_PAGE.page, page_size: ALERT_PAGE.pageSize, status: alertFilter === "all" ? null : alertFilter,
+    } });
+    list = data;
+    fcRenderPager("alertPager", fcPageFromHeaders(headers, data.length), (page, pageSize) => {
+      Object.assign(ALERT_PAGE, { page, pageSize });
+      renderAlerts();
+    });
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-hint">${fcEsc(err.message || String(err))}</div></td></tr>`;
+    return;
+  }
   if (!list.length) { tbody.innerHTML = `<tr><td colspan="7"><div class="empty-hint">Nothing matches this filter.</div></td></tr>`; return; }
   tbody.innerHTML = list.map(a => `
     <tr>

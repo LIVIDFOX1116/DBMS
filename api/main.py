@@ -145,11 +145,22 @@ app = FastAPI(
 # for those routes to create or destroy, and they touch no FrameCheck data).
 # A bare "/jobs" POST creates a job; "/jobs/{id}/cancel" needs the prefix
 # form, hence checking both the exact path and the "/"-suffixed prefix.
-PUBLIC_DEMO_BLOCKED_PREFIXES = ("/db/", "/jobs/", "/ingest/", "/internal/")
+PUBLIC_DEMO_BLOCKED_PREFIXES = ("/db/", "/jobs/", "/ingest/", "/internal/", "/admin/", "/alerts/",
+                                "/auth/local/password")
 
 
 def _is_mutating_path(path: str) -> bool:
-    return path == "/jobs" or path.startswith(PUBLIC_DEMO_BLOCKED_PREFIXES)
+    return (path == "/jobs" or path.startswith(PUBLIC_DEMO_BLOCKED_PREFIXES)
+            or path == "/labels" or path.startswith("/labels/")
+            or re.fullmatch(r"/wallets/[^/]+/labels(/.*)?", path) is not None)
+
+
+def _is_demo_blocked(method: str, path: str) -> bool:
+    """On a read-only public link: every PUT/PATCH/DELETE anywhere, and POST on
+    the routes that change something. Reads are untouched."""
+    if method in ("PUT", "PATCH", "DELETE"):
+        return True
+    return method == "POST" and _is_mutating_path(path)
 
 
 @app.middleware("http")
@@ -160,7 +171,7 @@ async def require_session(request: Request, call_next):
     new endpoint, while forgetting to add a path to PUBLIC_PATHS only
     makes a public route ask for a session, which is the safe direction
     to fail in."""
-    if auth.public_demo_mode() and request.method == "POST" and _is_mutating_path(request.url.path):
+    if auth.public_demo_mode() and _is_demo_blocked(request.method, request.url.path):
         return JSONResponse(status_code=403, content={
             "detail": "read-only public demo: this action is disabled on the shared link"})
     if request.method == "OPTIONS":
@@ -476,7 +487,15 @@ WALLET_COLUMNS = (Wallet.wallet_id, Wallet.address, Wallet.address_type, Wallet.
 
 
 @app.get("/wallets")
-def list_wallets(limit: int = 50):
+def list_wallets(request: Request, response: Response, limit: int = 50,
+                 page: Optional[int] = None, page_size: Optional[int] = None,
+                 q: Optional[str] = Query(None, max_length=42), address_type: Optional[str] = None,
+                 min_risk: Optional[float] = None, sort: Literal["tx", "risk", "address"] = "tx"):
+    """`limit` alone keeps its original behaviour. `page`/`page_size` switch to
+    paging, where q, address_type, min_risk and sort also apply server-side, so
+    they cover every wallet rather than one capped page."""
+    if pagination.requested(page, page_size):
+        return _wallets_page(request, response, page, page_size, q, address_type, min_risk, sort)
     if using_mock():
         return load_mock()["wallets"][:limit]
     with get_session() as db:
@@ -485,6 +504,30 @@ def list_wallets(limit: int = 50):
         return orm_rows(db, select(*WALLET_COLUMNS)
                         .order_by(Wallet.tx_count.desc().nulls_last())
                         .limit(limit))
+
+
+def _wallets_page(request, response, page, page_size, q, address_type, min_risk, sort):
+    if using_mock():
+        rows = [w for w in load_mock()["wallets"]
+                if (not q or q.lower() in w["address"].lower())
+                and (not address_type or w["address_type"] == address_type)
+                and (min_risk is None or (w["risk_score"] or 0) >= min_risk)]
+        key = {"tx": lambda w: (-(w["tx_count"] or 0), w["wallet_id"]),
+               "risk": lambda w: (-(w["risk_score"] or 0), w["wallet_id"]),
+               "address": lambda w: (w["address"], w["wallet_id"])}[sort]
+        return pagination.page_of_list(sorted(rows, key=key), request, response, page, page_size)
+    order = {"tx": Wallet.tx_count.desc().nulls_last(), "risk": Wallet.risk_score.desc().nulls_last(),
+             "address": Wallet.address}[sort]
+    # wallet_id last: ties must not move between pages.
+    query = select(*WALLET_COLUMNS).order_by(order, Wallet.wallet_id)
+    if q:
+        query = query.where(Wallet.address.icontains(q, autoescape=True))
+    if address_type:
+        query = query.where(Wallet.address_type == address_type)
+    if min_risk is not None:
+        query = query.where(Wallet.risk_score >= min_risk)
+    with get_session() as db:
+        return pagination.page_of_query(db, query, request, response, page, page_size)
 
 
 @app.get("/wallets/{wallet_id}")
@@ -889,11 +932,19 @@ ALERT_COLUMNS = (Alert.alert_id, Alert.run_id, Alert.cluster_id, Alert.wallet_id
 
 
 @app.get("/alerts")
-def list_alerts(status: Optional[str] = None):
+def list_alerts(request: Request, response: Response, status: Optional[str] = None,
+                page: Optional[int] = None, page_size: Optional[int] = None):
+    paged = pagination.requested(page, page_size)
     if using_mock():
         alerts = load_mock()["alerts"]
-        return [a for a in alerts if status is None or a["review_status"] == status]
+        rows = [a for a in alerts if status is None or a["review_status"] == status]
+        return pagination.page_of_list(rows, request, response, page, page_size) if paged else rows
     with get_session() as db:
+        if paged:
+            query = select(*ALERT_COLUMNS).order_by(Alert.detected_at.desc(), Alert.alert_id.desc())
+            if status:
+                query = query.where(Alert.review_status == status)
+            return pagination.page_of_query(db, query, request, response, page, page_size)
         if status:
             return orm_rows(db, select(*ALERT_COLUMNS).where(Alert.review_status == status))
         return orm_rows(db, select(*ALERT_COLUMNS).order_by(Alert.detected_at.desc()).limit(100))
@@ -992,8 +1043,9 @@ FLAG_COLUMNS = (Flag.flag_id, Flag.run_id, Flag.wallet_id, Flag.detector, Flag.s
 
 
 @app.get("/flags")
-def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
-                wallet_id: Optional[int] = None, snapshot_id: Optional[int] = None, limit: int = 100):
+def list_flags(request: Request, response: Response, run_id: Optional[int] = None, detector: Optional[str] = None,
+                wallet_id: Optional[int] = None, snapshot_id: Optional[int] = None, limit: int = 100,
+                page: Optional[int] = None, page_size: Optional[int] = None):
     """snapshot_id (ignored if run_id is given explicitly) dedupes to the
     latest run per detector on that snapshot -- see resolve_latest_run_ids."""
     if using_mock():
@@ -1004,6 +1056,8 @@ def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
             and (detector is None or f["detector"] == detector)
             and (wallet_id is None or f["wallet_id"] == wallet_id)
         ]
+        if pagination.requested(page, page_size):
+            return pagination.page_of_list(filtered, request, response, page, page_size)
         return filtered[:limit]
     with get_session() as db:
         query = select(*FLAG_COLUMNS)
@@ -1016,6 +1070,8 @@ def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
             query = query.where(Flag.detector == detector)
         if wallet_id is not None:
             query = query.where(Flag.wallet_id == wallet_id)
+        if pagination.requested(page, page_size):
+            return pagination.page_of_query(db, query.order_by(Flag.flag_id), request, response, page, page_size)
         return orm_rows(db, query.order_by(Flag.flag_id).limit(limit))
 
 

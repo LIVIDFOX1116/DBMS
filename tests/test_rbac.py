@@ -234,3 +234,21 @@ class TestGoogleSignInRules:
         auth.upsert_user(session, {"sub": "s", "email": "boss@x.com"})
         params = session.execute.call_args.args[0].compile(dialect=postgresql.dialect()).params
         assert params["role"] == "admin"
+
+
+class TestPublicDemoGuard:
+    @pytest.mark.parametrize("method, path", [
+        ("PATCH", "/admin/users/1"), ("DELETE", "/admin/users/1"), ("PATCH", "/labels/1"), ("DELETE", "/labels/1"),
+        ("PUT", "/anything"), ("POST", "/labels"), ("POST", "/wallets/5/labels"), ("DELETE", "/wallets/5/labels/1"),
+        ("PATCH", "/alerts/3"), ("POST", "/auth/local/password"), ("POST", "/jobs"), ("POST", "/db/create"),
+    ])
+    def test_mutations_are_403_on_a_demo_link(self, monkeypatch, method, path):
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "1")
+        resp = TestClient(api_main.app, raise_server_exceptions=False).request(method, path, json={})
+        assert resp.status_code == 403 and "read-only public demo" in resp.json()["detail"]
+
+    @pytest.mark.parametrize("path", ["/wallets", "/labels", "/alerts", "/wallets/1/labels"])
+    def test_reads_still_work(self, monkeypatch, path):
+        monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "1")
+        monkeypatch.setattr(api_main, "using_mock", lambda: True)
+        assert TestClient(api_main.app).get(path).status_code == 200

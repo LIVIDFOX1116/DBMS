@@ -21,7 +21,7 @@ const FC_UNSOLICITED_COLOR = "#E5675A";
 
 const FC_FLAG_PAGE = 100;
 const FC = { snapshotId: undefined, filter: "all", flags: {}, selected: null, detailGen: 0, loadGen: 0,
-             search: "", verdict: "all" };
+             search: "", verdict: "all", flagPage: 1, flagPageSize: FC_FLAG_PAGE };
 
 const fcEsc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fcDetectorName = d => FC_DETECTORS[d] || d;
@@ -695,10 +695,16 @@ async function fcLoadBenchmarks() {
 async function fcLoadFlags(filter) {
   if (FC.flags[filter]) return FC.flags[filter];
   const snap = await fcSnapshotId();
-  const params = { limit: FC_FLAG_PAGE };
+  const params = { page: FC.flagPage, page_size: FC.flagPageSize };
   if (snap != null) params.snapshot_id = snap;
   if (filter !== "all") params.detector = filter;
-  const flags = await api("/flags", params);
+  const { data: flags, headers } = await fcRequest("GET", "/flags", { params });
+  fcRenderPager("fcFlagsPager", fcPageFromHeaders(headers, flags.length), (page, pageSize) => {
+    FC.flagPage = page;
+    FC.flagPageSize = pageSize;
+    FC.flags = {};
+    fcOpenFlagsView();
+  });
   const verdicts = await api("/audit/verdicts", snap != null ? { snapshot_id: snap } : {});
   const byFlag = new Map(verdicts.map(v => [v.flag_id, v]));
   const merged = flags.map(f => ({ ...f, audit: byFlag.get(f.flag_id) || null }));
@@ -1033,6 +1039,8 @@ function fcInit() {
     const btn = e.target.closest("button");
     if (!btn) return;
     FC.filter = btn.dataset.f;
+    FC.flagPage = 1;     // a new filter starts at its first page
+    FC.flags = {};
     document.querySelectorAll("#auditFilterBar button").forEach(x => x.classList.toggle("on", x === btn));
     fcSaveFlagPrefs();
     fcOpenFlagsView();
