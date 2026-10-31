@@ -49,6 +49,14 @@ PG_DSN = {
     "password": os.getenv("PGPASSWORD", ""),
 }
 
+# A managed database (Neon, Render, ...) hands out one URL rather than PG*
+# variables, usually with sslmode=require. When set, it wins. libpq parses it,
+# so every option it carries reaches psycopg2.connect().
+if os.getenv("DATABASE_URL"):
+    from psycopg2.extensions import parse_dsn
+
+    PG_DSN = parse_dsn(os.environ["DATABASE_URL"])
+
 
 # --- Snapshot data files ---
 # graph_snapshot.file_path is stored RELATIVE and forward-slashed so a

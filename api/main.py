@@ -32,7 +32,7 @@ import psycopg2
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
@@ -149,6 +149,18 @@ PUBLIC_DEMO_BLOCKED_PREFIXES = ("/db/", "/jobs/", "/ingest/", "/internal/", "/ad
                                 "/auth/local/password")
 
 
+# FRAMECHECK_HIDE_LANDING=1 (a deployed instance): the landing page explains
+# the method, so signed-out visitors get only this. The method is not to be
+# publicly disclosed while a patent application is pending.
+LANDING_PATHS = frozenset({"/", "/index.html", "/landing.js", "/landing.css"})
+SIGN_IN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>FrameCheck</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f10;color:#e8eeee;
+font:16px system-ui,sans-serif}a{display:inline-block;margin-top:16px;padding:10px 20px;border-radius:8px;
+background:#2fd9a8;color:#04211a;font-weight:600;text-decoration:none}main{text-align:center;padding:16px}</style>
+</head><body><main><h1>FrameCheck</h1><p>Sign in to continue.</p><a href="dashboard.html">Sign in</a></main></body></html>"""
+
+
 def _is_mutating_path(path: str) -> bool:
     return (path == "/jobs" or path.startswith(PUBLIC_DEMO_BLOCKED_PREFIXES)
             or path == "/labels" or path.startswith("/labels/")
@@ -171,6 +183,8 @@ async def require_session(request: Request, call_next):
     new endpoint, while forgetting to add a path to PUBLIC_PATHS only
     makes a public route ask for a session, which is the safe direction
     to fail in."""
+    if rbac.deployed() and request.url.path in LANDING_PATHS:
+        return HTMLResponse(SIGN_IN_PAGE)
     if auth.public_demo_mode() and _is_demo_blocked(request.method, request.url.path):
         return JSONResponse(status_code=403, content={
             "detail": "read-only public demo: this action is disabled on the shared link"})
@@ -1395,6 +1409,8 @@ def start_job(body: JobRequest):
     is behind the auth gate like everything else; it only ever inserts."""
     if using_mock():
         raise HTTPException(status_code=409, detail="analysis jobs need live mode (FRAMECHECK_API_MODE=live)")
+    if body.job_type == "audit":
+        _require_snapshot_file(body.snapshot_id)
     try:
         job = jobs.start(body.job_type, body.snapshot_id, body.seed_wallet_id,
                          detector=body.detector, limit=body.limit)
@@ -1405,6 +1421,20 @@ def start_job(body: JobRequest):
         # the running job rather than starting a second one.
         raise HTTPException(status_code=409, detail=str(e)) from e
     return job.as_dict()
+
+
+def _require_snapshot_file(snapshot_id: int) -> None:
+    """Audits replay the snapshot's Parquet file. In a container with no
+    snapshot volume mounted it is simply not there: say so now, as a 409,
+    rather than starting a job that can only fail."""
+    with get_session() as db:
+        stored = db.scalar(select(GraphSnapshot.file_path).where(GraphSnapshot.snapshot_id == snapshot_id))
+    if stored is None:
+        raise HTTPException(status_code=404, detail="no such snapshot")
+    try:
+        config.require_data_path(stored)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=409, detail=f"cannot audit: {e}") from None
 
 
 def _without_secrets(job: dict) -> dict:
@@ -1554,10 +1584,10 @@ def _signed_in(response: Response, user: dict) -> dict:
     response.set_cookie(
         auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
         max_age=auth.SESSION_TTL_SECONDS,
-        # secure=False: this backend is served over plain http on
-        # localhost (and as a Tauri sidecar). Setting Secure here would
-        # mean the cookie is never stored at all.
-        secure=False,
+        # Not Secure locally: this backend is served over plain http on
+        # localhost (and as a Tauri sidecar), where a Secure cookie would
+        # never be stored at all. A deployed instance is HTTPS only.
+        secure=rbac.deployed(),
     )
     return {"user": {k: user[k] for k in ("user_id", "email", "display_name", "picture_url")},
             "session_token": token}

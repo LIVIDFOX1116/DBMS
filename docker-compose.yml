@@ -1,0 +1,48 @@
+# docker compose up --build  ->  http://localhost:8000/dashboard.html
+#
+# Settings come from .env (see .env.example); POSTGRES_PASSWORD and
+# FRAMECHECK_SESSION_SECRET are required, so no default secret is ever committed. Migrations apply on every start;
+# FRAMECHECK_IMPORT_DEMO=1 (the default here) loads the demo dataset into an
+# empty database only. Snapshot Parquet files for audit jobs go in ./snapshots,
+# mounted at /data/snapshots (FRAMECHECK_DATA_DIR=/data).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${PGUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: framecheck
+    volumes:
+      - framecheck_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d framecheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FRAMECHECK_API_MODE: live
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: framecheck
+      PGUSER: ${PGUSER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      FRAMECHECK_AUTH_MODE: ${COMPOSE_AUTH_MODE:-required}
+      FRAMECHECK_SESSION_SECRET: ${FRAMECHECK_SESSION_SECRET:?set FRAMECHECK_SESSION_SECRET in .env}
+      FRAMECHECK_IMPORT_DEMO: ${FRAMECHECK_IMPORT_DEMO:-1}
+      FRAMECHECK_ADMIN_EMAILS: ${FRAMECHECK_ADMIN_EMAILS:-}
+      FRAMECHECK_ALLOWED_EMAILS: ${FRAMECHECK_ALLOWED_EMAILS:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./snapshots:/data/snapshots:ro
+
+volumes:
+  framecheck_pgdata:

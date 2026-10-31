@@ -252,3 +252,41 @@ class TestPublicDemoGuard:
         monkeypatch.setenv("FRAMECHECK_PUBLIC_DEMO", "1")
         monkeypatch.setattr(api_main, "using_mock", lambda: True)
         assert TestClient(api_main.app).get(path).status_code == 200
+
+
+class TestDeployment:
+    def test_landing_is_hidden_when_deployed(self, monkeypatch):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        client = TestClient(api_main.app)
+        for path in ("/", "/index.html", "/landing.js", "/landing.css"):
+            resp = client.get(path)
+            assert resp.status_code == 200 and "Sign in to continue" in resp.text and "dust" not in resp.text.lower(), path
+
+    def test_landing_is_served_locally(self, monkeypatch):
+        monkeypatch.delenv("FRAMECHECK_HIDE_LANDING", raising=False)
+        assert "Sign in to continue" not in TestClient(api_main.app).get("/").text
+
+    def test_sign_in_page_still_loads_when_deployed(self, monkeypatch):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        assert TestClient(api_main.app).get("/dashboard.html").status_code == 200
+
+    def test_audit_without_a_snapshot_file_is_a_clear_409(self, live_client, monkeypatch):
+        client = live_client(2, "analyst")
+        session = mock.MagicMock()
+        session.__enter__.return_value = session
+        session.scalar.return_value = "snapshots/not-mounted.parquet"
+        monkeypatch.setattr(api_main, "get_session", lambda: session)
+        resp = client.post("/jobs", json={"job_type": "audit", "snapshot_id": 1, "seed_wallet_id": 1})
+        assert resp.status_code == 409 and "not-mounted.parquet" in resp.json()["detail"]
+
+    def test_database_url_wins_and_keeps_sslmode(self, monkeypatch):
+        import importlib
+
+        from ingestion import config
+        monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db.example.com:5433/fc?sslmode=require")
+        try:
+            dsn = importlib.reload(config).PG_DSN
+            assert (dsn["host"], dsn["port"], dsn["dbname"], dsn["sslmode"]) == ("db.example.com", "5433", "fc", "require")
+        finally:
+            monkeypatch.delenv("DATABASE_URL")
+            importlib.reload(config)
