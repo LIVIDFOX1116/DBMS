@@ -39,7 +39,7 @@ from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
 from sqlalchemy import BigInteger, Text, and_, any_, cast, func, literal, select, true
 from sqlalchemy import exc as sa_exc
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, distinct_on
 from sqlalchemy.orm import aliased
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -915,7 +915,7 @@ def latest_run_ids(session, snapshot_id: int, detectors=FLAG_DETECTORS) -> list:
         .where(AnalysisRun.snapshot_id == snapshot_id,
                AnalysisRun.status == "DONE",
                Algorithm.algorithm_name.in_(list(detectors)))
-        .distinct(Algorithm.algorithm_name)
+        .ext(distinct_on(Algorithm.algorithm_name))
         .order_by(Algorithm.algorithm_name, AnalysisRun.run_id.desc())
     ))
 
@@ -931,7 +931,7 @@ def latest_audit_per_flag(*columns):
     flag can be re-audited -- flag_audit is append-only, so a corrected
     verdict is a new row -- and every headline number uses only the latest."""
     return (select(*columns)
-            .distinct(FlagAudit.flag_id)
+            .ext(distinct_on(FlagAudit.flag_id))
             .order_by(FlagAudit.flag_id, FlagAudit.created_at.desc(), FlagAudit.flag_audit_id.desc())
             .subquery("la"))
 
