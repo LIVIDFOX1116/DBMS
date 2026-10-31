@@ -37,19 +37,26 @@ from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
 from pydantic import BaseModel
+from sqlalchemy import BigInteger, Text, and_, any_, cast, func, literal, select, true
 from sqlalchemy import exc as sa_exc
-from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import aliased
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api import auth, dbsetup, jobs
 from db.orm.engine import reset_engine
 from db.orm.models import (
     Alert,
+    Algorithm,
     AnalysisRun,
     Cluster,
     ClusterMember,
+    Flag,
+    FlagAudit,
+    FlagEvidence,
     GraphSnapshot,
     SnapshotEdge,
+    Transaction,
     VertexMetric,
     Wallet,
 )
@@ -377,41 +384,30 @@ def stats_overview():
             "alert_severity_counts": severity_counts,
             "wallet_risk_tier_counts": _tier_counts_from_scores([w["risk_score"] for w in mock["wallets"]]),
         }
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM wallet")
-            wallet_count = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM cluster")
-            cluster_count = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM alert")
-            alert_count = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM alert WHERE review_status = 'NEW'")
-            alert_new_count = cur.fetchone()[0]
-            cur.execute(
-                """SELECT severity, count(*) FROM alert GROUP BY severity"""
-            )
-            severity_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
-            for severity, count in cur.fetchall():
-                if severity in severity_counts:
-                    severity_counts[severity] = count
-            cur.execute(
-                """
-                SELECT
-                    count(*) FILTER (WHERE risk_score IS NULL) AS unknown,
-                    count(*) FILTER (WHERE risk_score >= 67) AS high,
-                    count(*) FILTER (WHERE risk_score >= 34 AND risk_score < 67) AS med,
-                    count(*) FILTER (WHERE risk_score < 34) AS low
-                FROM wallet
-                """
-            )
-            unknown, high, med, low = cur.fetchone()
+    with get_session() as db:
+        wallet_count = db.scalar(select(func.count()).select_from(Wallet))
+        cluster_count = db.scalar(select(func.count()).select_from(Cluster))
+        alert_count = db.scalar(select(func.count()).select_from(Alert))
+        alert_new_count = db.scalar(select(func.count()).select_from(Alert).where(Alert.review_status == "NEW"))
+        severity_counts = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for severity, count in db.execute(select(Alert.severity, func.count()).group_by(Alert.severity)):
+            if severity in severity_counts:
+                severity_counts[severity] = count
+        # Same buckets as the dashboard's riskTier(); one scan, four
+        # FILTERed counts.
+        tiers = db.execute(select(
+            func.count().filter(Wallet.risk_score.is_(None)).label("unknown"),
+            func.count().filter(Wallet.risk_score >= 67).label("high"),
+            func.count().filter(and_(Wallet.risk_score >= 34, Wallet.risk_score < 67)).label("med"),
+            func.count().filter(Wallet.risk_score < 34).label("low"),
+        )).one()
     return {
         "wallet_count": wallet_count,
         "cluster_count": cluster_count,
         "alert_count": alert_count,
         "alert_new_count": alert_new_count,
         "alert_severity_counts": severity_counts,
-        "wallet_risk_tier_counts": {"low": low, "med": med, "high": high, "unknown": unknown},
+        "wallet_risk_tier_counts": {"low": tiers.low, "med": tiers.med, "high": tiers.high, "unknown": tiers.unknown},
     }
 
 
@@ -908,6 +904,41 @@ def resolve_latest_run_ids(cur, snapshot_id: int, detectors=FLAG_DETECTORS) -> l
     return [row[0] for row in cur.fetchall()]
 
 
+def latest_run_ids(session, snapshot_id: int, detectors=FLAG_DETECTORS) -> list:
+    """The ORM form of resolve_latest_run_ids(), for the endpoints that read
+    through a session: the most recent DONE run per detector on this
+    snapshot (see that function for why counting every run double-counts).
+    resolve_latest_run_ids stays for the raw-SQL endpoints until they move."""
+    return list(session.scalars(
+        select(AnalysisRun.run_id)
+        .join(AnalysisRun.algorithm)
+        .where(AnalysisRun.snapshot_id == snapshot_id,
+               AnalysisRun.status == "DONE",
+               Algorithm.algorithm_name.in_(list(detectors)))
+        .distinct(Algorithm.algorithm_name)
+        .order_by(Algorithm.algorithm_name, AnalysisRun.run_id.desc())
+    ))
+
+
+def in_run_ids(column, run_ids: list):
+    """`column = ANY(:run_ids)` with the list bound as one BIGINT[] parameter,
+    so the statement text is the same however many runs there are."""
+    return column == any_(literal(list(run_ids), ARRAY(BigInteger)))
+
+
+def latest_audit_per_flag(*columns):
+    """The newest flag_audit row per flag (DISTINCT ON), as a subquery. A
+    flag can be re-audited -- flag_audit is append-only, so a corrected
+    verdict is a new row -- and every headline number uses only the latest."""
+    return (select(*columns)
+            .distinct(FlagAudit.flag_id)
+            .order_by(FlagAudit.flag_id, FlagAudit.created_at.desc(), FlagAudit.flag_audit_id.desc())
+            .subquery("la"))
+
+
+FLAG_COLUMNS = (Flag.flag_id, Flag.run_id, Flag.wallet_id, Flag.detector, Flag.score, Flag.threshold, Flag.created_at)
+
+
 @app.get("/flags")
 def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
                 wallet_id: Optional[int] = None, snapshot_id: Optional[int] = None, limit: int = 100):
@@ -922,29 +953,18 @@ def list_flags(run_id: Optional[int] = None, detector: Optional[str] = None,
             and (wallet_id is None or f["wallet_id"] == wallet_id)
         ]
         return filtered[:limit]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            query = "SELECT flag_id, run_id, wallet_id, detector, score, threshold, created_at FROM flag WHERE 1=1"
-            params = []
-            if run_id is not None:
-                query += " AND run_id = %s"
-                params.append(run_id)
-            elif snapshot_id is not None:
-                latest_run_ids = resolve_latest_run_ids(
-                    cur, snapshot_id, (detector,) if detector is not None else FLAG_DETECTORS
-                )
-                query += " AND run_id = ANY(%s)"
-                params.append(latest_run_ids)
-            if detector is not None:
-                query += " AND detector = %s"
-                params.append(detector)
-            if wallet_id is not None:
-                query += " AND wallet_id = %s"
-                params.append(wallet_id)
-            query += " ORDER BY flag_id LIMIT %s"
-            params.append(limit)
-            cur.execute(query, params)
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        query = select(*FLAG_COLUMNS)
+        if run_id is not None:
+            query = query.where(Flag.run_id == run_id)
+        elif snapshot_id is not None:
+            detectors = (detector,) if detector is not None else FLAG_DETECTORS
+            query = query.where(in_run_ids(Flag.run_id, latest_run_ids(db, snapshot_id, detectors)))
+        if detector is not None:
+            query = query.where(Flag.detector == detector)
+        if wallet_id is not None:
+            query = query.where(Flag.wallet_id == wallet_id)
+        return orm_rows(db, query.order_by(Flag.flag_id).limit(limit))
 
 
 @app.get("/flags/{flag_id}/evidence")
@@ -955,14 +975,10 @@ def flag_evidence_endpoint(flag_id: int):
     Empty list, not an error, if evidence hasn't been collected yet."""
     if using_mock():
         return load_mock().get("flag_evidence", {}).get(str(flag_id), [])
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT tx_hash, hop, block_number, role FROM flag_evidence
-                   WHERE flag_id = %s ORDER BY block_number, hop""",
-                (flag_id,),
-            )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        return orm_rows(db, select(FlagEvidence.tx_hash, FlagEvidence.hop, FlagEvidence.block_number, FlagEvidence.role)
+                        .where(FlagEvidence.flag_id == flag_id)
+                        .order_by(FlagEvidence.block_number, FlagEvidence.hop))
 
 
 @app.get("/flags/{flag_id}/evidence-edges")
@@ -972,20 +988,18 @@ def flag_evidence_edges_endpoint(flag_id: int):
     token_transfer.from_wallet_id). Empty list if no evidence exists."""
     if using_mock():
         return load_mock().get("flag_evidence_edges", {}).get(str(flag_id), [])
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT fe.tx_hash, fe.hop, fe.block_number, fe.role,
-                          t.from_wallet_id, t.to_wallet_id, t.value_wei::text AS value_wei,
-                          wf.address AS from_address, wt.address AS to_address
-                   FROM flag_evidence fe
-                   JOIN transaction t ON t.tx_hash = fe.tx_hash
-                   JOIN wallet wf ON wf.wallet_id = t.from_wallet_id
-                   LEFT JOIN wallet wt ON wt.wallet_id = t.to_wallet_id
-                   WHERE fe.flag_id = %s ORDER BY fe.block_number, fe.hop""",
-                (flag_id,),
-            )
-            return rows_as_dicts(cur)
+    signer, recipient = aliased(Wallet), aliased(Wallet)
+    with get_session() as db:
+        return orm_rows(db, select(FlagEvidence.tx_hash, FlagEvidence.hop, FlagEvidence.block_number, FlagEvidence.role,
+                                   Transaction.from_wallet_id, Transaction.to_wallet_id,
+                                   cast(Transaction.value_wei, Text).label("value_wei"),
+                                   signer.address.label("from_address"), recipient.address.label("to_address"))
+                        .select_from(FlagEvidence)
+                        .join(FlagEvidence.transaction)
+                        .join(Transaction.signer.of_type(signer))
+                        .outerjoin(Transaction.recipient.of_type(recipient))   # contract creations have none
+                        .where(FlagEvidence.flag_id == flag_id)
+                        .order_by(FlagEvidence.block_number, FlagEvidence.hop))
 
 
 @app.get("/flags/{flag_id}/audit")
@@ -998,19 +1012,16 @@ def flag_audit_endpoint(flag_id: int):
         if result is None:
             raise HTTPException(404, "flag not audited yet")
         return result
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """SELECT flag_audit_id, flag_id, verdict, framing_cost_wei, framing_gas,
-                          minimal_tx_set, method, backend, runtime_ms, created_at
-                   FROM flag_audit WHERE flag_id = %s ORDER BY created_at DESC LIMIT 1""",
-                (flag_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise HTTPException(404, "flag not audited yet")
-            cols = [d[0] for d in cur.description]
-            return dict(zip(cols, row))
+    with get_session() as db:
+        row = orm_row(db, select(FlagAudit.flag_audit_id, FlagAudit.flag_id, FlagAudit.verdict,
+                                 FlagAudit.framing_cost_wei, FlagAudit.framing_gas, FlagAudit.minimal_tx_set,
+                                 FlagAudit.method, FlagAudit.backend, FlagAudit.runtime_ms, FlagAudit.created_at)
+                      .where(FlagAudit.flag_id == flag_id)
+                      .order_by(FlagAudit.created_at.desc())
+                      .limit(1))
+        if row is None:
+            raise HTTPException(404, "flag not audited yet")
+        return row
 
 
 @app.get("/audit/verdicts")
@@ -1022,23 +1033,15 @@ def audit_verdicts(snapshot_id: Optional[int] = None):
             {k: a.get(k) for k in ("flag_id", "verdict", "framing_cost_wei", "method", "minimal_tx_set")}
             for a in load_mock().get("flag_audit", {}).values()
         ]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            where, params = "", []
-            if snapshot_id is not None:
-                where = "WHERE f.run_id = ANY(%s)"
-                params.append(resolve_latest_run_ids(cur, snapshot_id))
-            cur.execute(
-                f"""SELECT la.flag_id, la.verdict, la.framing_cost_wei::text AS framing_cost_wei,
-                           la.method, la.minimal_tx_set
-                    FROM flag f
-                    JOIN (SELECT DISTINCT ON (flag_id) flag_id, verdict, framing_cost_wei, method, minimal_tx_set
-                          FROM flag_audit ORDER BY flag_id, created_at DESC, flag_audit_id DESC) la
-                      ON la.flag_id = f.flag_id
-                    {where} ORDER BY la.flag_id""",
-                params,
-            )
-            return rows_as_dicts(cur)
+    with get_session() as db:
+        la = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict, FlagAudit.framing_cost_wei,
+                                   FlagAudit.method, FlagAudit.minimal_tx_set)
+        query = (select(la.c.flag_id, la.c.verdict, cast(la.c.framing_cost_wei, Text).label("framing_cost_wei"),
+                        la.c.method, la.c.minimal_tx_set)
+                 .select_from(Flag).join(la, la.c.flag_id == Flag.flag_id))
+        if snapshot_id is not None:
+            query = query.where(in_run_ids(Flag.run_id, latest_run_ids(db, snapshot_id)))
+        return orm_rows(db, query.order_by(la.c.flag_id))
 
 
 @app.get("/audit/overview")
@@ -1050,35 +1053,23 @@ def audit_overview(snapshot_id: Optional[int] = None):
     run per detector on that snapshot."""
     if using_mock():
         return load_mock().get("audit_overview", {})
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            where, params = "", []
-            if snapshot_id is not None:
-                where = "WHERE f.run_id = ANY(%s)"
-                params.append(resolve_latest_run_ids(cur, snapshot_id))
-            cur.execute(
-                f"""SELECT f.detector, COUNT(*) AS flag_count,
-                           COUNT(la.flag_id) AS audited_count,
-                           COUNT(*) FILTER (WHERE la.verdict = 'frameable') AS frameable_count
-                    FROM flag f
-                    LEFT JOIN (SELECT DISTINCT ON (flag_id) flag_id, verdict
-                               FROM flag_audit ORDER BY flag_id, created_at DESC, flag_audit_id DESC) la
-                           ON la.flag_id = f.flag_id
-                    {where} GROUP BY f.detector ORDER BY f.detector""",
-                params,
-            )
-            per_detector = rows_as_dicts(cur)
-            cur.execute(
-                f"""SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY la.framing_cost_wei)
-                    FROM flag f
-                    JOIN (SELECT DISTINCT ON (flag_id) flag_id, verdict, framing_cost_wei
-                          FROM flag_audit ORDER BY flag_id, created_at DESC, flag_audit_id DESC) la
-                      ON la.flag_id = f.flag_id
-                    {where + (' AND' if where else 'WHERE')} la.verdict = 'frameable'
-                          AND la.framing_cost_wei IS NOT NULL""",
-                params,
-            )
-            median = cur.fetchone()[0]
+    with get_session() as db:
+        scope = [in_run_ids(Flag.run_id, latest_run_ids(db, snapshot_id))] if snapshot_id is not None else []
+
+        la = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict)
+        per_detector = orm_rows(db, select(
+            Flag.detector,
+            func.count().label("flag_count"),
+            func.count(la.c.flag_id).label("audited_count"),
+            func.count().filter(la.c.verdict == "frameable").label("frameable_count"),
+        ).select_from(Flag).outerjoin(la, la.c.flag_id == Flag.flag_id)
+            .where(*scope).group_by(Flag.detector).order_by(Flag.detector))
+
+        costs = latest_audit_per_flag(FlagAudit.flag_id, FlagAudit.verdict, FlagAudit.framing_cost_wei)
+        median = db.scalar(
+            select(func.percentile_cont(0.5).within_group(costs.c.framing_cost_wei))
+            .select_from(Flag).join(costs, costs.c.flag_id == Flag.flag_id)
+            .where(*scope, costs.c.verdict == "frameable", costs.c.framing_cost_wei.is_not(None)))
     flags = sum(r["flag_count"] for r in per_detector)
     audited = sum(r["audited_count"] for r in per_detector)
     frameable = sum(r["frameable_count"] for r in per_detector)
@@ -1349,36 +1340,31 @@ def flag_audit_csv(flag_id: int):
     loaded and formatted."""
     if using_mock():
         raise HTTPException(status_code=409, detail="audit export needs live mode")
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT f.flag_id, f.detector, f.wallet_id, w.address, f.score, f.threshold,
-                       f.token_contract, ar.snapshot_id,
-                       fa.verdict, fa.framing_cost_wei, fa.method, fa.backend, fa.runtime_ms, fa.created_at
-                FROM flag f
-                JOIN analysis_run ar ON ar.run_id = f.run_id
-                LEFT JOIN wallet w ON w.wallet_id = f.wallet_id
-                LEFT JOIN LATERAL (
-                    SELECT * FROM flag_audit WHERE flag_id = f.flag_id
-                    ORDER BY created_at DESC, flag_audit_id DESC LIMIT 1
-                ) fa ON TRUE
-                WHERE f.flag_id = %s
-                """,
-                (flag_id,),
-            )
-            row = cur.fetchone()
-            if row is None:
-                raise HTTPException(status_code=404, detail="no such flag")
-            columns = [d[0] for d in cur.description]
-            cur.execute(
-                """
-                SELECT tx_hash, hop, block_number, role
-                FROM flag_evidence WHERE flag_id = %s ORDER BY block_number, hop
-                """,
-                (flag_id,),
-            )
-            evidence = cur.fetchall()
+    # The flag's newest audit, as a LATERAL subquery correlated on the flag.
+    latest = (select(FlagAudit)
+              .where(FlagAudit.flag_id == Flag.flag_id)
+              .order_by(FlagAudit.created_at.desc(), FlagAudit.flag_audit_id.desc())
+              .limit(1)
+              .lateral("fa"))
+    with get_session() as db:
+        result = db.execute(
+            select(Flag.flag_id, Flag.detector, Flag.wallet_id, Wallet.address, Flag.score, Flag.threshold,
+                   Flag.token_contract, AnalysisRun.snapshot_id,
+                   latest.c.verdict, latest.c.framing_cost_wei, latest.c.method, latest.c.backend,
+                   latest.c.runtime_ms, latest.c.created_at)
+            .select_from(Flag)
+            .join(Flag.run)
+            .outerjoin(Flag.wallet)
+            .outerjoin(latest, true())
+            .where(Flag.flag_id == flag_id))
+        columns = list(result.keys())
+        row = result.first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such flag")
+        evidence = db.execute(
+            select(FlagEvidence.tx_hash, FlagEvidence.hop, FlagEvidence.block_number, FlagEvidence.role)
+            .where(FlagEvidence.flag_id == flag_id)
+            .order_by(FlagEvidence.block_number, FlagEvidence.hop)).all()
 
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")

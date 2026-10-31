@@ -351,30 +351,32 @@ class TestAuditDedup:
         assert params == (4, ["bfs_proximity", "sybil_cluster"])
 
     def test_flags_with_snapshot_id_filters_by_resolved_run_ids(self, monkeypatch):
+        # /flags reads through the ORM: its dedup helper is latest_run_ids
+        # (session-based) and the SQL comes off the compiled statement.
         sink = []
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
-        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
-        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda cur, snap, detectors=None: [29])
+        monkeypatch.setattr(api_main, "get_session", lambda: _FakeSessionCtx(sink))
+        monkeypatch.setattr(api_main, "latest_run_ids", lambda session, snap, detectors=None: [29])
 
         resp = client.get("/flags", params={"snapshot_id": 4, "detector": "bfs_proximity"})
         assert resp.status_code == 200
         query, params = sink[-1]
         assert "run_id = ANY" in query
-        assert [29] in params
+        assert [29] in params.values()
 
     def test_flags_explicit_run_id_skips_snapshot_dedup(self, monkeypatch):
         sink = []
         called = []
         monkeypatch.setattr(api_main, "using_mock", lambda: False)
-        monkeypatch.setattr(api_main, "get_conn", lambda: self._CapturingConn(sink))
-        monkeypatch.setattr(api_main, "resolve_latest_run_ids", lambda *a, **k: called.append(1) or [])
+        monkeypatch.setattr(api_main, "get_session", lambda: _FakeSessionCtx(sink))
+        monkeypatch.setattr(api_main, "latest_run_ids", lambda *a, **k: called.append(1) or [])
 
         resp = client.get("/flags", params={"snapshot_id": 4, "run_id": 18})
         assert resp.status_code == 200
-        assert not called, "resolve_latest_run_ids must not run when run_id is given explicitly"
+        assert not called, "latest_run_ids must not run when run_id is given explicitly"
         query, params = sink[-1]
-        assert "run_id = %s" in query and "ANY" not in query
-        assert 18 in params
+        assert "flag.run_id = %(run_id_1)s" in query and "ANY" not in query
+        assert 18 in params.values()
 
     def test_audit_summary_with_snapshot_id_filters_by_resolved_run_ids(self, monkeypatch):
         sink = []
