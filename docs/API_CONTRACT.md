@@ -752,6 +752,10 @@ level for offline tools, `# RAW SQL (offline tooling): <reason>`.
 | `GET /flags/{id}/audit`, `/audit/verdicts`, `/audit/overview` | latest audit per flag as a `DISTINCT ON` subquery; `func.count().filter(...)`; `func.percentile_cont(0.5).within_group(...)` |
 | `GET /stats/overview` | `func.count()` and `FILTER`ed counts |
 | `GET /flags/{id}/evidence`, `/evidence-edges`, `/audit.csv` | signer joined through `Transaction.signer` (`transaction.from_wallet_id`); CSV's newest audit as a `LATERAL` subquery |
+| `GET /audit/summary` | latest audit per flag joined to `flag`; `FILTER`ed `count`/`min`/`max` and `percentile_cont(0.5) WITHIN GROUP (...) FILTER (...)` |
+| `GET /cluster-membership` | `array_agg(cluster_id ORDER BY cluster_id)` via `aggregate_order_by`, ids bound as one `BIGINT[]` |
+| latest run per detector (`latest_run_ids_statement`) | one ORM statement (`DISTINCT ON`), executed through a session by the ORM endpoints and on the cursor by `/clusters/top-flagged` |
+| `api/jobs.py: _run_audit` (audit job targets) | ORM-built query run on the job's own connection (`execute_on_connection`) |
 | `graph.audit.persist_audit` | `insert(FlagAudit)` built from the model, run on the caller's connection (`db.orm.session.execute_on_connection`) so `commit=False` callers keep their transaction |
 
 Migration 009's audit trail is respected, not bypassed: `flag_audit.prev_hash`/`row_hash`
@@ -761,7 +765,7 @@ guard refuses ORM updates/deletes of `flag_audit` and any ORM write to `flag_his
 (`tests/test_orm_integration.py`, run against a live database).
 
 Converting changed no response: every endpoint above was captured against a live
-database before and after, and all 50 recorded responses (JSONB, NUMERIC, the median,
+database before and after, and all 63 recorded responses (JSONB, NUMERIC, the medians,
 the CSV, 404s and empty results) are byte-identical.
 
 ### Raw SQL that stays, and why
@@ -772,6 +776,7 @@ the CSV, 404s and empty results) are byte-identical.
 |---|---|
 | `GET /audit/trail`, `/flags/{id}/versions`, `/flags/as-of` | call migration 009's PL/pgSQL functions `flag_audit_chain_verify()`, `flag_versions()`, `flag_as_of()` (bound parameters) |
 | `GET /clusters/top-flagged` (+ `resolve_cluster_run_id`, `resolve_snapshot_for_run`) | performance-critical: aggregates the `mv_cluster_flag_stats` materialized view (471 ms → 2 ms, migration 008) |
+| `GET /clusters/{id}/subgraph` | performance-critical: hand-tuned against `EXPLAIN (ANALYZE)` — the PageRank run resolved once instead of per member (489 of 545 ms), addresses and verdicts fetched only for the nodes kept (1,038 ms before) |
 | `api/dbsetup.py`: `create_database`, `apply_schema`, `_ensure_tracking_table`, `_record_migration`, `applied_migrations`, `schema_state`, `migration_is_present` | DDL and migration bookkeeping: the schema belongs to the SQL files, never the ORM |
 | `api/dbsetup.py`: `import_dataset`, `dataset_target_rows`, `_target_seed_names`, `reset_sequences` | performance-critical bulk COPY import (443,963 rows in ~9 s) and the sequence reset after it |
 | `GET /db/status`, `/db/tables`, `/db/tables/{table}[/count]` (`server_probe`, `table_inventory`, `exact_row_count`, `sample_table`) | catalogue introspection. Table names are whitelisted against the live catalogue, not the ORM's models, because the Database tab also inspects non-FrameCheck schemas, and are quoted with `psycopg2.sql.Identifier` |
@@ -782,17 +787,12 @@ the CSV, 404s and empty results) are byte-identical.
 | detector reads (`run_bfs_proximity`, `run_sybil_cluster`, `run_pagerank_threshold`, `run_engaged_proximity`, `fetch_bfs_scores`, `fetch_cluster_scores`) | performance-critical read of a whole run's results |
 | `db/init_db.py` | DDL: creates the database and applies the schema |
 
-**Not yet converted** — no rubric exemption; left because converting them means
-rewriting more tests that pin their psycopg2 form, or because they are batch/crawler
+**Not yet converted** — no rubric exemption. Every API endpoint is now either on the
+ORM or in the "allowed" table above; what remains is batch-pipeline and crawler
 bookkeeping outside the API:
 
 | Site | Why it is still raw |
 |---|---|
-| `GET /audit/summary` | pinned by three `TestAuditDedup` tests (SQL text, tuple params) |
-| `GET /clusters/{id}/subgraph` | pinned by `tests/test_multiview_api.py` |
-| `GET /cluster-membership` | pinned by `TestLiveModeQueryShapes.test_cluster_membership` |
-| `resolve_latest_run_ids` | serves the raw endpoints above and is pinned by its own test; the ORM endpoints use `latest_run_ids()` |
-| `api/jobs.py: _run_audit` | audit-target selection on the job's own connection; pinned by `tests/test_jobs.py` |
 | `graph/` lookups and bookkeeping (`fetch_flag`, `get_algorithm_id`, `start_run`, `finish_run`, `classify_clusters`, `persist_snapshot`, `persist_risk_scores`, `collect_evidence_for_run`, `resolve_latest_run_id`, CLI `main`s) | batch pipeline on a caller-supplied connection (often inside a transaction the caller rolls back) |
 | `ingestion/ingest_subgraph.py` upserts | crawler writes, one Etherscan record at a time |
 
