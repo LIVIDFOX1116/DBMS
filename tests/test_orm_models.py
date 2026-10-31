@@ -38,7 +38,7 @@ def _default_text(column) -> str | None:
 
 
 def test_every_table_is_mapped_and_nothing_else():
-    assert len(TABLES) == 26
+    assert len(TABLES) == 25        # 26 until migration 010 folded analyst into app_user
     assert sorted(TABLES) == sorted(DDL)
 
 

@@ -89,13 +89,34 @@ def callout(table: str, reason: str, box, left: float) -> str:
         f"{texts}\n</g>\n")
 
 
+def widen_canvas(svg: str, needed: float) -> str:
+    """Graphviz sizes the canvas to the graph; a callout beside a group on the
+    far right would fall off it. Widens the canvas (width and viewBox) to fit.
+    Graph coordinates are offset by a fixed translate from the left edge, so
+    widening to the right moves nothing already drawn."""
+    m = re.search(r'<svg width="([\d.]+)pt" height="([\d.]+)pt"\s+viewBox="([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)"', svg)
+    if not m:
+        raise SystemExit("unexpected SVG structure: no Graphviz width/viewBox")
+    width = float(m.group(1))
+    offset = float(re.search(r'id="graph0"[^>]*translate\(([\d.]+) ', svg).group(1))
+    target = needed + offset
+    if target <= width:
+        return svg
+    vb = f'{m.group(3)} {m.group(4)} {target:.2f} {m.group(6)}'
+    return svg[:m.start()] + f'<svg width="{target:.0f}pt" height="{m.group(2)}pt"\n viewBox="{vb}"' + svg[m.end():]
+
+
 def annotate(dbml_path: Path, svg_path: Path) -> int:
     svg = svg_path.read_text(encoding="utf-8")
     svg = re.sub(r'<g class="no-fk-note".*?</g>\n', "", svg, flags=re.S)   # idempotent
     notes = []
+    right_edge = 0.0
     for table, reason in no_fk_reasons(dbml_path.read_text(encoding="utf-8")).items():
         box = node_box(svg, table)
-        notes.append(callout(table, reason, box, cluster_right_edge(svg, box) + GAP))
+        left = cluster_right_edge(svg, box) + GAP
+        notes.append(callout(table, reason, box, left))
+        right_edge = max(right_edge, left + BOX_WIDTH)
+    svg = widen_canvas(svg, right_edge + GAP)
     # Inside the graph's own <g>, so the notes share its coordinate system.
     head, sep, tail = svg.rpartition("</g>\n</svg>")
     if not sep:

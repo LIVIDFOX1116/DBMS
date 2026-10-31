@@ -17,7 +17,7 @@ structure for PageRank/Louvain/BFS to actually find something. Change it in
 
 | Layer | Technology |
 |---|---|
-| Database | PostgreSQL 16+ (26 tables, PL/pgSQL triggers and functions, a materialized view) |
+| Database | PostgreSQL 16+ (25 tables, PL/pgSQL triggers and functions, a materialized view) |
 | **ORM** | **SQLAlchemy 2.x** (`db/orm/`), over the psycopg2 driver |
 | Graph analytics | cuDF + cuGraph on the GPU (WSL2 / RAPIDS), pandas + NetworkX on the CPU |
 | API | FastAPI + Uvicorn |
@@ -37,7 +37,7 @@ site is tagged in code and listed with its reason in
 **Schema documentation.** [`docs/ER_Diagram_TransactionGraphAnalyzer.svg`](docs/ER_Diagram_TransactionGraphAnalyzer.svg)
 (and `.png`) and [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) are generated from
 [`docs/schema_v2.dbml`](docs/schema_v2.dbml) by `scripts/render_er.ps1` / `render_er.sh`:
-**26 tables, 35 foreign keys (34 many-to-one, 1 one-to-one), 5 tables with no FK by design**
+**25 tables, 35 foreign keys (34 many-to-one, 1 one-to-one), 4 tables with no FK by design**
 (each says why on the diagram). `tests/test_er_coverage.py` fails if a table, column or
 foreign key in the DDL is missing from them.
 

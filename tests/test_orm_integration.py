@@ -7,8 +7,8 @@ offline. Point it at a THROWAWAY database, never the real one:
     FRAMECHECK_TEST_PG_DSN="host=127.0.0.1 port=5432 dbname=framecheck_orm_test user=postgres password=..." \\
         python -m pytest tests/test_orm_integration.py -v
 
-It refuses a database named `framecheck`. If the target is empty it applies
-db/schema.sql + migrations (api/dbsetup.apply_schema); every write happens
+It refuses a database named `framecheck`. It applies db/schema.sql (if absent)
+and any pending migrations (api/dbsetup.apply_schema); every write happens
 inside a transaction that is always rolled back, so it leaves no rows and
 never needs DROP.
 """
@@ -32,8 +32,10 @@ def engine():
         pytest.fail("refusing to run against the `framecheck` database -- use a throwaway one")
     setup = psycopg2.connect(DSN)
     try:
-        if dbsetup.schema_state(setup)["state"] == "empty":
-            dbsetup.apply_schema(setup)
+        # Tracked: schema.sql only if absent, then whichever migrations are
+        # pending -- so a throwaway database made before migration 010 is
+        # brought up to date rather than tested against an old schema.
+        dbsetup.apply_schema(setup)
     finally:
         setup.close()
     eng = create_engine("postgresql+psycopg2://", creator=lambda: psycopg2.connect(DSN))
@@ -61,7 +63,7 @@ def session(engine):
 def flag(session):
     from sqlalchemy import select
 
-    from db.orm.models import Algorithm, AnalysisRun, Analyst, Flag, GraphSnapshot, Wallet
+    from db.orm.models import Algorithm, AnalysisRun, AppUser, Flag, GraphSnapshot, Wallet
 
     wallet = Wallet(address="0x" + "ab" * 20)
     snapshot = GraphSnapshot(snapshot_name="orm-integration-test", file_path="snapshots/none.parquet")
@@ -69,7 +71,7 @@ def flag(session):
     session.flush()
     run = AnalysisRun(snapshot_id=snapshot.snapshot_id,
                       algorithm_id=session.scalar(select(Algorithm.algorithm_id).where(Algorithm.algorithm_name == "bfs_proximity")),
-                      analyst_id=session.scalar(select(Analyst.analyst_id).where(Analyst.username == "system")),
+                      analyst_id=session.scalar(select(AppUser.user_id).where(AppUser.username == "system")),
                       status="DONE")
     session.add(run)
     session.flush()

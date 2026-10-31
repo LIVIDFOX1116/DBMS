@@ -104,7 +104,17 @@ WALLET_SCOPE = f"""
 # transaction, flag_audit -> flag).
 TABLES = [
     # Reference data: small, and referenced by almost everything.
-    ("analyst", "SELECT * FROM analyst"),
+    # Still written as an `analyst` block so every dataset, before and after
+    # migration 010, has the same shape -- but it is only a dictionary of
+    # id -> username for the users the exported rows reference, read from
+    # app_user. No email, password hash or Google id ever leaves the machine,
+    # and a Google-only account (no username) is exported as `system`.
+    ("analyst", """
+        SELECT u.user_id AS analyst_id, coalesce(u.username, 'system') AS username
+          FROM app_user u
+         WHERE u.user_id IN (SELECT analyst_id FROM analysis_run
+                             UNION SELECT tagged_by FROM wallet_label
+                             UNION SELECT reviewed_by FROM alert)"""),
     ("algorithm", "SELECT * FROM algorithm"),
     ("label", "SELECT * FROM label"),
 
@@ -186,7 +196,15 @@ EXCLUDED = {"app_user", "framing_scenario", "schema_migration"}
 MARKER = "-- framecheck-dataset v1"
 
 
+# Blocks whose columns are not a live table's: `analyst` no longer exists
+# after migration 010, but its block is still written (see TABLES), with
+# exactly the columns its query selects.
+BLOCK_COLUMNS = {"analyst": ["analyst_id", "username"]}
+
+
 def table_columns(cur, table: str) -> list:
+    if table in BLOCK_COLUMNS:
+        return list(BLOCK_COLUMNS[table])
     cur.execute("""SELECT column_name FROM information_schema.columns
                     WHERE table_schema = 'public' AND table_name = %s
                     ORDER BY ordinal_position""", (table,))

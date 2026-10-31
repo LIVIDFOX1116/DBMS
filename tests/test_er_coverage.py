@@ -28,10 +28,11 @@ class TestErCoverage(unittest.TestCase):
         cls.schema = parse_schema()
         cls.dbml = dbml_tables(DBML.read_text(encoding="utf-8"))
 
-    def test_the_ddl_defines_26_tables(self):
+    def test_the_ddl_defines_25_tables(self):
         # A guard on the parser itself: if this number moves, a migration
         # added or removed a table and the diagram needs to follow.
-        self.assertEqual(len(self.schema), 26, sorted(self.schema))
+        # 26 until migration 010 folded analyst into app_user.
+        self.assertEqual(len(self.schema), 25, sorted(self.schema))
 
     def test_every_table_is_in_the_dbml(self):
         missing = sorted(set(self.schema) - set(self.dbml))

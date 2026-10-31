@@ -176,12 +176,45 @@ def parse_schema() -> dict[str, Table]:
             end = _balanced(sql, m.end() - 1)
             name = m.group(1).lower()
             tables[name] = _parse_create(name, sql[m.end():end - 1], label)
-        for m in re.finditer(r"ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(?:IF NOT EXISTS\s+)?([^;]+);", sql, re.I):
-            table = tables[m.group(1).lower()]
-            col = _parse_column(m.group(2).strip())
-            table.columns[col.name] = col
-            table.added_columns.append(col.name)
+        # Statements are applied in file order, as PostgreSQL would: a
+        # constraint dropped and re-added must end up added.
+        for m in re.finditer(r"\b(ALTER TABLE\s+(\w+)\s+([^;]+)|DROP TABLE\s+(?:IF EXISTS\s+)?(\w+))\s*;", sql, re.I):
+            if m.group(4):
+                tables.pop(m.group(4).lower(), None)
+                continue
+            _apply_alter(tables[m.group(2).lower()], m.group(3).strip())
     return tables
+
+
+def _apply_alter(table: Table, action: str) -> None:
+    """The ALTER TABLE forms the migrations use. Anything else (CHECK
+    constraints, comments) does not change what these tests compare."""
+    if m := re.match(r"ADD COLUMN\s+(?:IF NOT EXISTS\s+)?(.+)$", action, re.I | re.S):
+        col = _parse_column(m.group(1).strip())
+        table.columns[col.name] = col
+        table.added_columns.append(col.name)
+    elif m := re.match(r"ALTER COLUMN\s+(\w+)\s+TYPE\s+(.+)$", action, re.I | re.S):
+        table.columns[m.group(1).lower()].type = normalise_type(m.group(2))
+    elif m := re.match(r"ALTER COLUMN\s+(\w+)\s+DROP NOT NULL$", action, re.I):
+        table.columns[m.group(1).lower()].nullable = True
+    elif m := re.match(r"ALTER COLUMN\s+(\w+)\s+SET NOT NULL$", action, re.I):
+        table.columns[m.group(1).lower()].nullable = False
+    elif m := re.match(r"ADD\s+CONSTRAINT\s+\w+\s+UNIQUE\s*\(([^)]*)\)$", action, re.I):
+        cols = _cols(m.group(1))
+        if len(cols) == 1:
+            table.columns[cols[0]].unique = True
+        else:
+            table.unique.append(cols)
+    elif m := re.match(r"ADD\s+CONSTRAINT\s+\w+\s+FOREIGN KEY\s*\((\w+)\)\s*REFERENCES\s+(\w+)\s*\((\w+)\)$", action, re.I):
+        table.columns[m.group(1).lower()].references = (m.group(2).lower(), m.group(3).lower())
+    elif m := re.match(r"DROP CONSTRAINT\s+(?:IF EXISTS\s+)?(\w+)$", action, re.I):
+        name = m.group(1).lower()
+        # PostgreSQL's default names: <table>_<column>_fkey / _key.
+        for col in table.columns.values():
+            if name == f"{table.name}_{col.name}_fkey":
+                col.references = None
+            elif name == f"{table.name}_{col.name}_key":
+                col.unique = False
 
 
 if __name__ == "__main__":

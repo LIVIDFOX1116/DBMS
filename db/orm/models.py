@@ -1,4 +1,5 @@
-"""Declarative models for all 26 FrameCheck tables.
+"""Declarative models for all 25 FrameCheck tables (26 until migration 010 folded
+`analyst` into `app_user`).
 
 These DESCRIBE tables that db/schema.sql and db/migrations/*.sql create;
 they never create them. There is deliberately no ``Base.metadata.create_all()``
@@ -158,30 +159,18 @@ class Label(Base):
     is_sanctioned: Mapped[bool | None] = mapped_column(Boolean, server_default=text("false"))
 
 
-class Analyst(Base):
-    __tablename__ = "analyst"
-
-    analyst_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    username: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
-    email: Mapped[str] = mapped_column(String(120), nullable=False)
-    password_hash: Mapped[str] = mapped_column(CHAR(60), nullable=False)
-    role: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'analyst'"))
-    organisation: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(TS, nullable=False, server_default=NOW)
-
-
 class WalletLabel(Base):
     __tablename__ = "wallet_label"
 
     wallet_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("wallet.wallet_id"), primary_key=True)
     label_id: Mapped[int] = mapped_column(Integer, ForeignKey("label.label_id"), primary_key=True)
-    tagged_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyst.analyst_id"))
+    tagged_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("app_user.user_id"))   # migration 010
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
     tagged_at: Mapped[datetime | None] = mapped_column(TS, server_default=NOW)
 
     wallet: Mapped[Wallet] = relationship()
     label: Mapped[Label] = relationship()
-    tagger: Mapped[Analyst | None] = relationship()
+    tagger: Mapped["AppUser | None"] = relationship()
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +239,9 @@ class AnalysisRun(Base):
     run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     snapshot_id: Mapped[int] = mapped_column(Integer, ForeignKey("graph_snapshot.snapshot_id"), nullable=False)
     algorithm_id: Mapped[int] = mapped_column(Integer, ForeignKey("algorithm.algorithm_id"), nullable=False)
-    analyst_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyst.analyst_id"), nullable=False)
+    # Named for its history; references app_user since migration 010. Pipeline
+    # runs belong to the inactive `system` account.
+    analyst_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app_user.user_id"), nullable=False)
     parameters: Mapped[Any | None] = mapped_column(JSONB)
     gpu_device: Mapped[str | None] = mapped_column(String(40))       # the backend name, CPU or GPU
     gpu_memory_mb: Mapped[int | None] = mapped_column(Integer)
@@ -262,7 +253,7 @@ class AnalysisRun(Base):
 
     snapshot: Mapped[GraphSnapshot] = relationship(back_populates="runs")
     algorithm: Mapped[Algorithm] = relationship()
-    analyst: Mapped[Analyst] = relationship()
+    analyst: Mapped["AppUser"] = relationship()
     clusters: Mapped[list["Cluster"]] = relationship(back_populates="run")
     metrics: Mapped[list["VertexMetric"]] = relationship(back_populates="run")
     flags: Mapped[list["Flag"]] = relationship(back_populates="run")
@@ -320,7 +311,7 @@ class Alert(Base):
     run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("analysis_run.run_id"), nullable=False)
     cluster_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("cluster.cluster_id"))
     wallet_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("wallet.wallet_id"))
-    reviewed_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyst.analyst_id"))
+    reviewed_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("app_user.user_id"))   # migration 010
     pattern_type: Mapped[str] = mapped_column(String(20), nullable=False)
     severity: Mapped[str] = mapped_column(String(10), nullable=False)
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
@@ -330,7 +321,7 @@ class Alert(Base):
     run: Mapped[AnalysisRun] = relationship()
     cluster: Mapped[Cluster | None] = relationship()
     wallet: Mapped[Wallet | None] = relationship()
-    reviewer: Mapped[Analyst | None] = relationship()
+    reviewer: Mapped["AppUser | None"] = relationship()
 
 
 class Visualization(Base):
@@ -450,17 +441,27 @@ class FlagAuditTombstone(Base):
 # ---------------------------------------------------------------------------
 
 class AppUser(Base):
-    """Google sign-in identity, keyed on `sub`, never on email. No FK in
-    either direction by design (migration 006)."""
+    """The single Users table (migration 010 folded `analyst` into it).
+
+    A person signs in with Google (keyed on `sub`, never on email) or with a
+    local username + bcrypt password; `role` drives authorisation and is
+    read from here on every request. `password_hash` must never leave the
+    API -- no endpoint selects it."""
     __tablename__ = "app_user"
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    google_sub: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    google_sub: Mapped[str | None] = mapped_column(Text, unique=True)       # NULL for local-only accounts
     email: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text)
     picture_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TSTZ, nullable=False, server_default=NOW)
     last_login_at: Mapped[datetime | None] = mapped_column(TSTZ)
+    # migration 010
+    role: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'viewer'"))
+    username: Mapped[str | None] = mapped_column(String(40), unique=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    organisation: Mapped[str | None] = mapped_column(String(80))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
 
 
 class SchemaMigration(Base):

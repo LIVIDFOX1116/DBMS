@@ -726,7 +726,7 @@ being true; corrected 2026-10-11.
 **The split: DDL in SQL, data access through the ORM.** `db/schema.sql` plus
 `db/migrations/*.sql` create every table, trigger, function, index and CHECK, applied
 in order by `api/dbsetup.py` and recorded in `schema_migration`. The application's data
-access goes through **SQLAlchemy 2.x**: declarative models for all 26 tables in
+access goes through **SQLAlchemy 2.x**: declarative models for all 25 tables in
 `db/orm/models.py`, one lazily built engine (`db/orm/engine.py`) and a `get_session()`
 context manager (`db/orm/session.py`). The ORM never creates, alters or drops anything:
 there is no `create_all()`/`drop_all()` anywhere (an AST scan in

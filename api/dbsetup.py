@@ -91,6 +91,14 @@ SEED_KEY = {
     "label": ("label_id", "label_name"),
 }
 
+# Migration 010 folded `analyst` into `app_user`. Datasets still carry an
+# `analyst` block (every dataset exported before 010 does, and
+# scripts/export_dataset.py keeps writing one so old and new files look the
+# same), but on a migrated database it is only a dictionary: its ids are
+# translated by username to app_user.user_id, and its rows are never loaded --
+# a dataset must not create people's accounts.
+LEGACY_SEED_TARGET = {"analyst": ("app_user", "user_id", "username")}
+
 # Columns that reference a seed table's id and therefore need translating.
 SEED_REFERENCES = {
     "analysis_run": {"algorithm_id": "algorithm", "analyst_id": "analyst"},
@@ -650,13 +658,48 @@ def _seed_id_map(dataset_rows, columns, seed_table, target_by_name) -> dict:
     return mapping
 
 
+def _seed_target(conn, seed_table) -> tuple:
+    """(table, id column, name column) the dataset's seed ids translate to:
+    the table itself, or -- for `analyst` on a database migrated past 010 --
+    app_user."""
+    if seed_table in LEGACY_SEED_TARGET:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s) IS NULL", (seed_table,))
+            if cur.fetchone()[0]:
+                return LEGACY_SEED_TARGET[seed_table]
+    id_col, name_col = SEED_KEY[seed_table]
+    return seed_table, id_col, name_col
+
+
 # RAW SQL (allowed): part of the bulk dataset import (COPY)
 def _target_seed_names(conn, seed_table) -> dict:
-    id_col, name_col = SEED_KEY[seed_table]
+    table, id_col, name_col = _seed_target(conn, seed_table)
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("SELECT {}, {} FROM {}").format(
-            sql.Identifier(name_col), sql.Identifier(id_col), sql.Identifier(seed_table)))
+        cur.execute(sql.SQL("SELECT {}, {} FROM {} WHERE {} IS NOT NULL").format(
+            sql.Identifier(name_col), sql.Identifier(id_col), sql.Identifier(table), sql.Identifier(name_col)))
         return {row[0]: row[1] for row in cur.fetchall()}
+
+
+# RAW SQL (allowed): part of the bulk dataset import (COPY)
+def _ensure_placeholder_users(conn, dataset_rows, columns) -> int:
+    """A dataset's run can belong to a username this database has never seen.
+    Its id still has to resolve, so the name gets an INACTIVE placeholder
+    account: no Google identity, no password, role viewer -- it can own
+    imported rows and can never sign in (app_user_can_sign_in). Returns how
+    many were created."""
+    if "username" not in columns:
+        return 0
+    at = columns.index("username")
+    names = {line.rstrip("\r\n").split("\t")[at] for line in dataset_rows}
+    names.discard(COPY_NULL)
+    created = 0
+    with conn.cursor() as cur:
+        for name in sorted(names):
+            cur.execute("""INSERT INTO app_user (username, email, role, is_active)
+                           VALUES (%s, %s, 'viewer', FALSE) ON CONFLICT (username) DO NOTHING""",
+                        (name, f"{name}@imported.invalid"))
+            created += cur.rowcount
+    return created
 
 
 def _remap_lines(lines, columns, remaps) -> tuple:
@@ -747,9 +790,16 @@ def import_dataset(conn, path, progress=None) -> dict:
                     rows = _read_copy_block(fh)
 
                     if table in SEED_TABLES:
+                        folded = _seed_target(conn, table)[0] != table
+                        if folded:
+                            _ensure_placeholder_users(conn, rows, columns)
                         if table in SEED_KEY:
                             SEED_ID_MAPS[table] = _seed_id_map(
                                 rows, columns, table, _target_seed_names(conn, table))
+                        if folded:
+                            # A dictionary only: never load accounts from a file.
+                            skipped[table] = len(rows)
+                            continue
                         if already_seeded.get(table):
                             # Keep the target's own seed rows; the dataset's
                             # references to them are translated instead.

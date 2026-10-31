@@ -52,15 +52,23 @@ def get_algorithm_id(conn, name: str) -> int:
 
 
 # RAW SQL (not yet converted): batch-pipeline run bookkeeping (benchmark.py stages it in a rolled-back transaction) on the caller's connection
-def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int = 1, parameters: dict = None,
+def start_run(conn, snapshot_id: int, algorithm_name: str, analyst_id: int | None = None, parameters: dict = None,
               commit: bool = True) -> int:
+    """analyst_id is the user the run belongs to; None means the `system`
+    service account. Resolved inside the INSERT, by username, because its id
+    is not 1 on every database (migration 010 gives it whatever app_user id
+    is next). to_jsonb(u) reads `username` without naming the column, so the
+    same statement still works on a database from before 010, where the
+    system account is analyst_id 1."""
     algorithm_id = get_algorithm_id(conn, algorithm_name)
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO analysis_run
                 (snapshot_id, algorithm_id, analyst_id, parameters, status, started_at)
-            VALUES (%s,%s,%s,%s,'RUNNING', NOW())
+            VALUES (%s, %s,
+                    coalesce(%s, (SELECT u.user_id FROM app_user u WHERE to_jsonb(u)->>'username' = 'system'), 1),
+                    %s, 'RUNNING', NOW())
             RETURNING run_id
             """,
             (snapshot_id, algorithm_id, analyst_id, json.dumps(parameters or {})),
