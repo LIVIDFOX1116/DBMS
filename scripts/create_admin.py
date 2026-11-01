@@ -1,7 +1,8 @@
-"""Create a local admin account, or reset an existing account's password and
-make it an active admin.
+"""Create a local account, or reset an existing account's password and role.
+Admin unless --role says otherwise.
 
     python scripts/create_admin.py --username vishal --email you@example.com
+    python scripts/create_admin.py --username reviewer --email r@example.com --role viewer
 
 The password is read with getpass -- typed twice, never echoed, never a
 command-line argument (which would land in shell history and be visible to
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select  # noqa: E402
 
-from api import auth  # noqa: E402
+from api import auth, rbac  # noqa: E402
 from db.orm.models import AppUser  # noqa: E402
 from db.orm.session import get_session  # noqa: E402
 
@@ -39,10 +40,10 @@ def prompt_password(read=getpass.getpass) -> str:
         return first
 
 
-def upsert_admin(session, username: str, email: str, password_hash: str) -> tuple[int, bool]:
+def upsert_admin(session, username: str, email: str, password_hash: str, role: str = "admin") -> tuple[int, bool]:
     """(user_id, created). An existing username keeps its id -- the rows
-    that reference it stay attached -- and becomes an active admin with the
-    new password."""
+    that reference it stay attached -- and becomes active, with the given role
+    and the new password."""
     user = session.scalars(select(AppUser).where(AppUser.username == username)).one_or_none()
     created = user is None
     if created:
@@ -51,7 +52,7 @@ def upsert_admin(session, username: str, email: str, password_hash: str) -> tupl
     elif email:
         user.email = email
     user.password_hash = password_hash
-    user.role = "admin"
+    user.role = role
     user.is_active = True
     session.flush()
     return user.user_id, created
@@ -61,14 +62,15 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--username", required=True)
     parser.add_argument("--email", required=True)
+    parser.add_argument("--role", choices=rbac.ROLES, default=rbac.ADMIN)
     args = parser.parse_args(argv)
     if not (1 <= len(args.username) <= 40) or args.username.lower() == "system":
         print("username must be 1-40 characters and not 'system' (the service account)", file=sys.stderr)
         return 2
     password_hash = auth.hash_password(prompt_password())
     with get_session() as db:
-        user_id, created = upsert_admin(db, args.username, args.email, password_hash)
-    print(f"{'created' if created else 'updated'} admin '{args.username}' (user_id {user_id})")
+        user_id, created = upsert_admin(db, args.username, args.email, password_hash, args.role)
+    print(f"{'created' if created else 'updated'} {args.role} '{args.username}' (user_id {user_id})")
     return 0
 
 

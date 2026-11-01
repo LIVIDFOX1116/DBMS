@@ -193,6 +193,17 @@ class TestCreateAdmin:
         added = session.add.call_args.args[0]
         assert (added.username, added.role, added.is_active) == ("bob", "admin", True)
 
+    def test_a_viewer_account_can_be_created(self):
+        from scripts import create_admin
+        session = _session_with(None)
+        create_admin.upsert_admin(session, "reviewer", "r@x", "HASH", "viewer")
+        assert session.add.call_args.args[0].role == "viewer"
+
+    def test_an_unknown_role_is_refused(self):
+        from scripts import create_admin
+        with pytest.raises(SystemExit):
+            create_admin.main(["--username", "x", "--email", "x@x", "--role", "owner"])
+
 
 class _Ctx:
     def __init__(self, session):
