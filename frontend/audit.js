@@ -325,6 +325,28 @@ async function fcCompleteSignIn() {
   }
 }
 
+// Who is signed in, from /auth/session, and the way out. Only where there is a
+// real session: the desktop app and a read-only demo have nothing to sign out of.
+function fcShowAccount(session) {
+  const btn = document.getElementById("fcSignOutBtn");
+  if (!btn || session.auth_mode !== "required") return;
+  const who = session.username || session.user?.email || "";
+  btn.textContent = who ? `Sign out (${who})` : "Sign out";
+  btn.style.display = "";
+  btn.onclick = fcSignOut;
+  const badge = document.getElementById("fcRoleBadge");
+  if (badge && who) badge.title = `Signed in as ${who}: role ${FC_ROLE}`;
+}
+
+async function fcSignOut() {
+  document.getElementById("fcSignOutBtn").disabled = true;
+  try {
+    await fetch(apiBase() + "/auth/logout", { method: "POST", credentials: "include" });
+  } catch { /* the stored token still goes below; the cookie expires by itself */ }
+  try { localStorage.removeItem(FC_SESSION_KEY); } catch { /* private mode */ }
+  location.reload();
+}
+
 async function fcEnsureSignedIn() {
   // Returns true when the app may load. Public endpoints still work when
   // this returns false, which is why the gate is a modal over the app
@@ -343,6 +365,7 @@ async function fcEnsureSignedIn() {
       fcHideSignIn();
       FC_AUTH_MODE = body.auth_mode;
       fcApplyRole(body.role || "admin");
+      fcShowAccount(body);
       go(currentPage);          // re-check the page now the role is known
       return true;
     }

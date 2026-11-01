@@ -342,6 +342,9 @@ table.dtable a { color: var(--accent-glow); }
 .toast.show { opacity: 1; transform: translateY(0); }
 
 @media (max-width: 780px) {
+  .topbar { height: auto; min-height: 56px; flex-wrap: wrap; gap: 8px; padding: 8px 16px; }
+  .brand-text > span { display: none; }
+  .topbar-right { flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; }
   .sidenav { display: none; }
   .mobile-nav { display: flex; gap: 4px; overflow-x: auto; padding: 10px 16px; background: var(--bg); border-bottom: 1px solid var(--border); }
   .mobile-nav button { flex-shrink: 0; border-radius: 100px; }
@@ -362,6 +365,7 @@ table.dtable a { color: var(--accent-glow); }
     <span class="health-pill"><span class="health-dot pending" id="healthDot"></span><span id="healthText">Connecting…</span></span>
     <span class="health-pill fc-role-badge" id="fcRoleBadge" hidden title="Your role: what this account can see and do"></span>
     <span class="health-pill" id="publicDemoBadge" style="display:none;" title="Shared read-only link: live data, nothing can be changed">read-only demo</span>
+    <button class="btn" id="fcSignOutBtn" style="display:none;" title="End this session">Sign out</button>
     <button class="icon-btn" id="refreshBtn" title="Refresh data">↻</button>
     <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
   </div>
