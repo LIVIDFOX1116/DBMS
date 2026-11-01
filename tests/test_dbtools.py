@@ -97,8 +97,10 @@ def test_backup_runs_pg_dump_with_secrets_in_env_only(tmp_path):
     with mock.patch("api.dbsetup.current_dsn", return_value=DSN), \
          mock.patch.object(dbtools, "find_pg_tool", return_value="pg_dump"), \
          mock.patch.object(dbtools.subprocess, "run") as run, \
-         mock.patch.object(dbtools, "sha256_of", return_value="0" * 64), \
-         mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=10)):
+         mock.patch.object(dbtools, "sha256_of", return_value="0" * 64):
+        # Stands in for pg_dump writing its -f file. Path.stat stays real:
+        # on Linux, Path.mkdir(exist_ok=True) calls it.
+        run.side_effect = lambda argv, **kwargs: Path(argv[-1]).write_bytes(b"x" * 10)
         dbtools.main(["backup", "--out-dir", str(tmp_path)])
     argv, kwargs = run.call_args.args[0], run.call_args.kwargs
     assert "s3cret-pw" not in " ".join(argv)
