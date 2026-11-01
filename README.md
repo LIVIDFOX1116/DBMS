@@ -50,6 +50,9 @@ introspection, bulk/performance-critical paths, the recursive evidence CTE — a
 site is tagged in code and listed with its reason in
 [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md#orm-coverage-and-permitted-raw-sql).
 
+**Normalization.** [`docs/NORMALIZATION.md`](docs/NORMALIZATION.md) checks all 25 tables against 1NF, 2NF and 3NF, and
+lists the deliberate deviations.
+
 **Schema documentation.** [`docs/ER_Diagram_TransactionGraphAnalyzer.svg`](docs/ER_Diagram_TransactionGraphAnalyzer.svg)
 (and `.png`) and [`docs/DATA_DICTIONARY.md`](docs/DATA_DICTIONARY.md) are generated from
 [`docs/schema_v2.dbml`](docs/schema_v2.dbml) by `scripts/render_er.ps1` / `render_er.sh`:
@@ -91,7 +94,8 @@ add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. Pushing to `main` or a `v*` tag 
 Without a push to `main` or a tag, publish from your own machine: `docker login`, then
 `docker build -t <user>/framecheck:latest .` and `docker push <user>/framecheck:latest`.
 
-**2. Neon (database).** neon.tech → New project, PostgreSQL 17 (matching the local server that makes the dumps).
+**2. Neon (database).** neon.tech → New project, PostgreSQL 17 or newer (`pg_restore` must not be newer than the server; the live
+instance runs 18.6, restored from a dump made on 17).
 Copy the connection string from Connect; it ends in `?sslmode=require`. The free tier's 0.5 GB holds the data, about
 131 MB restored, and idle compute wakes by itself on the next connection. Load data one of two ways: restore a dump
 with `pg_restore --no-owner --no-privileges -d "<connection string>" backups/<file>.dump` and leave
@@ -112,15 +116,15 @@ minute to wake). Environment:
 | `FRAMECHECK_ADMIN_EMAILS` | your Google address |
 | `FRAMECHECK_ALLOWED_EMAILS` | team and faculty addresses, comma separated (`*@domain` also works) |
 | `FRAMECHECK_IMPORT_DEMO` | `1` only if you did not restore a dump in step 2 |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | from step 4 |
+| `GOOGLE_CLIENT_ID` | from step 4 |
 
-**4. Google sign-in (not available on a deployed instance yet).** With `FRAMECHECK_HIDE_LANDING=1`, signed-out
-visitors get only a self-contained username and password page, and every other page and script answers 401 until
-they sign in, because those files describe the method. That page has no Google button, so accounts come from
-`scripts/create_admin.py`, and the Google allowlist variables have no effect until one is added. The OAuth client
-steps, for when it is: console.cloud.google.com → APIs & Services → Credentials → your OAuth client → add
-`https://<app>.onrender.com/auth/callback` to Authorized redirect URIs, and add a custom domain's URL too if you
-use one.
+**4. Google sign-in.** With `FRAMECHECK_HIDE_LANDING=1`, signed-out visitors get only a self-contained sign-in page,
+and every other page and script answers 401 until they sign in, because those files describe the method. The Google
+button appears there once `GOOGLE_CLIENT_ID` is set. It uses `response_type=id_token`, so no client secret is involved.
+console.cloud.google.com → APIs & Services → Credentials → Create credentials → OAuth client ID → **Web application**.
+Add `https://framecheck-awlf.onrender.com/dashboard.html` to Authorized redirect URIs (and a custom domain's
+`/dashboard.html` if you use one). On the OAuth consent screen, publish the app or add each person as a test user.
+Then set `GOOGLE_CLIENT_ID`, `FRAMECHECK_ADMIN_EMAILS` and `FRAMECHECK_ALLOWED_EMAILS` on Render.
 
 **5. Custom domain (bonus).** Render needs a CNAME to `<app>.onrender.com` for a subdomain, and accepts an A record
 to `216.24.57.1` only as the fallback for apex domains. DuckDNS offers only A records, so try
