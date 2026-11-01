@@ -81,9 +81,10 @@ Backups inside compose: [`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md).
 
 ## Deployment
 
-**Private by design until the provisional patent application is filed:** a private Docker Hub repository,
-sign-in required with an email allowlist, no `FRAMECHECK_PUBLIC_DEMO`, `FRAMECHECK_HIDE_LANDING=1`, and the
-GitHub repository stays private. Secrets go only in the dashboards named below, never in code or chat.
+**Access on the live instance:** a private Docker Hub repository, sign-in required, no `FRAMECHECK_PUBLIC_DEMO`, and
+`FRAMECHECK_HIDE_LANDING=1`. Google sign-in is open: any Google account can sign in, and gets the read-only viewer role
+until an admin changes it. That shows the method to anyone who signs in. To restrict it again, set
+`FRAMECHECK_ALLOWED_EMAILS`. Secrets go only in the dashboards named below, never in code or chat.
 
 **1. Docker Hub.** hub.docker.com → Repositories → Create repository → name `framecheck`, visibility **Private**
 (check docker.com/pricing for the free private-repository allowance). Then Account settings → Personal access
@@ -114,17 +115,19 @@ minute to wake). Environment:
 | `FRAMECHECK_SESSION_SECRET` | output of `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `FRAMECHECK_HIDE_LANDING` | `1` |
 | `FRAMECHECK_ADMIN_EMAILS` | your Google address |
-| `FRAMECHECK_ALLOWED_EMAILS` | team and faculty addresses, comma separated (`*@domain` also works) |
+| `FRAMECHECK_ALLOWED_EMAILS` | optional, leave unset for open sign-in: addresses allowed to sign in, comma separated (`*@domain` also works) |
 | `FRAMECHECK_IMPORT_DEMO` | `1` only if you did not restore a dump in step 2 |
 | `GOOGLE_CLIENT_ID` | from step 4 |
 
-**4. Google sign-in.** With `FRAMECHECK_HIDE_LANDING=1`, signed-out visitors get only a self-contained sign-in page,
-and every other page and script answers 401 until they sign in, because those files describe the method. The Google
+**4. Google sign-in.** With `FRAMECHECK_HIDE_LANDING=1`, signed-out visitors get only a self-contained sign-in page and
+the privacy policy, and every other page and script answers 401 until they sign in, because those files describe the method. The Google
 button appears there once `GOOGLE_CLIENT_ID` is set. It uses `response_type=id_token`, so no client secret is involved.
 console.cloud.google.com → APIs & Services → Credentials → Create credentials → OAuth client ID → **Web application**.
 Add `https://framecheck-awlf.onrender.com/dashboard.html` to Authorized redirect URIs (and a custom domain's
-`/dashboard.html` if you use one). On the OAuth consent screen, publish the app or add each person as a test user.
-Then set `GOOGLE_CLIENT_ID`, `FRAMECHECK_ADMIN_EMAILS` and `FRAMECHECK_ALLOWED_EMAILS` on Render.
+`/dashboard.html` if you use one). On Google Auth Platform → Branding, set the home page to the site's root and the
+privacy policy to its `/privacy.html` (public, and says nothing about the method). Then Audience → **Publish app**, or
+add each person as a test user. Set `GOOGLE_CLIENT_ID` and `FRAMECHECK_ADMIN_EMAILS` on Render, plus
+`FRAMECHECK_ALLOWED_EMAILS` only to restrict who can sign in.
 
 **5. Custom domain (bonus).** Render needs a CNAME to `<app>.onrender.com` for a subdomain, and accepts an A record
 to `216.24.57.1` only as the fallback for apex domains. DuckDNS offers only A records, so try

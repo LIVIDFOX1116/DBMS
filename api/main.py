@@ -167,6 +167,7 @@ button{border:0;background:#2fd9a8;color:#04211a;font-weight:600;cursor:pointer}
 <form id="f"><input id="u" aria-label="Username" placeholder="Username" autocomplete="username" required maxlength="40">
 <input id="p" aria-label="Password" placeholder="Password" type="password" autocomplete="current-password" required maxlength="200">
 <button id="b">Sign in</button><p id="m" role="alert"></p></form>
+<p><a href="/privacy.html" style="color:#2fd9a8">Privacy policy</a></p>
 <script>const NONCE="framecheck_google_nonce",say=t=>{document.getElementById("m").textContent=t};
 // Google hands back a signed ID token directly (response_type=id_token), so no
 // client secret is involved; /auth/callback verifies it and applies the allowlist.
@@ -209,6 +210,10 @@ def _deployed_static_gate(request: Request) -> Response | None:
     """The answer a deployed instance gives instead of a static file, or None
     to let the request carry on. Only called when deployed."""
     path = request.url.path
+    # Google requires a public privacy policy for a published sign-in. It says
+    # nothing about the method, so it stays readable when signed out.
+    if path == "/privacy.html":
+        return None
     signed_in = _has_session_cookie(request)
     if path in LANDING_PATHS:
         if signed_in and path in ("/", "/index.html"):

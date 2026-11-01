@@ -282,6 +282,16 @@ class TestDeployment:
         assert "Sign in with Google" in text and "/auth/callback" in text and "response_type" in text
         assert "client_secret" not in text
 
+    def test_privacy_policy_is_public_and_says_nothing_about_the_method(self, monkeypatch):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        monkeypatch.delenv("FRAMECHECK_AUTH_MODE", raising=False)
+        client = TestClient(api_main.app)
+        resp = client.get("/privacy.html")
+        assert resp.status_code == 200 and "privacy policy" in resp.text.lower()
+        for word in ("dust", "frameable", "framing", "wallet", "ethereum"):
+            assert word not in resp.text.lower()
+        assert 'href="/privacy.html"' in client.get("/").text
+
     def test_sign_in_page_reads_google_settings_without_a_session(self, monkeypatch):
         # The button is shown only when /auth/login answers, and it has to
         # answer to a signed-out visitor on a deployed instance.
