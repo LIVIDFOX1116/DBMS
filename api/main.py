@@ -32,7 +32,7 @@ import psycopg2
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg2 import InterfaceError, OperationalError
 from psycopg2 import pool as pg_pool
@@ -149,16 +149,61 @@ PUBLIC_DEMO_BLOCKED_PREFIXES = ("/db/", "/jobs/", "/ingest/", "/internal/", "/ad
                                 "/auth/local/password")
 
 
-# FRAMECHECK_HIDE_LANDING=1 (a deployed instance): the landing page explains
-# the method, so signed-out visitors get only this. The method is not to be
-# publicly disclosed while a patent application is pending.
+# FRAMECHECK_HIDE_LANDING=1 (a deployed instance): the landing page and the
+# app's own pages and scripts describe the method, so signed-out visitors get
+# only this self-contained page. The method is not to be publicly disclosed
+# while a patent application is pending.
 LANDING_PATHS = frozenset({"/", "/index.html", "/landing.js", "/landing.css"})
 SIGN_IN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>FrameCheck</title>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f10;color:#e8eeee;
-font:16px system-ui,sans-serif}a{display:inline-block;margin-top:16px;padding:10px 20px;border-radius:8px;
-background:#2fd9a8;color:#04211a;font-weight:600;text-decoration:none}main{text-align:center;padding:16px}</style>
-</head><body><main><h1>FrameCheck</h1><p>Sign in to continue.</p><a href="dashboard.html">Sign in</a></main></body></html>"""
+font:16px system-ui,sans-serif}main{text-align:center;padding:16px;width:min(320px,100%);box-sizing:border-box}
+input,button{display:block;width:100%;box-sizing:border-box;margin-top:10px;padding:10px 12px;border-radius:8px;font:inherit}
+input{border:1px solid #39484a;background:#141b1c;color:inherit}
+button{border:0;background:#2fd9a8;color:#04211a;font-weight:600;cursor:pointer}
+button:disabled{opacity:.6}p[role=alert]{min-height:1.4em;color:#ff9b8f;margin:12px 0 0}</style>
+</head><body><main><h1>FrameCheck</h1><p>Sign in to continue.</p>
+<form id="f"><input id="u" aria-label="Username" placeholder="Username" autocomplete="username" required maxlength="40">
+<input id="p" aria-label="Password" placeholder="Password" type="password" autocomplete="current-password" required maxlength="200">
+<button id="b">Sign in</button><p id="m" role="alert"></p></form>
+<script>document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();
+const b=document.getElementById("b"),m=document.getElementById("m");b.disabled=true;m.textContent="";
+try{const r=await fetch("/auth/local/login",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},
+body:JSON.stringify({username:document.getElementById("u").value.trim(),password:document.getElementById("p").value})});
+if(r.ok){location.href="/dashboard.html";return}
+const d=await r.json().catch(()=>({}));m.textContent=d.detail||"Sign-in failed ("+r.status+")"}
+catch{m.textContent="Could not reach the server. Try again."}b.disabled=false});</script></main></body></html>"""
+
+
+def _has_session_cookie(request: Request) -> bool:
+    """A valid signed session cookie. Enough for the pages and scripts, which
+    hold no data; every API route still loads the user from the database."""
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    if not token:
+        return False
+    try:
+        auth.read_session(token)
+    except auth.AuthError:
+        return False
+    return True
+
+
+def _deployed_static_gate(request: Request) -> Response | None:
+    """The answer a deployed instance gives instead of a static file, or None
+    to let the request carry on. Only called when deployed."""
+    path = request.url.path
+    signed_in = _has_session_cookie(request)
+    if path in LANDING_PATHS:
+        if signed_in and path in ("/", "/index.html"):
+            return RedirectResponse("/dashboard.html", status_code=303)
+        return HTMLResponse(SIGN_IN_PAGE)
+    if signed_in or not rbac.is_static(app, request.scope):
+        return None
+    if auth.public_demo_mode() or auth.auth_mode() == "disabled":
+        return None
+    if path.endswith(".html"):
+        return HTMLResponse(SIGN_IN_PAGE)
+    return JSONResponse(status_code=401, content={"detail": "sign-in required"})
 
 
 def _is_mutating_path(path: str) -> bool:
@@ -183,8 +228,10 @@ async def require_session(request: Request, call_next):
     new endpoint, while forgetting to add a path to PUBLIC_PATHS only
     makes a public route ask for a session, which is the safe direction
     to fail in."""
-    if rbac.deployed() and request.url.path in LANDING_PATHS:
-        return HTMLResponse(SIGN_IN_PAGE)
+    if rbac.deployed():
+        gated = _deployed_static_gate(request)
+        if gated is not None:
+            return gated
     if auth.public_demo_mode() and _is_demo_blocked(request.method, request.url.path):
         return JSONResponse(status_code=403, content={
             "detail": "read-only public demo: this action is disabled on the shared link"})
@@ -192,7 +239,9 @@ async def require_session(request: Request, call_next):
         return await _call(request, call_next)
     # The minimum role for this route (api/rbac.py's central table).
     needed = rbac.required_role(app, request.scope)
-    if needed == rbac.PUBLIC or request.url.path in auth.PUBLIC_PATHS:
+    # PUBLIC_PATHS also lists the API docs, which the policy table makes
+    # admin-only when deployed: that answer has to win.
+    if needed == rbac.PUBLIC or (request.url.path in auth.PUBLIC_PATHS and needed != rbac.ADMIN):
         return await _call(request, call_next)
     # Public demo FIRST: a shared demo link usually also runs with sign-in
     # disabled, and an anonymous visitor on it must be a viewer, never the

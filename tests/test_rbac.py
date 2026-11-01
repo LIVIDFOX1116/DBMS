@@ -270,6 +270,44 @@ class TestDeployment:
         monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
         assert TestClient(api_main.app).get("/dashboard.html").status_code == 200
 
+    def test_signed_out_dashboard_is_only_the_sign_in_page(self, monkeypatch):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        monkeypatch.delenv("FRAMECHECK_AUTH_MODE", raising=False)
+        text = TestClient(api_main.app).get("/dashboard.html").text
+        assert "Sign in to continue" in text and "/auth/local/login" in text and "frameable" not in text.lower()
+
+    @pytest.mark.parametrize("path", ["/audit.js", "/crud.js", "/database.js", "/graph-webgl.js", "/audit.css", "/multiview.js"])
+    def test_signed_out_assets_are_refused_when_deployed(self, monkeypatch, path):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        monkeypatch.delenv("FRAMECHECK_AUTH_MODE", raising=False)
+        assert TestClient(api_main.app).get(path).status_code == 401
+
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    def test_api_docs_need_an_admin_when_deployed(self, monkeypatch, path):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        monkeypatch.delenv("FRAMECHECK_AUTH_MODE", raising=False)
+        assert TestClient(api_main.app).get(path).status_code == 401
+
+    @pytest.mark.parametrize("path", ["/docs", "/openapi.json", "/audit.js", "/dashboard.html"])
+    def test_local_runs_are_not_gated(self, monkeypatch, path):
+        monkeypatch.delenv("FRAMECHECK_HIDE_LANDING", raising=False)
+        monkeypatch.delenv("FRAMECHECK_AUTH_MODE", raising=False)
+        assert TestClient(api_main.app).get(path).status_code == 200
+
+    def test_a_signed_in_browser_gets_the_real_app_when_deployed(self, monkeypatch):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        monkeypatch.setenv("FRAMECHECK_SESSION_SECRET", SECRET)
+        monkeypatch.delenv("FRAMECHECK_AUTH_MODE", raising=False)
+        client = TestClient(api_main.app, base_url="https://testserver")
+        client.cookies.set(auth.SESSION_COOKIE, auth.issue_session({"user_id": 2, "email": "a@example.com"}))
+        assert "frameable" in client.get("/dashboard.html").text
+        assert client.get("/audit.js").status_code == 200
+        home = client.get("/", follow_redirects=False)
+        assert home.status_code == 303 and home.headers["location"] == "/dashboard.html"
+        # A tampered cookie is treated as signed out.
+        client.cookies.set(auth.SESSION_COOKIE, "forged")
+        assert client.get("/audit.js").status_code == 401
+
     def test_audit_without_a_snapshot_file_is_a_clear_409(self, live_client, monkeypatch):
         client = live_client(2, "analyst")
         session = mock.MagicMock()

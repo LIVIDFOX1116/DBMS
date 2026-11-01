@@ -156,6 +156,16 @@ def required_role(app, scope) -> str:
     return VIEWER
 
 
+def is_static(app, scope) -> bool:
+    """Whether this request would be answered by the static frontend mount."""
+    method = "GET" if scope["method"] == "HEAD" else scope["method"]
+    for route in app.router.routes:
+        match, _ = route.matches({**scope, "method": method})
+        if match == Match.FULL:
+            return isinstance(route, Mount)
+    return False
+
+
 def load_user(user_id: int) -> dict | None:
     """The signed-in user's current role and status, straight from app_user."""
     from db.orm.models import AppUser

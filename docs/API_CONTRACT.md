@@ -742,6 +742,10 @@ public demo answers 403 to every `PUT`/`PATCH`/`DELETE` and to these `POST`s. 40
 | `DELETE /wallets/{id}/labels/{label_id}` | analyst | |
 | `PATCH /alerts/{id}` | analyst | `{review_status}`: `NEW`, `IN_REVIEW`, `CONFIRMED`, `DISMISSED`; records `reviewed_by` |
 
+**Deployed instances.** With `FRAMECHECK_HIDE_LANDING=1` and sign-in required, a signed-out request for a static file
+answers the sign-in page (`/`, `/index.html`, `/landing.*`, any `*.html`) or 401 (anything else), and `/docs`, `/redoc`
+and `/openapi.json` need an admin. Local runs and the desktop app are unchanged.
+
 **Pagination.** `/wallets`, `/flags`, `/alerts`, `/labels` and `/admin/users` take optional `page` (1-based) and
 `page_size` (default 50, max 500). Bodies stay arrays; `X-Total-Count`, `X-Page`, `X-Page-Size` and an RFC 8288 `Link`
 header carry the rest, exposed through CORS. Without those parameters the legacy `limit` behaviour is unchanged.

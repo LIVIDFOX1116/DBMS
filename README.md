@@ -114,7 +114,11 @@ minute to wake). Environment:
 | `FRAMECHECK_IMPORT_DEMO` | `1` only if you did not restore a dump in step 2 |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | from step 4 |
 
-**4. Google sign-in.** console.cloud.google.com → APIs & Services → Credentials → your OAuth client → add
+**4. Google sign-in (not available on a deployed instance yet).** With `FRAMECHECK_HIDE_LANDING=1`, signed-out
+visitors get only a self-contained username and password page, and every other page and script answers 401 until
+they sign in, because those files describe the method. That page has no Google button, so accounts come from
+`scripts/create_admin.py`, and the Google allowlist variables have no effect until one is added. The OAuth client
+steps, for when it is: console.cloud.google.com → APIs & Services → Credentials → your OAuth client → add
 `https://<app>.onrender.com/auth/callback` to Authorized redirect URIs, and add a custom domain's URL too if you
 use one.
 
@@ -123,7 +127,8 @@ to `216.24.57.1` only as the fallback for apex domains. DuckDNS offers only A re
 `framecheck.duckdns.org` → `216.24.57.1`, add it under Render → Settings → Custom Domains, and see whether it
 verifies and issues TLS. If it does not, use a domain that supports CNAME.
 
-**Live URL:** not deployed yet: steps 1 to 4 need the project's own accounts.
+**Live URL:** <https://framecheck-awlf.onrender.com> (sign-in required). Render does not re-pull `latest` by itself:
+after pushing a new image use Manual Deploy → Deploy latest reference.
 
 ## Setup: build it, then run it
 
