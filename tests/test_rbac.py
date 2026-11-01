@@ -276,6 +276,19 @@ class TestDeployment:
         text = TestClient(api_main.app).get("/dashboard.html").text
         assert "Sign in to continue" in text and "/auth/local/login" in text and "frameable" not in text.lower()
 
+    def test_sign_in_page_offers_google_with_no_secret(self, monkeypatch):
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        text = TestClient(api_main.app).get("/").text
+        assert "Sign in with Google" in text and "/auth/callback" in text and "response_type" in text
+        assert "client_secret" not in text
+
+    def test_sign_in_page_reads_google_settings_without_a_session(self, monkeypatch):
+        # The button is shown only when /auth/login answers, and it has to
+        # answer to a signed-out visitor on a deployed instance.
+        monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "x.apps.googleusercontent.com")
+        assert TestClient(api_main.app).get("/auth/login").json()["client_id"] == "x.apps.googleusercontent.com"
+
     @pytest.mark.parametrize("path", ["/audit.js", "/crud.js", "/database.js", "/graph-webgl.js", "/audit.css", "/multiview.js"])
     def test_signed_out_assets_are_refused_when_deployed(self, monkeypatch, path):
         monkeypatch.setenv("FRAMECHECK_HIDE_LANDING", "1")

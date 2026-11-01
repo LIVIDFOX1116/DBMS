@@ -161,12 +161,29 @@ font:16px system-ui,sans-serif}main{text-align:center;padding:16px;width:min(320
 input,button{display:block;width:100%;box-sizing:border-box;margin-top:10px;padding:10px 12px;border-radius:8px;font:inherit}
 input{border:1px solid #39484a;background:#141b1c;color:inherit}
 button{border:0;background:#2fd9a8;color:#04211a;font-weight:600;cursor:pointer}
-button:disabled{opacity:.6}p[role=alert]{min-height:1.4em;color:#ff9b8f;margin:12px 0 0}</style>
+[hidden]{display:none!important}button:disabled{opacity:.6}p[role=alert]{min-height:1.4em;color:#ff9b8f;margin:12px 0 0}</style>
 </head><body><main><h1>FrameCheck</h1><p>Sign in to continue.</p>
+<button id="g" type="button" hidden>Sign in with Google</button><p id="or" hidden>or</p>
 <form id="f"><input id="u" aria-label="Username" placeholder="Username" autocomplete="username" required maxlength="40">
 <input id="p" aria-label="Password" placeholder="Password" type="password" autocomplete="current-password" required maxlength="200">
 <button id="b">Sign in</button><p id="m" role="alert"></p></form>
-<script>document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();
+<script>const NONCE="framecheck_google_nonce",say=t=>{document.getElementById("m").textContent=t};
+// Google hands back a signed ID token directly (response_type=id_token), so no
+// client secret is involved; /auth/callback verifies it and applies the allowlist.
+(async()=>{const h=new URLSearchParams(location.hash.slice(1)),tok=h.get("id_token");
+if(h.get("error"))say('Google returned "'+h.get("error")+'".');
+if(tok){history.replaceState(null,"",location.pathname);
+try{const c=JSON.parse(atob(tok.split(".")[1].replace(/-/g,"+").replace(/_/g,"/")));
+if(!c.nonce||c.nonce!==sessionStorage.getItem(NONCE))throw new Error("This sign-in did not start in this browser. Try again.");
+const r=await fetch("/auth/callback",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({id_token:tok})});
+if(r.ok){location.href="/dashboard.html";return}
+const d=await r.json().catch(()=>({}));say(d.detail||"Sign-in failed ("+r.status+")")}catch(e){say(e.message)}}
+const r=await fetch("/auth/login").catch(()=>null);if(!r||!r.ok)return;const cfg=await r.json(),g=document.getElementById("g");
+g.hidden=false;document.getElementById("or").hidden=false;
+g.addEventListener("click",()=>{const n=crypto.randomUUID();sessionStorage.setItem(NONCE,n);
+const u=new URL(cfg.authorization_endpoint);Object.entries({client_id:cfg.client_id,redirect_uri:location.origin+"/dashboard.html",
+response_type:"id_token",scope:cfg.scope,nonce:n,prompt:"select_account"}).forEach(([k,v])=>u.searchParams.set(k,v));location.assign(u)})})();
+document.getElementById("f").addEventListener("submit",async e=>{e.preventDefault();
 const b=document.getElementById("b"),m=document.getElementById("m");b.disabled=true;m.textContent="";
 try{const r=await fetch("/auth/local/login",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},
 body:JSON.stringify({username:document.getElementById("u").value.trim(),password:document.getElementById("p").value})});
